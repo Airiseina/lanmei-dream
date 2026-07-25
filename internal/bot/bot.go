@@ -12,16 +12,9 @@ import (
 	"github.com/DaWesen/lanmei-dream/internal/ai"
 	"github.com/DaWesen/lanmei-dream/internal/ai/llm"
 	"github.com/DaWesen/lanmei-dream/internal/command"
+	"github.com/DaWesen/lanmei-dream/internal/config"
 	"github.com/DaWesen/lanmei-dream/internal/database"
 )
-
-// BotConfig 是 Bot 的配置
-type BotConfig struct {
-	WebSocketURL string
-	AccessToken  string
-	NickName     string
-	SuperUsers   []int64
-}
 
 // Bot 封装 ZeroBot + Conduit 引擎
 type Bot struct {
@@ -32,11 +25,13 @@ type Bot struct {
 // New 创建 Bot 实例，初始化 Conduit 引擎和行为树
 // store 为 Conduit 状态存储（由 infra 包提供，RedisStore 用于生产，MemoryStore 用于测试）
 // llmClient 为 LLM 客户端，用于意图分析（nil 时降级为纯聊天路由）
-func New(cfg *BotConfig, cmdSys *command.System, chatSvc *ai.ChatService, db *database.DB, store conduit.StateStore, llmClient llm.LLMClient) *Bot {
+func New(cfg *config.BotConfig, cmdSys *command.System, chatSvc *ai.ChatService, db *database.DB, store conduit.StateStore, llmClient llm.LLMClient) *Bot {
 	nick := cfg.NickName
 	if nick == "" {
 		nick = "蓝妹"
 	}
+
+	superUsers := cfg.ParseSuperUsers()
 
 	// ── Conduit 引擎 ──
 	engine := conduit.New(store,
@@ -84,7 +79,7 @@ func New(cfg *BotConfig, cmdSys *command.System, chatSvc *ai.ChatService, db *da
 	zeroCfg := &zero.Config{
 		NickName:      []string{nick},
 		CommandPrefix: "/",
-		SuperUsers:    cfg.SuperUsers,
+		SuperUsers:    superUsers,
 		Driver: []zero.Driver{
 			driver.NewWebSocketClient(cfg.WebSocketURL, cfg.AccessToken),
 		},

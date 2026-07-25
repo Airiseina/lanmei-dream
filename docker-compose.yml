@@ -37,8 +37,8 @@ services:
     env_file:
       - .env
     environment:
-      DATABASE_URL: postgres://${POSTGRES_USER:-lanmei}:${POSTGRES_PASSWORD:-lanmei}@postgres:5432/${POSTGRES_DB:-lanmei}?sslmode=disable
-      REDIS_ADDR: redis:6379
+      LANMEI_DATABASE_URL: postgres://${POSTGRES_USER:-lanmei}:${POSTGRES_PASSWORD:-lanmei}@postgres:5432/${POSTGRES_DB:-lanmei}?sslmode=disable
+      LANMEI_REDIS_ADDR: redis:6379
     depends_on:
       postgres:
         condition: service_healthy
