@@ -11,6 +11,7 @@ graph TB
 
     subgraph 蓝妹服务
         Main[main.go 入口]
+        Infra[infra.Setup<br/>PG+Redis+pgvector]
         Bot[bot.Bot]
         Engine[Conduit Engine]
         BT[行为树]
@@ -19,21 +20,22 @@ graph TB
 
     subgraph 管线 Pass
         CmdPass[CommandPass]
+        IntentPass[IntentPass<br/>意图分析]
         RPPass[RoleplayPass]
         FBPass[FallbackPass]
     end
 
     subgraph AI 层
+        Intent[ai.IntentAnalyzer<br/>LLM 意图判断]
         ChatSvc[ai.ChatService]
         Comp[ai.Compressor<br/>LOD 压缩]
         LLM[ai.LLMClient<br/>⚠ 待实现]
         Emb[ai.Embedder<br/>⚠ 待实现]
-        MemStore[ai.MilvusMemoryStore]
     end
 
     subgraph 存储层
-        PG[(PostgreSQL)]
-        MV[(Milvus)]
+        PG[(PostgreSQL 17<br/>+ pgvector)]
+        RD[(Redis 7)]
     end
 
     QQ -->|消息| LLOneBot
@@ -42,21 +44,28 @@ graph TB
     Engine -->|决策| BT
     BT -->|/admin| CmdPass
     BT -->|/命令| CmdPass
-    BT -->|其余| RPPass
-    BT -->|超时/兜底| FBPass
+    BT -->|自然语言| IntentPass
+    IntentPass -->|intent=command| CmdPass
+    IntentPass -->|intent=chat| RPPass
+    IntentPass -->|intent=ignore| 忽略
+    IntentPass --> Intent
+    Intent --> LLM
     CmdPass --> CmdSys
     RPPass --> ChatSvc
     ChatSvc --> LLM
     ChatSvc --> Emb
-    ChatSvc --> MemStore
+    ChatSvc --> PG
     ChatSvc --> Comp
     Comp --> LLM
     Comp --> Emb
-    Comp --> MemStore
+    Comp --> PG
     RPPass --> PG
     CmdPass --> PG
-    MemStore --> MV
-    ChatSvc -.->|存对话| PG
+    ChatSvc -.->|pgvector| PG
+    Engine -->|StateStore| RD
+    Main --> Infra
+    Infra --> PG
+    Infra --> RD
 ```
 
 ## 消息处理流程
@@ -69,11 +78,13 @@ sequenceDiagram
     participant E as Conduit Engine
     participant BT as 行为树
     participant CP as CommandPass
+    participant IP as IntentPass
     participant RP as RoleplayPass
     participant FB as FallbackPass
+    participant IA as IntentAnalyzer
     participant A as ai.ChatService
-    participant P as PostgreSQL
-    participant M as Milvus
+    participant P as PostgreSQL+pgvector
+    participant R as Redis
 
     U->>Q: 发消息
     Q->>B: WebSocket 推送
@@ -91,17 +102,32 @@ sequenceDiagram
         E->>CP: Execute
         CP-->>U: 命令结果
     else 自然语言
-        BT-->>E: pipeline.chat
-        E->>RP: Execute
-        RP->>P: GetOrCreateUser
-        RP->>A: Chat(当前消息, userID)
-        A->>A: LOD组装(L2→L1→L0) + RAG检索
-        A->>A: Embed → Milvus检索 → 拼提示 → LLM
-        A-->>RP: response
-        RP->>P: SaveConversation (L0)
-        A-.->Comp: MaybeCompress (异步)
-        Comp-.->LLM: L0→L1 / L1→L2 压缩
-        RP-->>U: 回复内容
+        BT-->>E: pipeline.intent
+        E->>IP: Execute
+        IP->>IA: Analyze(用户消息)
+        IA->>IA: LLM 意图分类
+
+        alt intent=command
+            IA-->>IP: {intent:"command", command:"签到"}
+            IP->>CP: routeToCommand
+            CP-->>U: 命令结果
+        else intent=chat
+            IA-->>IP: {intent:"chat"}
+            IP->>RP: routeToChat
+            RP->>P: GetOrCreateUser
+            RP->>A: Chat(当前消息, userID)
+            A->>A: LOD组装(L2→L1→L0) + RAG检索(pgvector)
+            A->>A: Embed → pgvector检索 → 拼提示 → LLM
+            A-->>RP: response
+            RP->>P: SaveConversation (L0)
+            A-.->Comp: MaybeCompress (异步)
+            Comp-.->LLM: L0→L1 / L1→L2 压缩
+            RP-->>U: 回复内容
+        else intent=ignore
+            IA-->>IP: {intent:"ignore"}
+            IP-->>U: 静默
+        end
+
     else 超时/异常
         BT-->>E: pipeline.fallback
         E->>FB: Execute
@@ -116,16 +142,34 @@ graph TD
     Root[Selector 根节点]
     Root --> S1[Sequence: 管理员命令]
     Root --> S2[Sequence: 普通命令]
-    Root --> A1[Action: pipeline.chat]
+    Root --> A1[Action: pipeline.intent]
 
     S1 --> C1[Condition: IsAdminCommand]
     S1 --> A2[Action: pipeline.admin]
 
     S2 --> C2[Condition: IsCommand]
     S2 --> A3[Action: pipeline.command]
+
+    A1 --> IP[IntentPass]
+    IP -->|intent=command| CMD[CommandPass]
+    IP -->|intent=chat| RP[RoleplayPass]
+    IP -->|intent=ignore| SKIP[静默忽略]
 ```
 
-优先级从上到下：管理员命令 > 普通命令 > 角色扮演
+优先级从上到下：管理员命令 > 普通命令 > 意图分析（自然语言路由）
+
+## 基础设施层
+
+```mermaid
+graph LR
+    Main[main.go] --> Infra[infra.Setup]
+    Infra --> PG[PostgreSQL 17<br/>pgvector/pgvector:pg17]
+    Infra --> RD[Redis 7<br/>redis:7-alpine<br/>64MB + allkeys-lru]
+    Infra --> PV[PGVectorStore<br/>实现 MemoryStore 接口]
+    Infra --> RS[RedisStore<br/>实现 StateStore 接口]
+    PG --> PV
+    RD --> RS
+```
 
 ## 存储层设计
 
@@ -174,24 +218,30 @@ erDiagram
         jsonb metadata
         timestamptz created_at
     }
+    memory_vectors {
+        bigserial id PK
+        bigint user_id FK
+        text content "记忆文本"
+        vector_1024 embedding "pgvector 向量"
+        timestamptz created_at
+    }
+    conduit_states {
+        varchar key PK
+        text value
+        timestamptz expires_at
+    }
     users ||--o{ conversations : "L0 原文"
     users ||--o{ episode_summaries : "L1 摘要"
     users ||--o{ topic_clusters : "L2 主题"
     users ||--o{ memories : "has"
-
-    Milvus_lanmei_memories {
-        int64 id PK "自增"
-        int64 user_id "用户ID"
-        varchar content "记忆文本"
-        float_vector embedding "向量"
-    }
+    users ||--o{ memory_vectors : "向量记忆"
 ```
 
 ## 待实现 / 规划中
 
 - [ ] LLMClient 具体实现（等用户指定 provider）
 - [ ] Embedder 具体实现（等用户指定 provider）
-- [ ] Function Calling 自然语言命令路由（IntentPass）
+- [x] Function Calling 自然语言命令路由（IntentPass）— 骨架已搭好，LLM 接入后自动生效
 - [ ] 多路召回（向量 + 关键词 + 时间）
 - [x] LOD 记忆压缩（L0 原文 → L1 摘要 → L2 主题）
 - [ ] 签到记录表

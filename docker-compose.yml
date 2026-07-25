@@ -1,7 +1,7 @@
 services:
-  # ── PostgreSQL ──
+  # ── PostgreSQL（含 pgvector 扩展）──
   postgres:
-    image: postgres:17-alpine
+    image: pgvector/pgvector:pg17
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-lanmei}
@@ -17,46 +17,17 @@ services:
       timeout: 3s
       retries: 5
 
-  # ── Milvus Standalone ──
-  milvus-etcd:
-    image: quay.io/coreos/etcd:v3.5.18
+  # ── Redis（Conduit 状态存储）──
+  redis:
+    image: redis:7-alpine
     restart: unless-stopped
-    environment:
-      ETCD_AUTO_COMPACTION_MODE: revision
-      ETCD_AUTO_COMPACTION_RETENTION: "1000"
-      ETCD_QUOTA_BACKEND_BYTES: "4294967296"
-    volumes:
-      - etcd-data:/etcd
-
-  milvus-minio:
-    image: minio/minio:latest
-    restart: unless-stopped
-    environment:
-      MINIO_ACCESS_KEY: minioadmin
-      MINIO_SECRET_KEY: minioadmin
-    volumes:
-      - minio-data:/minio_data
-    command: minio server /minio_data
-
-  milvus:
-    image: milvusdb/milvus:v2.5-latest
-    restart: unless-stopped
-    command: ["milvus", "run", "standalone"]
-    environment:
-      ETCD_ENDPOINTS: milvus-etcd:2379
-      MINIO_ADDRESS: milvus-minio:9000
+    command: redis-server --maxmemory 64mb --maxmemory-policy allkeys-lru
     ports:
-      - "${MILVUS_PORT:-19530}:19530"
-      - "${MILVUS_PORT_9091:-9091}:9091"
-    volumes:
-      - milvus-data:/var/lib/milvus
-    depends_on:
-      - milvus-etcd
-      - milvus-minio
+      - "${REDIS_PORT:-6379}:6379"
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9091/healthz"]
-      interval: 10s
-      timeout: 5s
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
       retries: 5
 
   # ── 蓝妹 Bot ──
@@ -67,15 +38,12 @@ services:
       - .env
     environment:
       DATABASE_URL: postgres://${POSTGRES_USER:-lanmei}:${POSTGRES_PASSWORD:-lanmei}@postgres:5432/${POSTGRES_DB:-lanmei}?sslmode=disable
-      MILVUS_ADDR: milvus:19530
+      REDIS_ADDR: redis:6379
     depends_on:
       postgres:
         condition: service_healthy
-      milvus:
+      redis:
         condition: service_healthy
 
 volumes:
   pgdata:
-  etcd-data:
-  minio-data:
-  milvus-data:

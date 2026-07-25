@@ -2,67 +2,48 @@
 
 ## 职责
 
-负责 ZeroBot 的初始化和消息分发，是整个程序的入口对接层。
+负责 ZeroBot 的初始化和消息分发，使用 Conduit 引擎（行为树 + 管线）路由消息。
 
 ## 核心设计
 
-### 消息分流
+### 消息路由（行为树）
 
-所有用户消息从这里进入，按规则分发：
+所有用户消息通过 Conduit 引擎处理，行为树按优先级路由：
 
 ```
-ZeroBot 收到消息
+ZeroBot 收到消息 → engine.Process(InputMessage)
         │
         ▼
-   bot/handler.go
+   行为树决策
         │
-        ├─ 以 / 开头 → command.System.Process()
-        │
-        └─ 普通文本 → plugin/roleplay.Handle()
+        ├─ /admin 开头 → pipeline.admin → CommandPass
+        ├─ /xxx 开头   → pipeline.command → CommandPass
+        └─ 自然语言    → pipeline.intent → IntentPass
+                              │
+                              ├─ intent=command → CommandPass
+                              ├─ intent=chat    → RoleplayPass
+                              └─ intent=ignore  → 静默
 ```
 
-### 初始化流程
+### Pass 列表
 
-```go
-// bot/bot.go
-type Bot struct {
-    cfg     *zero.Config        // ZeroBot 配置
-    cmdSys  *command.System     // 命令系统
-    roleplay *roleplay.Plugin   // 角色扮演插件
-}
+| Pass | 文件 | 职责 |
+|------|------|------|
+| CommandPass | passes.go | 执行斜杠命令 |
+| RoleplayPass | passes.go | AI 角色扮演对话 |
+| IntentPass | intent_pass.go | LLM 意图分析 → 路由到 Command/Roleplay/忽略 |
+| FallbackPass | passes.go | 超时/异常兜底回复 |
 
-func New(cfg *BotConfig, cmdSys *command.System, rp *roleplay.Plugin) *Bot {
-    return &Bot{
-        cfg:      buildZeroConfig(cfg),
-        cmdSys:   cmdSys,
-        roleplay: rp,
-    }
-}
+### 条件判断
 
-func (b *Bot) Run() {
-    // 注册消息处理
-    zero.OnMessage().Handle(b.handleMessage)
-    // 启动
-    zero.RunAndBlock(b.cfg, nil)
-}
-```
+| 函数 | 逻辑 |
+|------|------|
+| IsAdminCommand | 消息以 `/admin` 开头 |
+| IsCommand | 消息以 `/` 开头 |
 
-### Handler 逻辑
+### 关键依赖
 
-```go
-func (b *Bot) handleMessage(ctx *zero.Ctx) {
-    msg := ctx.Event.RawMessage
-
-    if strings.HasPrefix(msg, "/") {
-        // 走命令系统
-        b.cmdSys.Process(msg, &command.Context{
-            UserID:  ctx.Event.UserID,
-            Message: msg,
-            Reply:   func(s string) { ctx.Send(s) },
-        })
-    } else {
-        // 走角色扮演
-        b.roleplay.Handle(ctx)
-    }
-}
-```
+- `github.com/zrurf/conduit` — 引擎、行为树、管线
+- `internal/ai` — ChatService、IntentAnalyzer
+- `internal/command` — 命令系统
+- `internal/database` — 数据库访问
