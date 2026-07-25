@@ -14,18 +14,22 @@ import (
 	"github.com/DaWesen/lanmei-dream/internal/command"
 	"github.com/DaWesen/lanmei-dream/internal/config"
 	"github.com/DaWesen/lanmei-dream/internal/database"
+	pluginpkg "github.com/DaWesen/lanmei-dream/internal/plugin"
 )
 
 // Bot 封装 ZeroBot + Conduit 引擎
 type Bot struct {
-	cfg    *zero.Config
-	engine *conduit.Engine
+	cfg     *zero.Config
+	engine  *conduit.Engine
+	plugins *pluginpkg.Registry
 }
 
-// New 创建 Bot 实例，初始化 Conduit 引擎和行为树
+// New 创建 Bot 实例，初始化 Conduit 引擎、行为树和插件系统。
+//
 // store 为 Conduit 状态存储（由 infra 包提供，RedisStore 用于生产，MemoryStore 用于测试）
 // llmClient 为 LLM 客户端，用于意图分析（nil 时降级为纯聊天路由）
-func New(cfg *config.BotConfig, cmdSys *command.System, chatSvc *ai.ChatService, db *database.DB, store conduit.StateStore, llmClient llm.LLMClient) *Bot {
+// pluginReg 为插件注册表（nil 时跳过插件初始化）
+func New(cfg *config.BotConfig, cmdSys *command.System, chatSvc *ai.ChatService, db *database.DB, store conduit.StateStore, llmClient llm.LLMClient, pluginReg *pluginpkg.Registry) *Bot {
 	nick := cfg.NickName
 	if nick == "" {
 		nick = "蓝妹"
@@ -39,23 +43,6 @@ func New(cfg *config.BotConfig, cmdSys *command.System, chatSvc *ai.ChatService,
 		conduit.WithTimeout(10*time.Second),
 		conduit.WithFallbackPipeline("pipeline.fallback"),
 	)
-
-	// ── 行为树 ──
-	bt := conduit.NewBehaviorTree(
-		// 优先级1：管理员命令（显式 /admin）
-		conduit.NewSequence(
-			conduit.NewCondition(IsAdminCommand),
-			conduit.NewAction("pipeline.admin"),
-		),
-		// 优先级2：显式斜杠命令（/签到、/帮助 等）
-		conduit.NewSequence(
-			conduit.NewCondition(IsCommand),
-			conduit.NewAction("pipeline.command"),
-		),
-		// 优先级3：意图分析（自然语言路由）
-		conduit.NewAction("pipeline.intent"),
-	)
-	engine.SetBehaviorTree(bt)
 
 	// ── 注册管线 ──
 	engine.MustRegisterPipeline(conduit.NewPipeline("pipeline.admin",
@@ -75,6 +62,32 @@ func New(cfg *config.BotConfig, cmdSys *command.System, chatSvc *ai.ChatService,
 		&FallbackPass{},
 	))
 
+	// ── 行为树（核心分支） ──
+	coreAdmin := conduit.NewSequence(
+		conduit.NewCondition(IsAdminCommand),
+		conduit.NewAction("pipeline.admin"),
+	)
+	coreCommand := conduit.NewSequence(
+		conduit.NewCondition(IsCommand),
+		conduit.NewAction("pipeline.command"),
+	)
+	coreIntent := conduit.NewAction("pipeline.intent")
+
+	// ── 插件系统 ──
+	if pluginReg != nil {
+		// 注入引擎到插件注册表（供插件注册 Pass/Pipeline/Subtree）
+		pluginReg.SetEngine(engine)
+		// 设置行为树重建回调
+		pluginReg.SetRebuildBT(func() {
+			bt := buildBehaviorTree(pluginReg, coreAdmin, coreCommand, coreIntent)
+			engine.SetBehaviorTree(bt)
+		})
+	}
+
+	// 构建初始行为树（插件子树优先级高于核心分支）
+	bt := buildBehaviorTree(pluginReg, coreAdmin, coreCommand, coreIntent)
+	engine.SetBehaviorTree(bt)
+
 	// ── ZeroBot 配置 ──
 	zeroCfg := &zero.Config{
 		NickName:      []string{nick},
@@ -86,15 +99,44 @@ func New(cfg *config.BotConfig, cmdSys *command.System, chatSvc *ai.ChatService,
 	}
 
 	return &Bot{
-		cfg:    zeroCfg,
-		engine: engine,
+		cfg:     zeroCfg,
+		engine:  engine,
+		plugins: pluginReg,
 	}
 }
 
-// Run 启动 Conduit 引擎 + ZeroBot，阻塞运行
+// buildBehaviorTree 构建主行为树。
+//
+// 结构：
+//
+//	Selector [
+//	  SubtreeRef("plugin.signin.subtree")    // 插件子树（优先级最高）
+//	  SubtreeRef("plugin.festival.subtree")  // ...
+//	  SubtreeRef("plugin.minigame.subtree")  // ...
+//	  Sequence [IsAdminCommand, Action(admin)]  // 管理员命令
+//	  Sequence [IsCommand, Action(command)]     // 斜杠命令
+//	  Action(intent)                            // 意图分析（兜底）
+//	]
+func buildBehaviorTree(pluginReg *pluginpkg.Registry, coreAdmin, coreCommand, coreIntent conduit.BTNode) *conduit.Selector {
+	var branches []conduit.BTNode
+
+	// 插件子树优先（最先匹配，最高优先级）
+	if pluginReg != nil {
+		for _, ref := range pluginReg.SubtreeRefs() {
+			branches = append(branches, ref)
+		}
+	}
+
+	// 核心分支
+	branches = append(branches, coreAdmin, coreCommand, coreIntent)
+
+	return conduit.NewBehaviorTree(branches...)
+}
+
+// Run 启动 Conduit 引擎 + 插件 + ZeroBot，阻塞运行
 func (b *Bot) Run() {
 	b.engine.Start()
-	defer b.engine.Stop()
+	defer func() { _ = b.engine.Stop() }()
 
 	zero.OnMessage().Handle(b.handleMessage)
 

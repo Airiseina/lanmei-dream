@@ -11,6 +11,7 @@ import (
 	"github.com/DaWesen/lanmei-dream/internal/ai/llm"
 	"github.com/DaWesen/lanmei-dream/internal/command"
 	"github.com/DaWesen/lanmei-dream/internal/database"
+	pluginpkg "github.com/DaWesen/lanmei-dream/internal/plugin"
 )
 
 // ── 上下文键 ──
@@ -32,6 +33,8 @@ func (p *CommandPass) Execute(ctx *conduit.MessageContext) error {
 	var replies []string
 	err := p.CmdSys.Process(ctx.RawMsg, &command.Context{
 		UserID:  qqUserID(ctx),
+		GroupID: ctx.GroupID,
+		IsGroup: ctx.IsGroup,
 		Message: ctx.RawMsg,
 		Reply:   func(s string) { replies = append(replies, s) },
 	})
@@ -119,12 +122,20 @@ func (p *FallbackPass) Execute(ctx *conduit.MessageContext) error {
 // ── 条件判断函数 ──
 
 // IsCommand 判断消息是否以 / 开头
+// 跳过由插件命令处理器发起的请求（SkipCommandKey），防止无限递归
 func IsCommand(ctx *conduit.MessageContext) bool {
+	if _, ok := ctx.Extra[pluginpkg.SkipCommandKey]; ok {
+		return false
+	}
 	return strings.HasPrefix(ctx.RawMsg, "/")
 }
 
 // IsAdminCommand 判断消息是否以 /admin 开头
+// 同样跳过插件命令处理器发起的请求
 func IsAdminCommand(ctx *conduit.MessageContext) bool {
+	if _, ok := ctx.Extra[pluginpkg.SkipCommandKey]; ok {
+		return false
+	}
 	return strings.HasPrefix(ctx.RawMsg, "/admin")
 }
 

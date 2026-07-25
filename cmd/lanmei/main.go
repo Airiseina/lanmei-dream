@@ -10,11 +10,12 @@ import (
 	"github.com/DaWesen/lanmei-dream/internal/ai"
 	"github.com/DaWesen/lanmei-dream/internal/ai/embedding"
 	"github.com/DaWesen/lanmei-dream/internal/ai/llm"
+	"github.com/DaWesen/lanmei-dream/internal/bizplugin"
 	"github.com/DaWesen/lanmei-dream/internal/bot"
 	"github.com/DaWesen/lanmei-dream/internal/command"
 	"github.com/DaWesen/lanmei-dream/internal/config"
 	"github.com/DaWesen/lanmei-dream/internal/infra"
-	"github.com/DaWesen/lanmei-dream/internal/signin"
+	pluginpkg "github.com/DaWesen/lanmei-dream/internal/plugin"
 )
 
 func main() {
@@ -51,20 +52,31 @@ func main() {
 
 	// ── 命令系统 ──
 	cmdSys := command.New()
-	signinPlugin := signin.New(inf.DB)
-	cmdSys.Register(command.Command{
-		Name:        "签到",
-		Description: "每日签到",
-		Handler:     signinPlugin.HandleSignin,
-	})
 	cmdSys.Register(command.Command{
 		Name:        "帮助",
 		Description: "显示可用命令",
 		Handler:     cmdSys.HelpHandler,
 	})
 
+	// ── 插件系统 ──
+	// 创建插件注册表（引擎在 bot.New 中创建，随后通过 SetEngine 注入）
+	pluginReg := pluginpkg.NewRegistry(nil, inf.StateStore, inf.DB, cmdSys)
+
+	// 注册业务插件
+	if err := pluginReg.Register(bizplugin.NewSigninPlugin(inf.DB)); err != nil {
+		log.Fatalf("注册签到插件失败: %v", err)
+	}
+
 	// ── ZeroBot + Conduit ──
-	b := bot.New(&cfg.Bot, cmdSys, chatSvc, inf.DB, inf.StateStore, llmClient)
+	b := bot.New(&cfg.Bot, cmdSys, chatSvc, inf.DB, inf.StateStore, llmClient, pluginReg)
+
+	// 初始化并启动所有插件（需要在引擎创建后调用）
+	if err := pluginReg.InitPlugins(ctx); err != nil {
+		log.Fatalf("插件初始化失败: %v", err)
+	}
+	if err := pluginReg.StartPlugins(ctx); err != nil {
+		log.Fatalf("插件启动失败: %v", err)
+	}
 
 	// 优雅退出
 	go func() {
@@ -72,6 +84,7 @@ func main() {
 		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 		<-sigCh
 		log.Println("正在关闭...")
+		pluginReg.StopPlugins(ctx)
 		cancel()
 		os.Exit(0)
 	}()

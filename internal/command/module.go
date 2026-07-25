@@ -8,6 +8,8 @@ import (
 // Context 是命令处理函数的上下文
 type Context struct {
 	UserID  int64
+	GroupID string
+	IsGroup bool
 	Message string
 	Reply   func(string)
 }
@@ -32,6 +34,12 @@ func New() *System {
 // Register 注册一条命令
 func (s *System) Register(cmd Command) {
 	s.commands[cmd.Name] = cmd
+}
+
+// Unregister 注销一条命令。
+// 如果命令不存在，不做任何操作。
+func (s *System) Unregister(name string) {
+	delete(s.commands, name)
 }
 
 // Process 解析输入并分发到对应命令
