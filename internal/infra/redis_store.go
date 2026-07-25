@@ -62,7 +62,8 @@ func (s *RedisStore) Exists(ctx context.Context, key string) (bool, error) {
 	return n > 0, nil
 }
 
-// Close 关闭 Redis 连接
+// Close 实现 conduit.StateStore 接口。
+// 注意：不关闭底层 Redis 连接，由 Infra 统一管理生命周期。
 func (s *RedisStore) Close() error {
-	return s.client.Close()
+	return nil
 }
