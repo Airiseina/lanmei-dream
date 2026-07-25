@@ -59,6 +59,15 @@ func (s *System) Process(input string, ctx *Context) error {
 	return cmd.Handler(ctx)
 }
 
+// List 返回所有已注册的命令（用于意图分析 prompt 构建）
+func (s *System) List() []Command {
+	cmds := make([]Command, 0, len(s.commands))
+	for _, cmd := range s.commands {
+		cmds = append(cmds, cmd)
+	}
+	return cmds
+}
+
 // HelpHandler 是内置的帮助命令
 func (s *System) HelpHandler(ctx *Context) error {
 	var sb strings.Builder

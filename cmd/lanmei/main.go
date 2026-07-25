@@ -12,10 +12,9 @@ import (
 	"github.com/DaWesen/lanmei-dream/internal/ai"
 	"github.com/DaWesen/lanmei-dream/internal/ai/embedding"
 	"github.com/DaWesen/lanmei-dream/internal/ai/llm"
-	"github.com/DaWesen/lanmei-dream/internal/ai/memory"
 	"github.com/DaWesen/lanmei-dream/internal/bot"
 	"github.com/DaWesen/lanmei-dream/internal/command"
-	"github.com/DaWesen/lanmei-dream/internal/database"
+	"github.com/DaWesen/lanmei-dream/internal/infra"
 	"github.com/DaWesen/lanmei-dream/internal/signin"
 )
 
@@ -23,33 +22,16 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// ── PostgreSQL ──
-	pgURL := env("DATABASE_URL", "postgres://postgres:postgres@localhost:5432/lanmei?sslmode=disable")
-	db, err := database.Connect(ctx, pgURL)
+	// ── 基础设施（PostgreSQL+pgvector + Redis）──
+	inf, err := infra.Setup(ctx, &infra.Config{
+		DatabaseURL:  env("DATABASE_URL", "postgres://postgres:postgres@localhost:5432/lanmei?sslmode=disable"),
+		RedisAddr:    env("REDIS_ADDR", "localhost:6379"),
+		EmbeddingDim: envInt("EMBEDDING_DIM", 1024),
+	})
 	if err != nil {
-		log.Fatalf("连接 PostgreSQL 失败: %v", err)
+		log.Fatalf("基础设施初始化失败: %v", err)
 	}
-	defer db.Close()
-	log.Println("PostgreSQL 已连接")
-
-	if err := db.Migrate(ctx); err != nil {
-		log.Fatalf("数据库迁移失败: %v", err)
-	}
-	log.Println("数据库迁移完成")
-
-	// ── Milvus（RAG 向量存储）──
-	milvusAddr := env("MILVUS_ADDR", "localhost:19530")
-	milvusColl := env("MILVUS_COLLECTION", "lanmei_memories")
-	embeddingDim := envInt("EMBEDDING_DIM", 1024)
-
-	memStore, err := memory.NewMilvusMemoryStore(ctx, milvusAddr, milvusColl, embeddingDim)
-	if err != nil {
-		log.Printf("⚠ Milvus 连接失败，RAG 将不可用: %v", err)
-	}
-	if memStore != nil {
-		defer memStore.Close()
-		log.Println("Milvus 已连接")
-	}
+	defer inf.Close()
 
 	// ── AI 对话服务 ──
 	// TODO: 等用户指定 LLM 和 Embedding 提供方后，在此初始化具体实现
@@ -60,7 +42,7 @@ func main() {
 
 	var chatSvc *ai.ChatService
 	if llmClient != nil && embedder != nil {
-		chatSvc = ai.NewChatService(llmClient, embedder, memStore, db)
+		chatSvc = ai.NewChatService(llmClient, embedder, inf.MemStore, inf.DB)
 		log.Println("AI 对话服务就绪")
 	} else {
 		log.Println("⚠ LLM/Embedding 未配置，角色扮演不可用（命令系统正常）")
@@ -68,7 +50,7 @@ func main() {
 
 	// ── 命令系统 ──
 	cmdSys := command.New()
-	signinPlugin := signin.New(db)
+	signinPlugin := signin.New(inf.DB)
 	cmdSys.Register(command.Command{
 		Name:        "签到",
 		Description: "每日签到",
@@ -91,7 +73,7 @@ func main() {
 		AccessToken:  accessToken,
 		NickName:     nick,
 		SuperUsers:   superUsers,
-	}, cmdSys, chatSvc, db)
+	}, cmdSys, chatSvc, inf.DB, inf.StateStore, llmClient)
 
 	// 优雅退出
 	go func() {

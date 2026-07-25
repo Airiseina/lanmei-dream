@@ -10,6 +10,7 @@ import (
 	"github.com/zrurf/conduit"
 
 	"github.com/DaWesen/lanmei-dream/internal/ai"
+	"github.com/DaWesen/lanmei-dream/internal/ai/llm"
 	"github.com/DaWesen/lanmei-dream/internal/command"
 	"github.com/DaWesen/lanmei-dream/internal/database"
 )
@@ -29,15 +30,15 @@ type Bot struct {
 }
 
 // New 创建 Bot 实例，初始化 Conduit 引擎和行为树
-func New(cfg *BotConfig, cmdSys *command.System, chatSvc *ai.ChatService, db *database.DB) *Bot {
+// store 为 Conduit 状态存储（由 infra 包提供，RedisStore 用于生产，MemoryStore 用于测试）
+// llmClient 为 LLM 客户端，用于意图分析（nil 时降级为纯聊天路由）
+func New(cfg *BotConfig, cmdSys *command.System, chatSvc *ai.ChatService, db *database.DB, store conduit.StateStore, llmClient llm.LLMClient) *Bot {
 	nick := cfg.NickName
 	if nick == "" {
 		nick = "蓝妹"
 	}
 
 	// ── Conduit 引擎 ──
-	store := conduit.NewMemoryStore()
-
 	engine := conduit.New(store,
 		conduit.WithWorkers(4),
 		conduit.WithTimeout(10*time.Second),
@@ -46,18 +47,18 @@ func New(cfg *BotConfig, cmdSys *command.System, chatSvc *ai.ChatService, db *da
 
 	// ── 行为树 ──
 	bt := conduit.NewBehaviorTree(
-		// 优先级1：管理员命令
+		// 优先级1：管理员命令（显式 /admin）
 		conduit.NewSequence(
 			conduit.NewCondition(IsAdminCommand),
 			conduit.NewAction("pipeline.admin"),
 		),
-		// 优先级2：普通命令
+		// 优先级2：显式斜杠命令（/签到、/帮助 等）
 		conduit.NewSequence(
 			conduit.NewCondition(IsCommand),
 			conduit.NewAction("pipeline.command"),
 		),
-		// 优先级3：角色扮演（默认兜底）
-		conduit.NewAction("pipeline.chat"),
+		// 优先级3：意图分析（自然语言路由）
+		conduit.NewAction("pipeline.intent"),
 	)
 	engine.SetBehaviorTree(bt)
 
@@ -70,15 +71,10 @@ func New(cfg *BotConfig, cmdSys *command.System, chatSvc *ai.ChatService, db *da
 		&CommandPass{CmdSys: cmdSys},
 	))
 
-	if chatSvc != nil && db != nil {
-		engine.MustRegisterPipeline(conduit.NewPipeline("pipeline.chat",
-			&RoleplayPass{Chat: chatSvc, DB: db},
-		))
-	} else {
-		engine.MustRegisterPipeline(conduit.NewPipeline("pipeline.chat",
-			&FallbackPass{},
-		))
-	}
+	// 意图分析管线：LLM 判断 → command / chat / ignore
+	engine.MustRegisterPipeline(conduit.NewPipeline("pipeline.intent",
+		NewIntentPass(llmClient, cmdSys, chatSvc, db),
+	))
 
 	engine.MustRegisterPipeline(conduit.NewPipeline("pipeline.fallback",
 		&FallbackPass{},
