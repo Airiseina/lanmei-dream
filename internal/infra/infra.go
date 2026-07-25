@@ -6,16 +6,10 @@ import (
 	"log"
 
 	"github.com/DaWesen/lanmei-dream/internal/ai/memory"
+	"github.com/DaWesen/lanmei-dream/internal/config"
 	"github.com/DaWesen/lanmei-dream/internal/database"
 	"github.com/redis/go-redis/v9"
 )
-
-// Config 基础设施连接配置
-type Config struct {
-	DatabaseURL  string
-	RedisAddr    string
-	EmbeddingDim int
-}
 
 // Infra 持有所有基础设施连接，统一生命周期管理
 type Infra struct {
@@ -26,11 +20,11 @@ type Infra struct {
 }
 
 // Setup 初始化所有基础设施连接，返回可统一关闭的 Infra 实例
-func Setup(ctx context.Context, cfg *Config) (*Infra, error) {
+func Setup(ctx context.Context, dbCfg *config.DatabaseConfig, redisCfg *config.RedisConfig) (*Infra, error) {
 	inf := &Infra{}
 
 	// ── PostgreSQL（含 pgvector 扩展）──
-	db, err := database.Connect(ctx, cfg.DatabaseURL)
+	db, err := database.Connect(ctx, dbCfg.URL)
 	if err != nil {
 		return nil, fmt.Errorf("连接 PostgreSQL 失败: %w", err)
 	}
@@ -47,7 +41,7 @@ func Setup(ctx context.Context, cfg *Config) (*Infra, error) {
 	log.Println("pgvector 记忆存储就绪")
 
 	// ── Redis ──
-	rdb := redis.NewClient(&redis.Options{Addr: cfg.RedisAddr})
+	rdb := redis.NewClient(&redis.Options{Addr: redisCfg.Addr})
 	if err := rdb.Ping(ctx).Err(); err != nil {
 		return nil, fmt.Errorf("连接 Redis 失败: %w", err)
 	}
