@@ -1,7 +1,10 @@
 package plugin
 
 import (
+	"bytes"
 	"context"
+	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -68,11 +71,17 @@ func TestSigninWasm_EndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create Wasm manager: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(manager.inboxDir, "signin.wasm"), wasm, 0o600); err != nil {
-		t.Fatalf("copy built Wasm to inbox: %v", err)
-	}
+	manager.httpClient = &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode:    http.StatusOK,
+			Body:          io.NopCloser(bytes.NewReader(wasm)),
+			ContentLength: int64(len(wasm)),
+			Header:        make(http.Header),
+			Request:       request,
+		}, nil
+	})}
 
-	installation, err := manager.Install(ctx, actor, "signin.wasm")
+	installation, err := manager.Install(ctx, actor, "https://plugins.example/signin.wasm")
 	if err != nil {
 		t.Fatalf("install signin Wasm: %v", err)
 	}

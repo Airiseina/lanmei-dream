@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -21,9 +22,9 @@ import (
 // WasmManager 负责 Wasm 文件托管、安装记录和运行时生命周期。
 type WasmManager struct {
 	rootDir    string
-	inboxDir   string
 	limits     RuntimeLimits
 	runtime    *Runtime
+	httpClient *http.Client
 	authorizer Authorizer
 	store      *database.PluginInstallationStore
 	registry   *Registry
@@ -48,33 +49,30 @@ func NewWasmManager(cfg *config.PluginConfig, db *database.DB, registry *Registr
 	if err != nil {
 		return nil, fmt.Errorf("解析插件 root_dir: %w", err)
 	}
-	inbox := filepath.Join(root, "inbox")
-	if err := os.MkdirAll(inbox, 0o750); err != nil {
-		return nil, fmt.Errorf("创建插件 inbox: %w", err)
+	if err := os.MkdirAll(root, 0o750); err != nil {
+		return nil, fmt.Errorf("创建插件根目录: %w", err)
 	}
 	return &WasmManager{
 		rootDir:    root,
-		inboxDir:   inbox,
 		limits:     selectedLimits,
 		runtime:    NewRuntime(&selectedLimits),
+		httpClient: newRemoteWasmHTTPClient(),
 		authorizer: authorizer,
 		store:      database.NewPluginInstallationStore(db.Orm),
 		registry:   registry,
 	}, nil
 }
 
-// Install 从 inbox 安全导入 Wasm，只创建 Enabled=false 安装记录。
-func (m *WasmManager) Install(ctx context.Context, actor, filename string) (*model.PluginInstallation, error) {
+// Install 从公网 HTTPS 直链下载 Wasm，只创建 Enabled=false 安装记录。
+func (m *WasmManager) Install(ctx context.Context, actor, sourceURL string) (*model.PluginInstallation, error) {
 	if err := m.authorizer.Require(actor, ActionPluginInstall); err != nil {
 		return nil, fmt.Errorf("安装插件权限校验: %w", err)
 	}
-	source, err := m.safeInboxFile(filename)
+	source, err := downloadRemoteWasm(ctx, m.httpClient, sourceURL, m.rootDir, m.limits.MaxWasmFileSize)
 	if err != nil {
 		return nil, err
 	}
-	if err := validateWasmFile(source, m.limits.MaxWasmFileSize); err != nil {
-		return nil, err
-	}
+	defer os.Remove(source)
 	hash, err := hashFile(source)
 	if err != nil {
 		return nil, fmt.Errorf("计算 Wasm SHA-256: %w", err)
@@ -324,25 +322,6 @@ func (m *WasmManager) Delete(ctx context.Context, actor, installationID string) 
 		return fmt.Errorf("删除插件托管文件: %w", err)
 	}
 	return nil
-}
-
-func (m *WasmManager) safeInboxFile(filename string) (string, error) {
-	if filename == "" || filepath.Base(filename) != filename || filepath.IsAbs(filename) {
-		return "", fmt.Errorf("插件文件名无效")
-	}
-	path := filepath.Join(m.inboxDir, filename)
-	cleanRoot := filepath.Clean(m.inboxDir) + string(os.PathSeparator)
-	if !strings.HasPrefix(filepath.Clean(path), cleanRoot) {
-		return "", fmt.Errorf("插件路径逃逸 inbox")
-	}
-	info, err := os.Lstat(path)
-	if err != nil {
-		return "", fmt.Errorf("读取插件文件: %w", err)
-	}
-	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
-		return "", fmt.Errorf("插件文件必须是普通文件且不能是符号链接")
-	}
-	return path, nil
 }
 
 func (m *WasmManager) verifyManagedFile(installation *model.PluginInstallation) error {

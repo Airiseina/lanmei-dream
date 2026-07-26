@@ -74,6 +74,9 @@ func main() {
 	if err != nil {
 		log.Fatalf("Wasm 插件管理器初始化失败: %v", err)
 	}
+	if err := cmdSys.Register(pluginpkg.NewWasmInstallCommand(ctx, wasmManager)); err != nil {
+		log.Fatalf("注册插件管理命令失败: %v", err)
+	}
 	if err := wasmManager.LoadEnabled(ctx, pluginpkg.SystemPrincipal("startup")); err != nil {
 		log.Fatalf("恢复已启用 Wasm 插件失败: %v", err)
 	}
