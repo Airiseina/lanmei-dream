@@ -119,6 +119,28 @@ type StateSetResponse struct {
 	OK bool `json:"ok"`
 }
 
+//go:wasmimport lanmei:host/v1 state_get
+func stateGet(uint64) uint64
+
+//go:wasmimport lanmei:host/v1 state_set
+func stateSet(uint64) uint64
+
+func callStateGet(input []byte) []byte {
+	request := pdk.AllocateBytes(input)
+	defer request.Free()
+	response := pdk.FindMemory(stateGet(request.Offset()))
+	defer response.Free()
+	return response.ReadBytes()
+}
+
+func callStateSet(input []byte) []byte {
+	request := pdk.AllocateBytes(input)
+	defer request.Free()
+	response := pdk.FindMemory(stateSet(request.Offset()))
+	defer response.Free()
+	return response.ReadBytes()
+}
+
 const (
 	abiVersion   = "lanmei.plugin/v1"
 	roleBasic    = "role::plugin_command_basic"
@@ -143,7 +165,7 @@ func lanmeiPluginInfo() int32 {
 	}
 
 	data, _ := json.Marshal(resp)
-	pdk.OutputSet(data)
+	pdk.Output(data)
 	return 0
 }
 
@@ -157,7 +179,7 @@ func lanmeiInit() int32 {
 	// 首版无额外初始化逻辑
 	resp := InitResponse{OK: true}
 	data, _ := json.Marshal(resp)
-	pdk.OutputSet(data)
+	pdk.Output(data)
 	return 0
 }
 
@@ -174,7 +196,7 @@ func lanmeiHandle() int32 {
 	stateGetReq := StateGetRequest{Key: guestKey}
 	reqData, _ := json.Marshal(stateGetReq)
 
-	result := pdk.CallHostFunc("lanmei:host/v1", "state_get", reqData)
+	result := callStateGet(reqData)
 	var stateResp StateGetResponse
 	_ = json.Unmarshal(result, &stateResp)
 
@@ -187,7 +209,7 @@ func lanmeiHandle() int32 {
 			},
 		}
 		data, _ := json.Marshal(resp)
-		pdk.OutputSet(data)
+		pdk.Output(data)
 		return 0
 	}
 
@@ -198,7 +220,7 @@ func lanmeiHandle() int32 {
 		TTLMs: 0,
 	}
 	setData, _ := json.Marshal(stateSetReq)
-	_ = pdk.CallHostFunc("lanmei:host/v1", "state_set", setData)
+	_ = callStateSet(setData)
 
 	resp := HandleResponse{
 		Handled: true,
@@ -207,19 +229,19 @@ func lanmeiHandle() int32 {
 		},
 	}
 	data, _ := json.Marshal(resp)
-	pdk.OutputSet(data)
+	pdk.Output(data)
 	return 0
 }
 
 //export lanmei_start
 func lanmeiStart() int32 {
-	pdk.OutputSet([]byte(`{"ok":true}`))
+	pdk.Output([]byte(`{"ok":true}`))
 	return 0
 }
 
 //export lanmei_stop
 func lanmeiStop() int32 {
-	pdk.OutputSet([]byte(`{"ok":true}`))
+	pdk.Output([]byte(`{"ok":true}`))
 	return 0
 }
 
