@@ -35,13 +35,18 @@ func main() {
 	}
 	defer inf.Close()
 
-	// ── AI 对话服务 ──
-	// TODO: 等用户指定 LLM 和 Embedding 提供方后，在此初始化具体实现
+	authorizer, err := pluginpkg.NewService(inf.DB.Orm)
+	if err != nil {
+		log.Fatalf("插件授权服务初始化失败: %v", err)
+	}
+	if err := authorizer.InitBuiltinPolicies(cfg.Bot.ParseSuperUsers()); err != nil {
+		log.Fatalf("插件内置权限初始化失败: %v", err)
+	}
+
 	var (
 		llmClient llm.LLMClient
 		embedder  embedding.Embedder
 	)
-
 	var chatSvc *ai.ChatService
 	if llmClient != nil && embedder != nil {
 		chatSvc = ai.NewChatService(llmClient, embedder, inf.MemStore, inf.DB)
@@ -52,25 +57,36 @@ func main() {
 
 	// ── 命令系统 ──
 	cmdSys := command.New()
-	cmdSys.Register(command.Command{
+	if err := cmdSys.Register(command.Command{
 		Name:        "帮助",
 		Description: "显示可用命令",
 		Handler:     cmdSys.HelpHandler,
-	})
+	}); err != nil {
+		log.Fatalf("注册帮助命令失败: %v", err)
+	}
 
 	// ── 插件系统 ──
 	// 创建插件注册表（引擎在 bot.New 中创建，随后通过 SetEngine 注入）
 	pluginReg := pluginpkg.NewRegistry(nil, inf.StateStore, inf.DB, cmdSys)
-
-	// 注册业务插件
-	if err := pluginReg.Register(bizplugin.NewSigninPlugin(inf.DB)); err != nil {
-		log.Fatalf("注册签到插件失败: %v", err)
-	}
-
-	// ── ZeroBot + Conduit ──
 	b := bot.New(&cfg.Bot, cmdSys, chatSvc, inf.DB, inf.StateStore, llmClient, pluginReg)
 
-	// 初始化并启动所有插件（需要在引擎创建后调用）
+	wasmManager, err := pluginpkg.NewWasmManager(&cfg.Plugin, inf.DB, pluginReg, authorizer, nil)
+	if err != nil {
+		log.Fatalf("Wasm 插件管理器初始化失败: %v", err)
+	}
+	if err := cmdSys.Register(pluginpkg.NewWasmInstallCommand(ctx, wasmManager)); err != nil {
+		log.Fatalf("注册插件管理命令失败: %v", err)
+	}
+	if err := wasmManager.LoadEnabled(ctx, pluginpkg.SystemPrincipal("startup")); err != nil {
+		log.Fatalf("恢复已启用 Wasm 插件失败: %v", err)
+	}
+
+	if _, wasmSigninLoaded := pluginReg.Get("signin"); !wasmSigninLoaded {
+		if err := pluginReg.Register(bizplugin.NewSigninPlugin(inf.DB)); err != nil {
+			log.Fatalf("注册签到插件失败: %v", err)
+		}
+	}
+
 	if err := pluginReg.InitPlugins(ctx); err != nil {
 		log.Fatalf("插件初始化失败: %v", err)
 	}
@@ -78,7 +94,6 @@ func main() {
 		log.Fatalf("插件启动失败: %v", err)
 	}
 
-	// 优雅退出
 	go func() {
 		sigCh := make(chan os.Signal, 1)
 		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)

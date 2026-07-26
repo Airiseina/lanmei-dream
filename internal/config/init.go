@@ -62,6 +62,7 @@ func initFlags() {
 	pflag.String("bot.access_token", "", "Access Token")
 	pflag.String("bot.nickname", "", "机器人昵称")
 	pflag.String("bot.super_users", "", "超级用户ID列表（逗号分隔）")
+	pflag.String("plugin.root_dir", "", "Wasm 插件根目录")
 }
 
 func setDefaults(v *viper.Viper) {
@@ -78,5 +79,8 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("bot.ws_url", "ws://127.0.0.1:3001")
 	v.SetDefault("bot.access_token", "")
 	v.SetDefault("bot.nickname", "蓝妹")
+
+	// Plugin 默认值
+	v.SetDefault("plugin.root_dir", "./data/plugins")
 	v.SetDefault("bot.super_users", "")
 }

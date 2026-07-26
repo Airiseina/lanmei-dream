@@ -39,6 +39,9 @@ services:
     environment:
       LANMEI_DATABASE_URL: postgres://${POSTGRES_USER:-lanmei}:${POSTGRES_PASSWORD:-lanmei}@postgres:5432/${POSTGRES_DB:-lanmei}?sslmode=disable
       LANMEI_REDIS_ADDR: redis:6379
+      LANMEI_BOT_WS_URL: ${LANMEI_DOCKER_BOT_WS_URL:-ws://host.docker.internal:3001}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       postgres:
         condition: service_healthy

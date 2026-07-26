@@ -198,147 +198,177 @@ func (r *Registry) Unregister(pluginID string) error {
 // 生命周期
 // ============================================================
 
-// InitPlugins 初始化所有已注册的插件。
-// 按注册顺序依次调用每个插件的 OnInit，同时注册命令到 command.System。
-// 如果任一插件的 OnInit 失败，返回错误并停止后续初始化。
-func (r *Registry) InitPlugins(ctx context.Context) error {
-	// 快照待初始化的插件列表，然后释放锁。
-	// OnInit 可能调用 TrackPass/TrackPipeline，它们也需要获取 r.mu，
-	// 因此不能在持有锁的情况下调用 OnInit（否则死锁）。
-	r.mu.Lock()
-	var toInit []Plugin
-	for _, p := range r.plugins {
-		st := r.pluginState[p.Info().ID]
-		if st.state == stateRegistered {
-			toInit = append(toInit, p)
+// InitPlugin 初始化单个已注册插件。
+func (r *Registry) InitPlugin(ctx context.Context, pluginID string) error {
+	r.mu.RLock()
+	var p Plugin
+	for _, candidate := range r.plugins {
+		if candidate.Info().ID == pluginID {
+			p = candidate
+			break
 		}
 	}
+	st, exists := r.pluginState[pluginID]
+	r.mu.RUnlock()
+	if p == nil || !exists {
+		return fmt.Errorf("plugin: %q not found", pluginID)
+	}
+	if st.state != stateRegistered {
+		return nil
+	}
+
+	info := p.Info()
+	if err := p.OnInit(r.newPluginContextWith(ctx)); err != nil {
+		r.mu.RLock()
+		failedState := r.pluginState[pluginID]
+		r.mu.RUnlock()
+		failedState.subtreeID = info.SubtreeID
+		r.cleanupResources(pluginID, failedState)
+		return fmt.Errorf("plugin %q OnInit failed: %w", pluginID, err)
+	}
+
+	cmdNames := make([]string, 0, len(info.Commands))
+	for _, cmd := range info.Commands {
+		if err := r.cmdSys.Register(command.Command{
+			Name:        cmd.Name,
+			Description: cmd.Description,
+			Handler:     r.makeCommandHandler(p, cmd),
+		}); err != nil {
+			r.mu.RLock()
+			failedState := r.pluginState[pluginID]
+			r.mu.RUnlock()
+			failedState.subtreeID = info.SubtreeID
+			failedState.commandNames = cmdNames
+			r.cleanupResources(pluginID, failedState)
+			return fmt.Errorf("plugin %q register command %q failed: %w", pluginID, cmd.Name, err)
+		}
+		cmdNames = append(cmdNames, cmd.Name)
+	}
+
+	r.mu.Lock()
+	st = r.pluginState[pluginID]
+	st.state = stateInitialized
+	st.subtreeID = info.SubtreeID
+	st.commandNames = cmdNames
+	r.pluginState[pluginID] = st
 	r.mu.Unlock()
 
-	pCtx := r.newPluginContextWith(ctx)
-
-	for _, p := range toInit {
-		info := p.Info()
-
-		// 调用插件 OnInit（不在锁内，避免 TrackPass/TrackPipeline 死锁）
-		if err := p.OnInit(pCtx); err != nil {
-			return fmt.Errorf("plugin %q OnInit failed: %w", info.ID, err)
-		}
-
-		// 注册命令到 command.System
-		var cmdNames []string
-		for _, cmd := range info.Commands {
-			r.cmdSys.Register(command.Command{
-				Name:        cmd.Name,
-				Description: cmd.Description,
-				Handler:     r.makeCommandHandler(p, cmd),
-			})
-			cmdNames = append(cmdNames, cmd.Name)
-		}
-
-		// 确定子树 ID（仅当插件显式声明时才使用，留空表示不注册子树）
-		subID := info.SubtreeID
-
-		// 更新状态（重新获取锁，保留 TrackPass/TrackPipeline 写入的跟踪数据）
-		r.mu.Lock()
-		st := r.pluginState[info.ID]
-		r.pluginState[info.ID] = pluginState{
-			state:        stateInitialized,
-			subtreeID:    subID,
-			passIDs:      st.passIDs,
-			pipelineIDs:  st.pipelineIDs,
-			commandNames: cmdNames,
-		}
-		r.mu.Unlock()
-
-		r.logger.Info("plugin initialized", "id", info.ID, "commands", cmdNames)
-	}
-
-	// 插件初始化后，行为树需要重建以包含新注册的子树
-	// 在锁外调用，避免 rebuildBT → SubtreeRefs → r.mu.RLock 死锁
+	r.logger.Info("plugin initialized", "id", pluginID, "commands", cmdNames)
 	if r.rebuildBT != nil {
 		r.rebuildBT()
 	}
-
 	return nil
 }
 
-// StartPlugins 启动所有已初始化的插件。
-// 按注册顺序依次调用每个插件的 OnStart。
-func (r *Registry) StartPlugins(ctx context.Context) error {
-	// 快照待启动的插件列表，然后释放锁。
-	// OnStart 可能间接访问 Registry 方法（如查询其他插件状态），需要获取 r.mu，
-	// 因此不能在持有锁的情况下调用 OnStart（否则死锁）。
+// StartPlugin 启动单个已初始化插件。
+func (r *Registry) StartPlugin(ctx context.Context, pluginID string) error {
+	r.mu.RLock()
+	var p Plugin
+	for _, candidate := range r.plugins {
+		if candidate.Info().ID == pluginID {
+			p = candidate
+			break
+		}
+	}
+	st, exists := r.pluginState[pluginID]
+	r.mu.RUnlock()
+	if p == nil || !exists {
+		return fmt.Errorf("plugin: %q not found", pluginID)
+	}
+	if st.state == stateStarted {
+		return nil
+	}
+	if st.state != stateInitialized {
+		return fmt.Errorf("plugin %q 未初始化", pluginID)
+	}
+	if err := p.OnStart(r.newPluginContextWith(ctx)); err != nil {
+		return fmt.Errorf("plugin %q OnStart failed: %w", pluginID, err)
+	}
 	r.mu.Lock()
-	var toStart []Plugin
+	if current, ok := r.pluginState[pluginID]; ok && current.state == stateInitialized {
+		current.state = stateStarted
+		r.pluginState[pluginID] = current
+	}
+	r.mu.Unlock()
+	r.logger.Info("plugin started", "id", pluginID)
+	return nil
+}
+
+// StopPlugin 停止单个已启动插件，不注销资源。
+func (r *Registry) StopPlugin(ctx context.Context, pluginID string) error {
+	r.mu.RLock()
+	var p Plugin
+	for _, candidate := range r.plugins {
+		if candidate.Info().ID == pluginID {
+			p = candidate
+			break
+		}
+	}
+	st, exists := r.pluginState[pluginID]
+	r.mu.RUnlock()
+	if p == nil || !exists {
+		return fmt.Errorf("plugin: %q not found", pluginID)
+	}
+	if st.state != stateStarted {
+		return nil
+	}
+	if err := p.OnStop(r.newPluginContextWith(ctx)); err != nil {
+		return fmt.Errorf("plugin %q OnStop failed: %w", pluginID, err)
+	}
+	r.mu.Lock()
+	if current, ok := r.pluginState[pluginID]; ok && current.state == stateStarted {
+		current.state = stateStopped
+		r.pluginState[pluginID] = current
+	}
+	r.mu.Unlock()
+	r.logger.Info("plugin stopped", "id", pluginID)
+	return nil
+}
+
+// InitPlugins 初始化所有已注册插件。
+func (r *Registry) InitPlugins(ctx context.Context) error {
+	r.mu.RLock()
+	ids := make([]string, 0, len(r.plugins))
 	for _, p := range r.plugins {
-		st := r.pluginState[p.Info().ID]
-		if st.state == stateInitialized {
-			toStart = append(toStart, p)
+		ids = append(ids, p.Info().ID)
+	}
+	r.mu.RUnlock()
+	for _, id := range ids {
+		if err := r.InitPlugin(ctx, id); err != nil {
+			return err
 		}
 	}
-	r.mu.Unlock()
-
-	pCtx := r.newPluginContextWith(ctx)
-
-	for _, p := range toStart {
-		info := p.Info()
-
-		if err := p.OnStart(pCtx); err != nil {
-			return fmt.Errorf("plugin %q OnStart failed: %w", info.ID, err)
-		}
-
-		// 防御性检查：确保插件在 OnStart 期间未被 Unregister
-		r.mu.Lock()
-		st, exists := r.pluginState[info.ID]
-		if exists && st.state == stateInitialized {
-			st.state = stateStarted
-			r.pluginState[info.ID] = st
-		}
-		r.mu.Unlock()
-
-		r.logger.Info("plugin started", "id", info.ID)
-	}
-
 	return nil
 }
 
-// StopPlugins 停止所有已启动的插件。
-// 按注册的逆序依次调用每个插件的 OnStop，确保依赖关系正确释放。
-func (r *Registry) StopPlugins(ctx context.Context) {
-	// 快照待停止的插件列表（逆序），然后释放锁。
-	// OnStop 可能间接访问 Registry 方法，需要获取 r.mu，
-	// 因此不能在持有锁的情况下调用 OnStop（否则死锁）。
-	r.mu.Lock()
-	var toStop []Plugin
-	for i := len(r.plugins) - 1; i >= 0; i-- {
-		p := r.plugins[i]
-		st := r.pluginState[p.Info().ID]
-		if st.state == stateStarted {
-			toStop = append(toStop, p)
+// StartPlugins 启动所有已初始化插件。
+func (r *Registry) StartPlugins(ctx context.Context) error {
+	r.mu.RLock()
+	ids := make([]string, 0, len(r.plugins))
+	for _, p := range r.plugins {
+		ids = append(ids, p.Info().ID)
+	}
+	r.mu.RUnlock()
+	for _, id := range ids {
+		if err := r.StartPlugin(ctx, id); err != nil {
+			return err
 		}
 	}
-	r.mu.Unlock()
+	return nil
+}
 
-	pCtx := r.newPluginContextWith(ctx)
-
-	for _, p := range toStop {
-		info := p.Info()
-
-		if err := p.OnStop(pCtx); err != nil {
-			r.logger.Error("plugin OnStop failed", "id", info.ID, "error", err)
+// StopPlugins 按注册逆序停止所有已启动插件。
+func (r *Registry) StopPlugins(ctx context.Context) {
+	r.mu.RLock()
+	ids := make([]string, 0, len(r.plugins))
+	for i := len(r.plugins) - 1; i >= 0; i-- {
+		ids = append(ids, r.plugins[i].Info().ID)
+	}
+	r.mu.RUnlock()
+	for _, id := range ids {
+		if err := r.StopPlugin(ctx, id); err != nil {
+			r.logger.Error("plugin OnStop failed", "id", id, "error", err)
 		}
-
-		// 防御性检查：确保插件在 OnStop 期间未被 Unregister
-		r.mu.Lock()
-		st, exists := r.pluginState[info.ID]
-		if exists && st.state == stateStarted {
-			st.state = stateStopped
-			r.pluginState[info.ID] = st
-		}
-		r.mu.Unlock()
-
-		r.logger.Info("plugin stopped", "id", info.ID)
 	}
 }
 
@@ -439,22 +469,23 @@ func (r *Registry) newPluginContextWith(ctx context.Context) *PluginContext {
 }
 
 // makeCommandHandler 将插件的命令处理包装为 command.Handler。
-// 当命令被触发时，构造 InputMessage 并通过引擎处理。
 func (r *Registry) makeCommandHandler(p Plugin, cmd CommandDef) func(ctx *command.Context) error {
 	return func(cmdCtx *command.Context) error {
-		// 通过 Conduit 引擎处理插件命令
-		// 将命令转换为 InputMessage，引擎会根据行为树路由到对应管线
 		pluginID := p.Info().ID
+		extra := map[string]any{
+			"plugin_id":    pluginID,
+			"command_name": cmd.Name,
+			SkipCommandKey: true,
+		}
+		if wasmPlugin, ok := p.(*WasmPlugin); ok {
+			extra["installation_id"] = wasmPlugin.InstallationID()
+		}
 		input := &conduit.InputMessage{
 			UserID:  fmt.Sprintf("%d", cmdCtx.UserID),
 			GroupID: cmdCtx.GroupID,
-			Content: "/" + cmd.Name,
+			Content: cmdCtx.Message,
 			IsGroup: cmdCtx.IsGroup,
-			Extra: map[string]any{
-				"plugin_id":    pluginID,
-				"command_name": cmd.Name,
-				SkipCommandKey: true,
-			},
+			Extra:   extra,
 		}
 		result, err := r.engine.Process(input)
 		if err != nil {
@@ -467,38 +498,29 @@ func (r *Registry) makeCommandHandler(p Plugin, cmd CommandDef) func(ctx *comman
 	}
 }
 
-// cleanupResources 清理插件注册的所有资源（Pass、Pipeline、Subtree、Command）。
-// 清理顺序：Subtree → Pipeline → Pass，确保引用关系正确释放。
+// cleanupResources 清理插件注册的所有资源。
 func (r *Registry) cleanupResources(pluginID string, st pluginState) {
-	// 注销子树（停止路由到该插件的管线）
 	if st.subtreeID != "" {
 		if err := r.engine.UnregisterSubtree(st.subtreeID); err != nil {
 			r.logger.Warn("failed to unregister subtree", "id", st.subtreeID, "error", err)
 		}
 	}
-
-	// 注销 Pipeline（Pipeline 引用 Pass，应先于 Pass 注销）
 	for _, id := range st.pipelineIDs {
 		if err := r.engine.UnregisterPipeline(id); err != nil {
 			r.logger.Warn("failed to unregister pipeline", "id", id, "error", err)
 		}
 	}
-
-	// 注销 Pass
 	for _, id := range st.passIDs {
 		if err := r.engine.UnregisterPass(id); err != nil {
 			r.logger.Warn("failed to unregister pass", "id", id, "error", err)
 		}
 	}
-
-	// 注销 Command
 	for _, name := range st.commandNames {
 		r.cmdSys.Unregister(name)
 	}
 }
 
-// TrackPass 记录插件注册的 Pass ID，卸载时自动清理。
-// 插件在 OnInit 中调用 engine.RegisterPass 后，应调用此方法记录 Pass ID。
+// TrackPass 记录插件注册的 Pass ID。
 func (r *Registry) TrackPass(pluginID, passID string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -507,7 +529,7 @@ func (r *Registry) TrackPass(pluginID, passID string) {
 	r.pluginState[pluginID] = st
 }
 
-// TrackPipeline 记录插件注册的 Pipeline ID，卸载时自动清理。
+// TrackPipeline 记录插件注册的 Pipeline ID。
 func (r *Registry) TrackPipeline(pluginID, pipelineID string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()

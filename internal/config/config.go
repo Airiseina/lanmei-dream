@@ -11,6 +11,12 @@ type Config struct {
 	Redis    RedisConfig    `mapstructure:"redis"`
 	AI       AIConfig       `mapstructure:"ai"`
 	Bot      BotConfig      `mapstructure:"bot"`
+	Plugin   PluginConfig   `mapstructure:"plugin"`
+}
+
+// PluginConfig 插件系统配置
+type PluginConfig struct {
+	RootDir string `mapstructure:"root_dir"`
 }
 
 // DatabaseConfig 数据库配置

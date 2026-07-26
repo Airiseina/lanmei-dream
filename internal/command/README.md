@@ -59,3 +59,13 @@ cmdSys.Register(command.Command{
     Handler: cmdSys.HelpHandler,  // 内置
 })
 ```
+
+## 远程安装 Wasm 插件
+
+仅 `bot_owner` 可执行：
+
+```text
+/插件 安装 https://github.com/<owner>/<repo>/releases/download/<tag>/plugin.wasm
+```
+
+用户必须先将编译后的 Wasm 二进制上传到 GitHub Raw、GitHub Release 等提供公网 HTTPS 直链的平台。安装器拒绝 HTTP、本机或内网地址、非 `200 OK` 响应、HTML 页面以及超过运行时大小限制的内容；下载完成后插件保持未加载状态。

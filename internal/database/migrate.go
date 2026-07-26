@@ -23,13 +23,15 @@ func (db *DB) Migrate(ctx context.Context) error {
 		&model.EpisodeSummary{},
 		&model.TopicCluster{},
 		&model.MemoryVector{},
+		&model.PluginInstallation{},
 	); err != nil {
 		return fmt.Errorf("migrate: %w", err)
 	}
 
 	// 创建 HNSW 索引（幂等，已存在则跳过）
 	db.Orm.WithContext(ctx).Exec(
-		"CREATE INDEX IF NOT EXISTS idx_memory_vectors_embedding ON memory_vectors USING hnsw (embedding vector_cosine_ops)")
+		"CREATE INDEX IF NOT EXISTS idx_memory_vectors_embedding ON memory_vectors USING hnsw (embedding vector_cosine_ops)",
+	)
 	log.Println("HNSW 向量索引已就绪")
 
 	return nil

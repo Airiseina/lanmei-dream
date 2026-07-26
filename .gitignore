@@ -16,3 +16,6 @@
 # 构建产物
 /lanmei
 /dist/
+
+# Wasm 插件托管文件
+/data/plugins/
