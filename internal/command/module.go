@@ -9,11 +9,12 @@ import (
 
 // Context 是命令处理函数的上下文。
 type Context struct {
-	UserID  int64
-	GroupID string
-	IsGroup bool
-	Message string
-	Reply   func(string)
+	Platform       string // 平台标识（qq/wechat/telegram/...）
+	PlatformUserID string // 平台用户 ID
+	GroupID        string
+	IsGroup        bool
+	Message        string
+	Reply          func(string)
 }
 
 // Command 定义一个斜杠命令。

@@ -8,14 +8,14 @@ import (
 	"gorm.io/gorm/clause"
 )
 
-// GetOrCreateUser 按 QQ 号查找或创建用户（使用 GORM clause.OnConflict 实现幂等 upsert）
-func (db *DB) GetOrCreateUser(ctx context.Context, qqID int64, nickname string) (*model.User, error) {
+// GetOrCreateUser 按 (platform, platform_user_id) 查找或创建用户（使用 GORM clause.OnConflict 实现幂等 upsert）
+func (db *DB) GetOrCreateUser(ctx context.Context, platform, platformUserID, nickname string) (*model.User, error) {
 	var u model.User
 	result := db.Orm.WithContext(ctx).
-		Where(model.User{QQID: qqID}).
+		Where(model.User{Platform: platform, PlatformUserID: platformUserID}).
 		Attrs(model.User{Nickname: nickname}).
 		Clauses(clause.OnConflict{
-			Columns:   []clause.Column{{Name: "qq_id"}},
+			Columns:   []clause.Column{{Name: "platform"}, {Name: "platform_user_id"}},
 			DoUpdates: clause.AssignmentColumns([]string{"nickname", "updated_at"}),
 		}).
 		FirstOrCreate(&u)

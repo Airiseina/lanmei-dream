@@ -1,8 +1,8 @@
-# bot 包 —— ZeroBot 消息处理层
+# bot 包 —— 消息处理层
 
 ## 职责
 
-负责 ZeroBot 的初始化和消息分发，使用 Conduit 引擎（行为树 + 管线）路由消息。
+负责接收网关标准化消息并分发，使用 Conduit 引擎（行为树 + 管线）路由消息，通过网关回复。
 
 ## 核心设计
 
@@ -11,7 +11,7 @@
 所有用户消息通过 Conduit 引擎处理，行为树按优先级路由：
 
 ```
-ZeroBot 收到消息 → engine.Process(InputMessage)
+Gateway 收到 NormalizedMessage → engine.Process(InputMessage)
         │
         ▼
    行为树决策
@@ -44,6 +44,7 @@ ZeroBot 收到消息 → engine.Process(InputMessage)
 ### 关键依赖
 
 - `github.com/zrurf/conduit` — 引擎、行为树、管线
+- `internal/gateway` — 网关（反向 WS 服务端 + OneBot 协议适配）
 - `internal/ai` — ChatService、IntentAnalyzer
 - `internal/command` — 命令系统
 - `internal/database` — 数据库访问

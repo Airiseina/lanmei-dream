@@ -86,10 +86,11 @@ func TestWasmCommandPass_ConduitIntegration(t *testing.T) {
 
 	var replies []string
 	cmdCtx := &command.Context{
-		UserID:  10001,
-		GroupID: "g1",
-		IsGroup: true,
-		Reply:   func(s string) { replies = append(replies, s) },
+		Platform:       "qq",
+		PlatformUserID: "10001",
+		GroupID:        "g1",
+		IsGroup:        true,
+		Reply:          func(s string) { replies = append(replies, s) },
 	}
 	if err := cmdSys.Process("/fakecmd", cmdCtx); err != nil {
 		t.Fatalf("Process error: %v", err)
@@ -128,10 +129,10 @@ func (m *mockAuthorizer) RolesFor(_ string) ([]string, error) {
 func (m *mockAuthorizer) ActionsFor(_ string) ([][]string, error) {
 	return [][]string{{RolePluginCommandBasic, ActionCommandHandle}}, nil
 }
-func (m *mockAuthorizer) ListActions() []string               { return allActions() }
-func (m *mockAuthorizer) ListRoles() []string                 { return []string{RolePluginCommandBasic} }
-func (m *mockAuthorizer) InitBuiltinPolicies(_ []int64) error { return nil }
-func (m *mockAuthorizer) IsKnownRole(role string) bool        { return role == RolePluginCommandBasic }
-func (m *mockAuthorizer) IsKnownAction(_ string) bool         { return true }
+func (m *mockAuthorizer) ListActions() []string                { return allActions() }
+func (m *mockAuthorizer) ListRoles() []string                  { return []string{RolePluginCommandBasic} }
+func (m *mockAuthorizer) InitBuiltinPolicies(_ []string) error { return nil }
+func (m *mockAuthorizer) IsKnownRole(role string) bool         { return role == RolePluginCommandBasic }
+func (m *mockAuthorizer) IsKnownAction(_ string) bool          { return true }
 
 var _ Authorizer = (*mockAuthorizer)(nil)

@@ -77,9 +77,9 @@ func (a *fakeAuthz) ActionsFor(principal string) ([][]string, error) {
 	}
 	return result, nil
 }
-func (a *fakeAuthz) ListActions() []string               { return allActions() }
-func (a *fakeAuthz) ListRoles() []string                 { return []string{RolePluginCommandBasic, RoleBotOwner} }
-func (a *fakeAuthz) InitBuiltinPolicies(_ []int64) error { return nil }
+func (a *fakeAuthz) ListActions() []string                { return allActions() }
+func (a *fakeAuthz) ListRoles() []string                  { return []string{RolePluginCommandBasic, RoleBotOwner} }
+func (a *fakeAuthz) InitBuiltinPolicies(_ []string) error { return nil }
 func (a *fakeAuthz) IsKnownRole(role string) bool {
 	return role == RolePluginCommandBasic || role == RoleBotOwner
 }

@@ -31,9 +31,10 @@ func TestWasmInstallCommandRequiresDirectURL(t *testing.T) {
 	var reply string
 
 	if err := cmd.Handler(&command.Context{
-		UserID:  10001,
-		Message: "/插件 安装",
-		Reply:   func(message string) { reply = message },
+		Platform:       "qq",
+		PlatformUserID: "10001",
+		Message:        "/插件 安装",
+		Reply:          func(message string) { reply = message },
 	}); err != nil {
 		t.Fatalf("handle usage: %v", err)
 	}
@@ -55,16 +56,17 @@ func TestWasmInstallCommandInstallsRemoteBinary(t *testing.T) {
 	var reply string
 
 	if err := cmd.Handler(&command.Context{
-		UserID:  10001,
-		Message: "/插件 安装 https://github.com/example/project/releases/download/v1/signin.wasm",
-		Reply:   func(message string) { reply = message },
+		Platform:       "qq",
+		PlatformUserID: "10001",
+		Message:        "/插件 安装 https://github.com/example/project/releases/download/v1/signin.wasm",
+		Reply:          func(message string) { reply = message },
 	}); err != nil {
 		t.Fatalf("install remote Wasm: %v", err)
 	}
 	if installer.calls != 1 {
 		t.Fatalf("Install called %d times, want 1", installer.calls)
 	}
-	if installer.actor != UserPrincipal(10001) {
+	if installer.actor != UserPrincipal("qq", "10001") {
 		t.Fatalf("actor = %q", installer.actor)
 	}
 	if installer.sourceURL != "https://github.com/example/project/releases/download/v1/signin.wasm" {
@@ -81,9 +83,10 @@ func TestWasmInstallCommandReportsInstallFailure(t *testing.T) {
 	var reply string
 
 	if err := cmd.Handler(&command.Context{
-		UserID:  10002,
-		Message: "/插件 安装 https://plugins.example/plugin.wasm",
-		Reply:   func(message string) { reply = message },
+		Platform:       "qq",
+		PlatformUserID: "10002",
+		Message:        "/插件 安装 https://plugins.example/plugin.wasm",
+		Reply:          func(message string) { reply = message },
 	}); err != nil {
 		t.Fatalf("handle failed installation: %v", err)
 	}

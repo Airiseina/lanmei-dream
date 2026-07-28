@@ -481,7 +481,7 @@ func (r *Registry) makeCommandHandler(p Plugin, cmd CommandDef) func(ctx *comman
 			extra["installation_id"] = wasmPlugin.InstallationID()
 		}
 		input := &conduit.InputMessage{
-			UserID:  fmt.Sprintf("%d", cmdCtx.UserID),
+			UserID:  cmdCtx.PlatformUserID,
 			GroupID: cmdCtx.GroupID,
 			Content: cmdCtx.Message,
 			IsGroup: cmdCtx.IsGroup,

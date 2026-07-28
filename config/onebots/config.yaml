@@ -1,0 +1,30 @@
+port: 6727
+log_level: info
+timeout: 30
+general:
+  onebot.v11:
+    use_http: false
+    use_ws: false
+    use_ws_reverse: true
+    ws_reverse_url: ws://lanmei:8080/onebot/v11
+    access_token: ''
+    enable_heartbeat: true
+    heartbeat_interval: 15000
+    post_message_format: array
+  onebot.v12:
+    use_http: false
+    use_ws: false
+    use_ws_reverse: true
+    ws_reverse_url: ws://lanmei:8080/onebot/v12
+    access_token: ''
+    heartbeat_interval: 15000
+  satori.v1:
+    use_http: false
+    use_ws: false
+    token: ''
+    platform: unknown
+  milky.v1:
+    use_http: false
+    use_ws: false
+username: lanmei_onebots
+password: lanmei_pwd

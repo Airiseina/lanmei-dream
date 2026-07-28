@@ -151,7 +151,11 @@ func (pass *signinExecutePass) Execute(ctx *conduit.MessageContext) error {
 
 	// 确保用户存在
 	if pass.db != nil {
-		_, _ = pass.db.GetOrCreateUser(ctx.Ctx, parseUserID64(ctx.UserID), "")
+		platform, _ := conduit.Get[string](ctx, "platform")
+		if platform == "" {
+			platform = "unknown"
+		}
+		_, _ = pass.db.GetOrCreateUser(ctx.Ctx, platform, ctx.UserID, "")
 	}
 
 	// 从 StateStore 读取签到记录
@@ -236,6 +240,7 @@ func (pass *signinReplyPass) Execute(ctx *conduit.MessageContext) error {
 // ============================================================
 
 // parseUserID64 将字符串用户 ID 解析为 int64
+// 已废弃，仅用于向后兼容
 func parseUserID64(s string) int64 {
 	var id int64
 	fmt.Sscanf(s, "%d", &id)

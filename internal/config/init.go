@@ -32,7 +32,7 @@ func Init() (*Config, error) {
 		}
 	}
 
-	// 环境变量：LANMEI_DATABASE_URL、LANMEI_BOT_WS_URL 等
+	// 环境变量：LANMEI_DATABASE_URL、LANMEI_BOT_GATEWAY_LISTEN_ADDR 等
 	v.SetEnvPrefix("LANMEI")
 	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
 	v.AutomaticEnv()
@@ -58,10 +58,10 @@ func initFlags() {
 	pflag.String("database.url", "", "PostgreSQL 连接字符串")
 	pflag.String("redis.addr", "", "Redis 地址")
 	pflag.Int("ai.embedding_dim", 0, "向量维度")
-	pflag.String("bot.ws_url", "", "WebSocket 地址")
-	pflag.String("bot.access_token", "", "Access Token")
+	pflag.String("bot.gateway.listen_addr", "", "网关监听地址")
+	pflag.String("bot.gateway.access_token", "", "网关鉴权 token")
 	pflag.String("bot.nickname", "", "机器人昵称")
-	pflag.String("bot.super_users", "", "超级用户ID列表（逗号分隔）")
+	pflag.String("bot.super_users", "", "超级用户列表（格式：platform:userID,逗号分隔）")
 	pflag.String("plugin.root_dir", "", "Wasm 插件根目录")
 }
 
@@ -76,11 +76,11 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("ai.embedding_dim", 1024)
 
 	// Bot 默认值
-	v.SetDefault("bot.ws_url", "ws://127.0.0.1:3001")
-	v.SetDefault("bot.access_token", "")
+	v.SetDefault("bot.gateway.listen_addr", "0.0.0.0:8080")
+	v.SetDefault("bot.gateway.access_token", "")
 	v.SetDefault("bot.nickname", "蓝妹")
+	v.SetDefault("bot.super_users", "")
 
 	// Plugin 默认值
 	v.SetDefault("plugin.root_dir", "./data/plugins")
-	v.SetDefault("bot.super_users", "")
 }

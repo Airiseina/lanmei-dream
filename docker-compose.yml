@@ -39,14 +39,50 @@ services:
     environment:
       LANMEI_DATABASE_URL: postgres://${POSTGRES_USER:-lanmei}:${POSTGRES_PASSWORD:-lanmei}@postgres:5432/${POSTGRES_DB:-lanmei}?sslmode=disable
       LANMEI_REDIS_ADDR: redis:6379
-      LANMEI_BOT_WS_URL: ${LANMEI_DOCKER_BOT_WS_URL:-ws://host.docker.internal:3001}
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+      LANMEI_BOT_GATEWAY_LISTEN_ADDR: "0.0.0.0:8080"
+      LANMEI_BOT_GATEWAY_ACCESS_TOKEN: ${LANMEI_BOT_GATEWAY_ACCESS_TOKEN:-}
+    ports:
+      - "${LANMEI_PORT:-8080}:8080"
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
 
+  # ── Onebots 网关（统一 IM 平台适配，通过反向 WS 转发事件到蓝妹）──
+  onebots:
+    image: ghcr.io/lc-cn/onebots:master
+    container_name: onebots
+    restart: unless-stopped
+    volumes:
+      # 运行时数据（数据库、日志、审计，可写）
+      - onebots:/data
+      # 版本控制的配置文件（挂载在目录之上，覆盖 data 中的同名文件）
+      - ./config/onebots/config.yaml:/data/config.yaml
+    depends_on:
+      lanmei:
+        condition: service_started
+
+  # ── NapCat（NTQQ 平台 Provider，OneBot 11 方言，通过反向 WS 连接蓝妹）──
+  napcat:
+    image: mlikiowa/napcat-docker:v4.18.13
+    container_name: napcat
+    restart: unless-stopped
+    environment:
+      NAPCAT_GID: ${NAPCAT_QQ_NUMBER:-}
+      NAPCAT_UID: ${NAPCAT_QQ_NUMBER:-}
+    volumes:
+      # 运行时数据（账号配置、WebUI 配置等，可写）
+      - napcat:/app/napcat/config
+      # 版本控制的配置文件（挂载在目录之上，覆盖 data 中的同名文件）
+      - ./config/napcat/onebot11.json:/app/napcat/config/onebot11.json:ro
+      - ./config/napcat/napcat.json:/app/napcat/config/napcat.json:ro
+      - ./config/napcat/napcat_protocol.json:/app/napcat/config/napcat_protocol.json:ro
+    depends_on:
+      lanmei:
+        condition: service_started
+
 volumes:
   pgdata:
+  onebots:
+  napcat:
