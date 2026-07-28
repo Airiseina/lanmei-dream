@@ -30,7 +30,18 @@ type RedisConfig struct {
 
 // AIConfig AI 相关配置
 type AIConfig struct {
-	EmbeddingDim int `mapstructure:"embedding_dim"`
+	// LLM 配置（OpenAI 兼容 API）
+	LLMBaseURL    string  `mapstructure:"llm_base_url"`
+	LLMAPIKey     string  `mapstructure:"llm_api_key"`
+	LLMModel      string  `mapstructure:"llm_model"`
+	LLMMaxTokens  int     `mapstructure:"llm_max_tokens"`
+	LLMTemperature float64 `mapstructure:"llm_temperature"`
+
+	// Embedding 配置（OpenAI 兼容 API）
+	EmbeddingBaseURL string `mapstructure:"embedding_base_url"`
+	EmbeddingAPIKey  string `mapstructure:"embedding_api_key"`
+	EmbeddingModel   string `mapstructure:"embedding_model"`
+	EmbeddingDim     int    `mapstructure:"embedding_dim"`
 }
 
 // BotConfig 机器人配置

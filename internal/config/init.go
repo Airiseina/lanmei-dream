@@ -57,7 +57,18 @@ func initFlags() {
 	pflag.String("config", "./config.toml", "配置文件路径")
 	pflag.String("database.url", "", "PostgreSQL 连接字符串")
 	pflag.String("redis.addr", "", "Redis 地址")
+	// LLM
+	pflag.String("ai.llm_base_url", "", "LLM API 基础地址（OpenAI 兼容）")
+	pflag.String("ai.llm_api_key", "", "LLM API 密钥")
+	pflag.String("ai.llm_model", "", "LLM 模型名")
+	pflag.Int("ai.llm_max_tokens", 0, "LLM 单次回复最大 token 数")
+	pflag.Float64("ai.llm_temperature", 0, "LLM 生成温度")
+	// Embedding
+	pflag.String("ai.embedding_base_url", "", "Embedding API 基础地址")
+	pflag.String("ai.embedding_api_key", "", "Embedding API 密钥")
+	pflag.String("ai.embedding_model", "", "Embedding 模型名")
 	pflag.Int("ai.embedding_dim", 0, "向量维度")
+	// Bot
 	pflag.String("bot.gateway.listen_addr", "", "网关监听地址")
 	pflag.String("bot.gateway.access_token", "", "网关鉴权 token")
 	pflag.String("bot.nickname", "", "机器人昵称")
@@ -73,7 +84,13 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("redis.addr", "localhost:6379")
 
 	// AI 默认值
-	v.SetDefault("ai.embedding_dim", 1024)
+	v.SetDefault("ai.llm_base_url", "https://api.openai.com/v1")
+	v.SetDefault("ai.llm_model", "gpt-4o-mini")
+	v.SetDefault("ai.llm_max_tokens", 4096)
+	v.SetDefault("ai.llm_temperature", 0.7)
+	v.SetDefault("ai.embedding_base_url", "https://api.openai.com/v1")
+	v.SetDefault("ai.embedding_model", "text-embedding-3-small")
+	v.SetDefault("ai.embedding_dim", 1536)
 
 	// Bot 默认值
 	v.SetDefault("bot.gateway.listen_addr", "0.0.0.0:8080")
