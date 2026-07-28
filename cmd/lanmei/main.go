@@ -49,12 +49,46 @@ func main() {
 		llmClient llm.LLMClient
 		embedder  embedding.Embedder
 	)
+
+	// ── LLM 客户端（eino，支持 OpenAI/DeepSeek/Qwen/Moonshot/Ark/Ollama）──
+	if cfg.AI.LLMAPIKey != "" {
+		einoLLM, err := llm.NewEinoClient(ctx, &llm.EinoOptions{
+			BaseURL:     cfg.AI.LLMBaseURL,
+			APIKey:      cfg.AI.LLMAPIKey,
+			Model:       cfg.AI.LLMModel,
+			MaxTokens:   cfg.AI.LLMMaxTokens,
+			Temperature: cfg.AI.LLMTemperature,
+		})
+		if err != nil {
+			log.Fatalf("LLM 初始化失败: %v", err)
+		}
+		llmClient = einoLLM
+		log.Printf("LLM 就绪: %s %s", cfg.AI.LLMBaseURL, cfg.AI.LLMModel)
+	} else {
+		log.Println("⚠ LLM API Key 未配置，角色扮演不可用")
+	}
+
+	// ── Embedder 客户端（eino，支持多 provider）──
+	if cfg.AI.EmbeddingAPIKey != "" {
+		einoEmb, err := embedding.NewEinoEmbedder(ctx, &embedding.EinoOptions{
+			BaseURL:   cfg.AI.EmbeddingBaseURL,
+			APIKey:    cfg.AI.EmbeddingAPIKey,
+			Model:     cfg.AI.EmbeddingModel,
+			Dimension: cfg.AI.EmbeddingDim,
+		})
+		if err != nil {
+			log.Fatalf("Embedder 初始化失败: %v", err)
+		}
+		embedder = einoEmb
+		log.Printf("Embedder 就绪: %s %s (dim=%d)", cfg.AI.EmbeddingBaseURL, cfg.AI.EmbeddingModel, cfg.AI.EmbeddingDim)
+	} else {
+		log.Println("⚠ Embedding API Key 未配置，RAG 检索不可用")
+	}
+
 	var chatSvc *ai.ChatService
 	if llmClient != nil && embedder != nil {
 		chatSvc = ai.NewChatService(llmClient, embedder, inf.MemStore, inf.DB)
 		log.Println("AI 对话服务就绪")
-	} else {
-		log.Println("⚠ LLM/Embedding 未配置，角色扮演不可用（命令系统正常）")
 	}
 
 	// ── 命令系统 ──
