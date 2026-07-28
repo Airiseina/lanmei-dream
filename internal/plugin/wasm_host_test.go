@@ -31,11 +31,11 @@ func (a *fakeStateAuthorizer) RolesFor(_ string) ([]string, error) {
 func (a *fakeStateAuthorizer) ActionsFor(_ string) ([][]string, error) {
 	return nil, nil
 }
-func (a *fakeStateAuthorizer) ListActions() []string               { return nil }
-func (a *fakeStateAuthorizer) ListRoles() []string                 { return nil }
-func (a *fakeStateAuthorizer) InitBuiltinPolicies(_ []int64) error { return nil }
-func (a *fakeStateAuthorizer) IsKnownRole(_ string) bool           { return true }
-func (a *fakeStateAuthorizer) IsKnownAction(_ string) bool         { return true }
+func (a *fakeStateAuthorizer) ListActions() []string                { return nil }
+func (a *fakeStateAuthorizer) ListRoles() []string                  { return nil }
+func (a *fakeStateAuthorizer) InitBuiltinPolicies(_ []string) error { return nil }
+func (a *fakeStateAuthorizer) IsKnownRole(_ string) bool            { return true }
+func (a *fakeStateAuthorizer) IsKnownAction(_ string) bool          { return true }
 
 var _ Authorizer = (*fakeStateAuthorizer)(nil)
 

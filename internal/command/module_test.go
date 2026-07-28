@@ -47,14 +47,12 @@ func TestSystemConcurrentProcess(t *testing.T) {
 
 	var wg sync.WaitGroup
 	for range 64 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			ctx := &Context{UserID: 1, Reply: func(string) {}}
+		wg.Go(func() {
+			ctx := &Context{Platform: "qq", PlatformUserID: "1", Reply: func(string) {}}
 			if err := s.Process("/ping", ctx); err != nil {
 				t.Errorf("process error: %v", err)
 			}
-		}()
+		})
 	}
 	wg.Wait()
 }

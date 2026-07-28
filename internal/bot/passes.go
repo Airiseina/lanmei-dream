@@ -2,7 +2,6 @@ package bot
 
 import (
 	"fmt"
-	"strconv"
 	"strings"
 
 	"github.com/zrurf/conduit"
@@ -17,8 +16,12 @@ import (
 // ── 上下文键 ──
 
 const (
-	KeyQQUserID = "qq_user_id" // int64 QQ 用户 ID（存在 Extra 中）
-	KeyNickname = "nickname"   // string 昵称（存在 Extra 中）
+	KeyPlatform       = "platform"        // string 平台标识（qq/wechat/telegram/...）
+	KeyPlatformUserID = "platform_user_id" // string 平台用户 ID
+	KeyNickname       = "nickname"         // string 昵称
+	KeyMessageID      = "message_id"       // string 消息 ID
+	KeyConnID         = "conn_id"          // string 来源连接 ID
+	KeySelfID         = "self_id"          // string 机器人自身 ID
 )
 
 // ── CommandPass：处理斜杠命令 ──
@@ -32,11 +35,12 @@ func (p *CommandPass) Execute(ctx *conduit.MessageContext) error {
 	// 收集命令回复
 	var replies []string
 	err := p.CmdSys.Process(ctx.RawMsg, &command.Context{
-		UserID:  qqUserID(ctx),
-		GroupID: ctx.GroupID,
-		IsGroup: ctx.IsGroup,
-		Message: ctx.RawMsg,
-		Reply:   func(s string) { replies = append(replies, s) },
+		Platform:       platformFromCtx(ctx),
+		PlatformUserID: platformUserIDFromCtx(ctx),
+		GroupID:        ctx.GroupID,
+		IsGroup:        ctx.IsGroup,
+		Message:        ctx.RawMsg,
+		Reply:          func(s string) { replies = append(replies, s) },
 	})
 
 	// 将回复追加到输出
@@ -66,11 +70,12 @@ func (p *RoleplayPass) Execute(ctx *conduit.MessageContext) error {
 		return nil
 	}
 
-	qqID := qqUserID(ctx)
+	platform := platformFromCtx(ctx)
+	platformUserID := platformUserIDFromCtx(ctx)
 	nickname, _ := conduit.Get[string](ctx, KeyNickname)
 
 	// 确保用户存在
-	user, err := p.DB.GetOrCreateUser(ctx.Ctx, qqID, nickname)
+	user, err := p.DB.GetOrCreateUser(ctx.Ctx, platform, platformUserID, nickname)
 	if err != nil {
 		return fmt.Errorf("roleplay: get_or_create_user: %w", err)
 	}
@@ -141,17 +146,20 @@ func IsAdminCommand(ctx *conduit.MessageContext) bool {
 
 // ── 辅助函数 ──
 
-func qqUserID(ctx *conduit.MessageContext) int64 {
-	// 优先从 Extra 取 int64 类型的 QQ ID
-	if raw, ok := ctx.Extra[KeyQQUserID]; ok {
-		if id, ok := raw.(int64); ok {
-			return id
+func platformFromCtx(ctx *conduit.MessageContext) string {
+	if raw, ok := ctx.Extra[KeyPlatform]; ok {
+		if s, ok := raw.(string); ok {
+			return s
 		}
 	}
-	// fallback：从 UserID 字符串解析
-	id, err := strconv.ParseInt(ctx.UserID, 10, 64)
-	if err != nil {
-		return 0
+	return "unknown"
+}
+
+func platformUserIDFromCtx(ctx *conduit.MessageContext) string {
+	if raw, ok := ctx.Extra[KeyPlatformUserID]; ok {
+		if s, ok := raw.(string); ok {
+			return s
+		}
 	}
-	return id
+	return ctx.UserID
 }

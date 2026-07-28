@@ -5,13 +5,15 @@
 ```mermaid
 graph TB
     subgraph 外部
-        QQ[QQ 客户端]
-        LLOneBot[LLOneBot]
+        IM[IM 平台<br/>微信/钉钉/TG/...]
+        Onebots[Onebots 网关]
+        NapCat[NapCat<br/>NTQQ Provider]
     end
 
     subgraph 蓝妹服务
         Main[main.go 入口]
         Infra[infra.Setup<br/>PG+Redis+pgvector]
+        Gateway[gateway.Server<br/>反向WS网关]
         Bot[bot.Bot]
         Engine[Conduit Engine]
         BT[行为树]
@@ -38,8 +40,10 @@ graph TB
         RD[(Redis 7)]
     end
 
-    QQ -->|消息| LLOneBot
-    LLOneBot -->|WebSocket| Bot
+    IM -->|消息| Onebots
+    Onebots -->|反向WS OneBot12| Gateway
+    NapCat -->|反向WS OneBot11| Gateway
+    Gateway -->|NormalizedMessage| Bot
     Bot -->|Process| Engine
     Engine -->|决策| BT
     BT -->|/admin| CmdPass
@@ -73,7 +77,7 @@ graph TB
 ```mermaid
 sequenceDiagram
     participant U as 用户
-    participant Q as QQ/LLOneBot
+    participant GW as Gateway网关
     participant B as bot.Bot
     participant E as Conduit Engine
     participant BT as 行为树
@@ -86,8 +90,8 @@ sequenceDiagram
     participant P as PostgreSQL+pgvector
     participant R as Redis
 
-    U->>Q: 发消息
-    Q->>B: WebSocket 推送
+    U->>GW: 发消息
+    GW->>B: NormalizedMessage
     B->>E: Process(InputMessage)
 
     E->>BT: Tick(MessageContext)
@@ -177,7 +181,8 @@ graph LR
 erDiagram
     users {
         bigserial id PK
-        bigint qq_id UK
+        varchar platform UK
+        varchar platform_user_id UK
         varchar nickname
         timestamptz created_at
         timestamptz updated_at

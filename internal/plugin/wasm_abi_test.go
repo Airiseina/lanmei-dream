@@ -189,8 +189,8 @@ func TestPluginPrincipal(t *testing.T) {
 }
 
 func TestUserPrincipal(t *testing.T) {
-	if got := UserPrincipal(123); got != "user::123" {
-		t.Errorf("UserPrincipal(123) = %q", got)
+	if got := UserPrincipal("qq", "123"); got != "user::qq::123" {
+		t.Errorf("UserPrincipal(qq, 123) = %q", got)
 	}
 }
 

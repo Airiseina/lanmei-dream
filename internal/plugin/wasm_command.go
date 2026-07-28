@@ -26,7 +26,7 @@ func NewWasmInstallCommand(ctx context.Context, installer wasmInstaller) command
 				commandCtx.Reply(wasmInstallUsage)
 				return nil
 			}
-			installation, err := installer.Install(ctx, UserPrincipal(commandCtx.UserID), parts[2])
+			installation, err := installer.Install(ctx, UserPrincipal(commandCtx.Platform, commandCtx.PlatformUserID), parts[2])
 			if err != nil {
 				commandCtx.Reply(fmt.Sprintf("Wasm 插件安装失败：%v", err))
 				return nil

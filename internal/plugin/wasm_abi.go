@@ -465,8 +465,9 @@ func PluginPrincipal(pluginID, installationID string) string {
 }
 
 // UserPrincipal 构造 Casbin 用户主体。
-func UserPrincipal(qqID int64) string {
-	return fmt.Sprintf("user::%d", qqID)
+// 格式：user::<platform>::<platformUserID>，如 user::qq::123456 或 user::wechat::wxid_xxx
+func UserPrincipal(platform, platformUserID string) string {
+	return "user::" + platform + "::" + platformUserID
 }
 
 // SystemPrincipal 构造 Casbin 系统主体。

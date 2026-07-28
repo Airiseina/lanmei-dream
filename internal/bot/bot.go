@@ -2,11 +2,8 @@ package bot
 
 import (
 	"log"
-	"strconv"
 	"time"
 
-	zero "github.com/wdvxdr1123/ZeroBot"
-	"github.com/wdvxdr1123/ZeroBot/driver"
 	"github.com/zrurf/conduit"
 
 	"github.com/DaWesen/lanmei-dream/internal/ai"
@@ -14,14 +11,15 @@ import (
 	"github.com/DaWesen/lanmei-dream/internal/command"
 	"github.com/DaWesen/lanmei-dream/internal/config"
 	"github.com/DaWesen/lanmei-dream/internal/database"
+	"github.com/DaWesen/lanmei-dream/internal/gateway"
 	pluginpkg "github.com/DaWesen/lanmei-dream/internal/plugin"
 )
 
-// Bot 封装 ZeroBot + Conduit 引擎
+// Bot 封装 Conduit 引擎 + 网关服务
 type Bot struct {
-	cfg     *zero.Config
 	engine  *conduit.Engine
 	plugins *pluginpkg.Registry
+	gw      *gateway.Server
 }
 
 // New 创建 Bot 实例，初始化 Conduit 引擎、行为树和插件系统。
@@ -29,13 +27,12 @@ type Bot struct {
 // store 为 Conduit 状态存储（由 infra 包提供，RedisStore 用于生产，MemoryStore 用于测试）
 // llmClient 为 LLM 客户端，用于意图分析（nil 时降级为纯聊天路由）
 // pluginReg 为插件注册表（nil 时跳过插件初始化）
-func New(cfg *config.BotConfig, cmdSys *command.System, chatSvc *ai.ChatService, db *database.DB, store conduit.StateStore, llmClient llm.LLMClient, pluginReg *pluginpkg.Registry) *Bot {
+// gwServer 为网关服务端（反向 WS，由 gateway 包提供）
+func New(cfg *config.BotConfig, cmdSys *command.System, chatSvc *ai.ChatService, db *database.DB, store conduit.StateStore, llmClient llm.LLMClient, pluginReg *pluginpkg.Registry, gwServer *gateway.Server) *Bot {
 	nick := cfg.NickName
 	if nick == "" {
 		nick = "蓝妹"
 	}
-
-	superUsers := cfg.ParseSuperUsers()
 
 	// ── Conduit 引擎 ──
 	engine := conduit.New(store,
@@ -88,20 +85,10 @@ func New(cfg *config.BotConfig, cmdSys *command.System, chatSvc *ai.ChatService,
 	bt := buildBehaviorTree(pluginReg, coreAdmin, coreCommand, coreIntent)
 	engine.SetBehaviorTree(bt)
 
-	// ── ZeroBot 配置 ──
-	zeroCfg := &zero.Config{
-		NickName:      []string{nick},
-		CommandPrefix: "/",
-		SuperUsers:    superUsers,
-		Driver: []zero.Driver{
-			driver.NewWebSocketClient(cfg.WebSocketURL, cfg.AccessToken),
-		},
-	}
-
 	return &Bot{
-		cfg:     zeroCfg,
 		engine:  engine,
 		plugins: pluginReg,
+		gw:      gwServer,
 	}
 }
 
@@ -133,41 +120,34 @@ func buildBehaviorTree(pluginReg *pluginpkg.Registry, coreAdmin, coreCommand, co
 	return conduit.NewBehaviorTree(branches...)
 }
 
-// Run 启动 Conduit 引擎 + 插件 + ZeroBot，阻塞运行
+// Run 启动 Conduit 引擎 + 网关服务，阻塞运行
 func (b *Bot) Run() {
 	b.engine.Start()
 	defer func() { _ = b.engine.Stop() }()
 
-	zero.OnMessage().Handle(b.handleMessage)
-
-	zero.RunAndBlock(b.cfg, nil)
+	if err := b.gw.Run(); err != nil {
+		log.Fatalf("gateway: 服务运行失败: %v", err)
+	}
 }
 
-// handleMessage 把 ZeroBot 消息转为 Conduit InputMessage，同步处理后回复
-func (b *Bot) handleMessage(ctx *zero.Ctx) {
-	msg := ctx.ExtractPlainText()
-	if msg == "" {
-		msg = ctx.Event.RawMessage
-	}
-	if msg == "" {
+// OnMessage 实现 gateway.EventHandler 接口，将网关消息转为 Conduit 输入
+func (b *Bot) OnMessage(msg *gateway.NormalizedMessage) {
+	if msg.Content == "" {
 		return
 	}
 
-	qqID := strconv.FormatInt(ctx.Event.UserID, 10)
-	groupID := ""
-	isGroup := ctx.Event.GroupID != 0
-	if isGroup {
-		groupID = strconv.FormatInt(ctx.Event.GroupID, 10)
-	}
-
 	input := &conduit.InputMessage{
-		UserID:  qqID,
-		GroupID: groupID,
-		Content: msg,
-		IsGroup: isGroup,
+		UserID:  msg.UserID,
+		GroupID: msg.GroupID,
+		Content: msg.Content,
+		IsGroup: msg.IsGroup,
 		Extra: map[string]any{
-			KeyQQUserID: ctx.Event.UserID,
-			KeyNickname: ctx.Event.Sender.NickName,
+			KeyPlatform:       string(msg.Platform),
+			KeyPlatformUserID: msg.UserID,
+			KeyNickname:       msg.SenderName,
+			KeyMessageID:      msg.MessageID,
+			KeyConnID:         msg.ConnID,
+			KeySelfID:         msg.SelfID,
 		},
 	}
 
@@ -175,12 +155,19 @@ func (b *Bot) handleMessage(ctx *zero.Ctx) {
 	result, err := b.engine.Process(input)
 	if err != nil {
 		log.Printf("conduit: process failed: %v", err)
-		ctx.Send("蓝妹现在有点迷糊，稍后再试~")
+		b.reply(msg, "蓝妹现在有点迷糊，稍后再试~")
 		return
 	}
 
 	// 发送所有输出消息
 	for _, out := range result.Output {
-		ctx.Send(out.Content)
+		b.reply(msg, out.Content)
+	}
+}
+
+// reply 通过网关回复消息
+func (b *Bot) reply(msg *gateway.NormalizedMessage, text string) {
+	if err := b.gw.Hub().SendMessageTo(msg.ConnID, msg, text); err != nil {
+		log.Printf("bot: 回复失败 conn=%s err=%v", msg.ConnID, err)
 	}
 }

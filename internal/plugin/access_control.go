@@ -71,7 +71,7 @@ type Authorizer interface {
 	ActionsFor(principal string) ([][]string, error)
 	ListActions() []string
 	ListRoles() []string
-	InitBuiltinPolicies(superUsers []int64) error
+	InitBuiltinPolicies(superUserPrincipals []string) error
 	IsKnownRole(role string) bool
 	IsKnownAction(action string) bool
 }
@@ -248,7 +248,8 @@ func (s *Service) IsKnownAction(action string) bool {
 }
 
 // InitBuiltinPolicies 幂等写入内置策略，并只在不存在 owner 时引导 SUPER_USERS。
-func (s *Service) InitBuiltinPolicies(superUsers []int64) error {
+// superUserPrincipals 格式为 user::<platform>::<platformUserID> 列表
+func (s *Service) InitBuiltinPolicies(superUserPrincipals []string) error {
 	for role, actions := range builtinRoleActions() {
 		for _, action := range actions {
 			hasPolicy, err := s.enforcer.HasPolicy(role, action)
@@ -281,8 +282,7 @@ func (s *Service) InitBuiltinPolicies(superUsers []int64) error {
 	if len(owners) != 0 {
 		return nil
 	}
-	for _, userID := range superUsers {
-		principal := UserPrincipal(userID)
+	for _, principal := range superUserPrincipals {
 		if _, err := s.enforcer.AddRoleForUser(principal, RoleBotOwner); err != nil {
 			return fmt.Errorf("引导 bot_owner %s: %w", principal, err)
 		}
@@ -357,4 +357,24 @@ func ValidatePrincipal(principal string) bool {
 	return strings.HasPrefix(principal, "user::") ||
 		strings.HasPrefix(principal, "plugin::") ||
 		strings.HasPrefix(principal, "system::")
+}
+
+// ParseSuperUsers 解析超级用户配置字符串为 principal 列表
+// 格式：qq:123456,wechat:wxid_xxx → [user::qq::123456, user::wechat::wxid_xxx]
+func ParseSuperUsers(superUsersStr string) []string {
+	if superUsersStr == "" {
+		return nil
+	}
+	var principals []string
+	for _, entry := range strings.Split(superUsersStr, ",") {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+		parts := strings.SplitN(entry, ":", 2)
+		if len(parts) == 2 {
+			principals = append(principals, UserPrincipal(parts[0], parts[1]))
+		}
+	}
+	return principals
 }

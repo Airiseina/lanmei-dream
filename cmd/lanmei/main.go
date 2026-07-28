@@ -14,6 +14,7 @@ import (
 	"github.com/DaWesen/lanmei-dream/internal/bot"
 	"github.com/DaWesen/lanmei-dream/internal/command"
 	"github.com/DaWesen/lanmei-dream/internal/config"
+	"github.com/DaWesen/lanmei-dream/internal/gateway"
 	"github.com/DaWesen/lanmei-dream/internal/infra"
 	pluginpkg "github.com/DaWesen/lanmei-dream/internal/plugin"
 )
@@ -39,7 +40,8 @@ func main() {
 	if err != nil {
 		log.Fatalf("插件授权服务初始化失败: %v", err)
 	}
-	if err := authorizer.InitBuiltinPolicies(cfg.Bot.ParseSuperUsers()); err != nil {
+	superUserPrincipals := pluginpkg.ParseSuperUsers(cfg.Bot.ParseSuperUsers())
+	if err := authorizer.InitBuiltinPolicies(superUserPrincipals); err != nil {
 		log.Fatalf("插件内置权限初始化失败: %v", err)
 	}
 
@@ -68,7 +70,17 @@ func main() {
 	// ── 插件系统 ──
 	// 创建插件注册表（引擎在 bot.New 中创建，随后通过 SetEngine 注入）
 	pluginReg := pluginpkg.NewRegistry(nil, inf.StateStore, inf.DB, cmdSys)
-	b := bot.New(&cfg.Bot, cmdSys, chatSvc, inf.DB, inf.StateStore, llmClient, pluginReg)
+
+	// ── 网关（反向 WebSocket 服务端）──
+	gwServer := gateway.NewServer(&gateway.ListenConfig{
+		ListenAddr:  cfg.Bot.Gateway.ListenAddr,
+		AccessToken: cfg.Bot.Gateway.AccessToken,
+	}, nil) // handler 稍后由 Bot 设置
+
+	b := bot.New(&cfg.Bot, cmdSys, chatSvc, inf.DB, inf.StateStore, llmClient, pluginReg, gwServer)
+
+	// 将 Bot 注册为网关事件处理器
+	gwServer.SetHandler(b)
 
 	wasmManager, err := pluginpkg.NewWasmManager(&cfg.Plugin, inf.DB, pluginReg, authorizer, nil)
 	if err != nil {
@@ -100,10 +112,11 @@ func main() {
 		<-sigCh
 		log.Println("正在关闭...")
 		pluginReg.StopPlugins(ctx)
+		gwServer.Shutdown()
 		cancel()
 		os.Exit(0)
 	}()
 
-	log.Printf("蓝妹启动，WebSocket → %s", cfg.Bot.WebSocketURL)
+	log.Printf("蓝妹启动，网关监听 → %s", cfg.Bot.Gateway.ListenAddr)
 	b.Run()
 }

@@ -1,0 +1,21 @@
+{
+  "enable": true,
+  "network": {
+    "httpServers": [],
+    "websocketServers": [],
+    "websocketClients": [
+      {
+        "name": "lanmei",
+        "enable": true,
+        "url": "ws://lanmei:8080/onebot/v11",
+        "messagePostFormat": "array",
+        "reportSelfMessage": false,
+        "reconnectInterval": 5000,
+        "token": "",
+        "debug": false,
+        "heartInterval": 30000,
+        "verifyCertificate": true
+      }
+    ]
+  }
+}

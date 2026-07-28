@@ -101,9 +101,9 @@ func eventIDFromExtra(ctx *conduit.MessageContext) string {
 		return eventID
 	}
 	if messageID := stringExtra(ctx, "message_id"); messageID != "" {
-		return "qq-message-" + messageID
+		return "msg-" + messageID
 	}
-	return fmt.Sprintf("qq-event-%d", time.Now().UTC().UnixNano())
+	return fmt.Sprintf("evt-%d", time.Now().UTC().UnixNano())
 }
 
 func groupInfo(ctx *conduit.MessageContext) *GroupInfo {

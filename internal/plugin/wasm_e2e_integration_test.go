@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 
@@ -19,7 +20,7 @@ import (
 
 // TestSigninWasm_EndToEnd 覆盖示例 Wasm 的构建产物经数据库安装、加载和启动后，
 // 通过真实 Extism、PostgreSQL、Redis 与 Conduit 路由签到命令的完整链路。
-// QQ 回复边界使用闭包收集，以避免依赖 LLOneBot。
+// 消息回复边界使用闭包收集，以避免依赖具体 IM 平台。
 func TestSigninWasm_EndToEnd(t *testing.T) {
 	if os.Getenv("LANMEI_E2E") != "1" {
 		t.Skip("set LANMEI_E2E=1 to run Docker-backed Wasm E2E test")
@@ -55,12 +56,12 @@ func TestSigninWasm_EndToEnd(t *testing.T) {
 	}
 
 	const ownerID int64 = 900001
-	actor := UserPrincipal(ownerID)
+	actor := UserPrincipal("qq", strconv.FormatInt(ownerID, 10))
 	authorizer, err := NewService(inf.DB.Orm)
 	if err != nil {
 		t.Fatalf("create authorizer: %v", err)
 	}
-	if err := authorizer.InitBuiltinPolicies([]int64{ownerID}); err != nil {
+	if err := authorizer.InitBuiltinPolicies([]string{actor}); err != nil {
 		t.Fatalf("initialize authorization policies: %v", err)
 	}
 
@@ -130,9 +131,10 @@ func TestSigninWasm_EndToEnd(t *testing.T) {
 
 	replies := make([]string, 0, 2)
 	commandContext := &command.Context{
-		UserID:  10001,
-		GroupID: "e2e-group",
-		IsGroup: true,
+		Platform:       "qq",
+		PlatformUserID: "10001",
+		GroupID:        "e2e-group",
+		IsGroup:        true,
 		Reply: func(message string) {
 			replies = append(replies, message)
 		},

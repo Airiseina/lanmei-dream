@@ -1,7 +1,6 @@
 package config
 
 import (
-	"strconv"
 	"strings"
 )
 
@@ -36,28 +35,18 @@ type AIConfig struct {
 
 // BotConfig 机器人配置
 type BotConfig struct {
-	WebSocketURL string `mapstructure:"ws_url"`
-	AccessToken  string `mapstructure:"access_token"`
-	NickName     string `mapstructure:"nickname"`
-	SuperUsers   string `mapstructure:"super_users"`
+	NickName   string      `mapstructure:"nickname"`
+	SuperUsers string      `mapstructure:"super_users"` // 格式：platform:userID,... 如 qq:123456,wechat:wxid_xxx
+	Gateway    GatewayConfig `mapstructure:"gateway"`
 }
 
-// ParseSuperUsers 将 SuperUsers 逗号分隔字符串转换为 int64 列表
-// 例如 "123,456" → []int64{123, 456}
-func (c *BotConfig) ParseSuperUsers() []int64 {
-	if c.SuperUsers == "" {
-		return nil
-	}
-	parts := strings.Split(c.SuperUsers, ",")
-	users := make([]int64, 0, len(parts))
-	for _, p := range parts {
-		p = strings.TrimSpace(p)
-		if p == "" {
-			continue
-		}
-		if id, err := strconv.ParseInt(p, 10, 64); err == nil {
-			users = append(users, id)
-		}
-	}
-	return users
+// GatewayConfig 网关（反向 WebSocket 服务端）配置
+type GatewayConfig struct {
+	ListenAddr  string `mapstructure:"listen_addr"`  // 监听地址，如 "0.0.0.0:8080"
+	AccessToken string `mapstructure:"access_token"` // 鉴权 token（空则不鉴权）
+}
+
+// ParseSuperUsers 返回原始超级用户字符串，供 plugin.ParseSuperUsers 使用
+func (c *BotConfig) ParseSuperUsers() string {
+	return strings.TrimSpace(c.SuperUsers)
 }
