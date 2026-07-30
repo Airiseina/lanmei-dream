@@ -11,6 +11,7 @@ type Config struct {
 	AI       AIConfig       `mapstructure:"ai"`
 	Bot      BotConfig      `mapstructure:"bot"`
 	Plugin   PluginConfig   `mapstructure:"plugin"`
+	Log      LogConfig      `mapstructure:"log"`
 }
 
 // PluginConfig 插件系统配置
@@ -31,10 +32,10 @@ type RedisConfig struct {
 // AIConfig AI 相关配置
 type AIConfig struct {
 	// LLM 配置（OpenAI 兼容 API）
-	LLMBaseURL    string  `mapstructure:"llm_base_url"`
-	LLMAPIKey     string  `mapstructure:"llm_api_key"`
-	LLMModel      string  `mapstructure:"llm_model"`
-	LLMMaxTokens  int     `mapstructure:"llm_max_tokens"`
+	LLMBaseURL     string  `mapstructure:"llm_base_url"`
+	LLMAPIKey      string  `mapstructure:"llm_api_key"`
+	LLMModel       string  `mapstructure:"llm_model"`
+	LLMMaxTokens   int     `mapstructure:"llm_max_tokens"`
 	LLMTemperature float64 `mapstructure:"llm_temperature"`
 
 	// Embedding 配置（OpenAI 兼容 API）
@@ -46,8 +47,8 @@ type AIConfig struct {
 
 // BotConfig 机器人配置
 type BotConfig struct {
-	NickName   string      `mapstructure:"nickname"`
-	SuperUsers string      `mapstructure:"super_users"` // 格式：platform:userID,... 如 qq:123456,wechat:wxid_xxx
+	NickName   string        `mapstructure:"nickname"`
+	SuperUsers string        `mapstructure:"super_users"` // 格式：platform:userID,... 如 qq:123456,wechat:wxid_xxx
 	Gateway    GatewayConfig `mapstructure:"gateway"`
 }
 
@@ -55,6 +56,17 @@ type BotConfig struct {
 type GatewayConfig struct {
 	ListenAddr  string `mapstructure:"listen_addr"`  // 监听地址，如 "0.0.0.0:8080"
 	AccessToken string `mapstructure:"access_token"` // 鉴权 token（空则不鉴权）
+}
+
+// LogConfig 日志相关配置
+type LogConfig struct {
+	Level       string `mapstructure:"level"`       // 日志级别：debug/info/warn/error，默认 info
+	Persistent  bool   `mapstructure:"persistent"`  // 是否持久化到文件，默认 false
+	Path        string `mapstructure:"path"`        // 日志文件路径（Persistent=true 时），默认 ./logs/lanmei.log
+	Compression bool   `mapstructure:"compression"` // 是否压缩旧日志文件，默认 true
+	MaxSize     int    `mapstructure:"max_size"`    // 单个日志文件最大大小（MB），默认 100
+	MaxAge      int    `mapstructure:"max_age"`     // 日志文件最大保留天数，默认 30
+	MaxBackups  int    `mapstructure:"max_backups"` // 最多保留的旧日志文件数，默认 10
 }
 
 // ParseSuperUsers 返回原始超级用户字符串，供 plugin.ParseSuperUsers 使用

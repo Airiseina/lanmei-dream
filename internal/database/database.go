@@ -5,20 +5,22 @@ import (
 	"fmt"
 	"time"
 
+	"go.uber.org/zap"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
-	"gorm.io/gorm/logger"
+	gormlogger "gorm.io/gorm/logger"
 )
 
 // DB 封装 GORM 数据库连接
 type DB struct {
-	Orm *gorm.DB
+	Orm    *gorm.DB
+	logger *zap.Logger
 }
 
 // Connect 创建 GORM 连接并验证连通性
-func Connect(ctx context.Context, connString string) (*DB, error) {
+func Connect(ctx context.Context, connString string, logger *zap.Logger) (*DB, error) {
 	orm, err := gorm.Open(postgres.Open(connString), &gorm.Config{
-		Logger: logger.Default.LogMode(logger.Warn),
+		Logger: gormlogger.Default.LogMode(gormlogger.Warn),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("gorm open: %w", err)
@@ -40,7 +42,7 @@ func Connect(ctx context.Context, connString string) (*DB, error) {
 		return nil, fmt.Errorf("ping postgres: %w", err)
 	}
 
-	return &DB{Orm: orm}, nil
+	return &DB{Orm: orm, logger: logger}, nil
 }
 
 // Close 关闭连接

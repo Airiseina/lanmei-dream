@@ -78,10 +78,17 @@ type PluginInfoResponse struct {
 	Version        string        `json:"version"`
 	Commands       []CommandDecl `json:"commands"`
 	RequestedRoles []RoleRequest `json:"requested_roles"`
+	Tools          []ToolDecl    `json:"tools,omitempty"`
 }
 
 // CommandDecl 插件声明的斜杠命令。
 type CommandDecl struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+}
+
+// ToolDecl 插件声明的 AI 工具。
+type ToolDecl struct {
 	Name        string `json:"name"`
 	Description string `json:"description"`
 }
@@ -110,8 +117,8 @@ func (r *PluginInfoResponse) Validate() error {
 	if len(r.Version) == 0 || len(r.Version) > 64 {
 		return fmt.Errorf("%w: version 长度超限", ErrInvalidMetadata)
 	}
-	if len(r.Commands) == 0 {
-		return fmt.Errorf("%w: 必须至少声明一个命令", ErrInvalidMetadata)
+	if len(r.Commands) == 0 && len(r.Tools) == 0 {
+		return fmt.Errorf("%w: 必须至少声明一个命令或工具", ErrInvalidMetadata)
 	}
 
 	cmdNames := make(map[string]bool, len(r.Commands))
@@ -129,6 +136,23 @@ func (r *PluginInfoResponse) Validate() error {
 			return fmt.Errorf("%w: 命令名 %q 重复", ErrInvalidMetadata, name)
 		}
 		cmdNames[name] = true
+	}
+
+	toolNames := make(map[string]bool, len(r.Tools))
+	for _, td := range r.Tools {
+		name := strings.TrimSpace(td.Name)
+		if name == "" {
+			return fmt.Errorf("%w: 工具名不能为空", ErrInvalidMetadata)
+		}
+		for _, ch := range name {
+			if unicode.IsControl(ch) || unicode.IsSpace(ch) {
+				return fmt.Errorf("%w: 工具名 %q 含非法字符", ErrInvalidMetadata, name)
+			}
+		}
+		if toolNames[name] {
+			return fmt.Errorf("%w: 工具名 %q 重复", ErrInvalidMetadata, name)
+		}
+		toolNames[name] = true
 	}
 	return nil
 }
@@ -161,17 +185,19 @@ type InitResponse struct {
 type EventType string
 
 const (
-	EventTypeCommand EventType = "command"
+	EventTypeCommand  EventType = "command"
+	EventTypeToolCall EventType = "tool_call"
 )
 
 // HandleRequest 宿主调用 lanmei_handle 时传入的 JSON。
 type HandleRequest struct {
-	ABIVersion string      `json:"abi_version"`
-	EventID    string      `json:"event_id"`
-	EventType  EventType   `json:"event_type"`
-	Timestamp  string      `json:"timestamp"`
-	Message    MessageInfo `json:"message"`
-	Command    CommandInfo `json:"command"`
+	ABIVersion string        `json:"abi_version"`
+	EventID    string        `json:"event_id"`
+	EventType  EventType     `json:"event_type"`
+	Timestamp  string        `json:"timestamp"`
+	Message    MessageInfo   `json:"message"`
+	Command    CommandInfo   `json:"command"`
+	ToolCall   *ToolCallInfo `json:"tool_call,omitempty"`
 }
 
 // MessageInfo 当前消息的上下文信息。
@@ -201,6 +227,13 @@ type CommandInfo struct {
 	Args       []string `json:"args"`
 	RawArgs    string   `json:"raw_args"`
 	RawMessage string   `json:"raw_message"`
+}
+
+// ToolCallInfo 工具调用信息。
+type ToolCallInfo struct {
+	ToolName  string `json:"tool_name"`
+	Arguments string `json:"arguments"` // JSON 编码的参数
+	CallID    string `json:"call_id"`
 }
 
 // HandleResponse Guest 返回的处理结果。
@@ -346,6 +379,42 @@ type StateSetRequest struct {
 // StateDeleteRequest state_delete 请求。
 type StateDeleteRequest struct {
 	Key string `json:"key"`
+}
+
+// CompareAndSwapRequest compare_and_swap 请求。
+type CompareAndSwapRequest struct {
+	Key      string `json:"key"`
+	OldValue string `json:"old_value"`
+	NewValue string `json:"new_value"`
+	TTLMs    int64  `json:"ttl_ms"`
+}
+
+// CompareAndSwapData compare_and_swap 成功数据。
+type CompareAndSwapData struct {
+	Swapped bool `json:"swapped"`
+}
+
+// IncrByRequest incr_by 请求。
+type IncrByRequest struct {
+	Key   string `json:"key"`
+	Delta int64  `json:"delta"`
+}
+
+// IncrByData incr_by 成功数据。
+type IncrByData struct {
+	Value int64 `json:"value"`
+}
+
+// SetIfNotExistsRequest set_if_not_exists 请求。
+type SetIfNotExistsRequest struct {
+	Key   string `json:"key"`
+	Value string `json:"value"`
+	TTLMs int64  `json:"ttl_ms"`
+}
+
+// SetIfNotExistsData set_if_not_exists 成功数据。
+type SetIfNotExistsData struct {
+	Set bool `json:"set"`
 }
 
 // HostOK 构造成功响应。
@@ -511,7 +580,10 @@ var (
 
 // HostFunctionActions 映射 Host Function 名称到 Casbin 动作。
 var HostFunctionActions = map[string]string{
-	"state_get":    "state.read",
-	"state_set":    "state.write",
-	"state_delete": "state.delete",
+	"state_get":         "state.read",
+	"state_set":         "state.write",
+	"state_delete":      "state.delete",
+	"compare_and_swap":  "state.write",
+	"incr_by":           "state.write",
+	"set_if_not_exists": "state.write",
 }

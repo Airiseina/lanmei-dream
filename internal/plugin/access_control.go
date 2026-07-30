@@ -2,7 +2,6 @@ package plugin
 
 import (
 	"fmt"
-	"log"
 	"sort"
 	"strings"
 	"sync"
@@ -10,6 +9,7 @@ import (
 	"github.com/casbin/casbin/v3"
 	"github.com/casbin/casbin/v3/model"
 	gormadapter "github.com/casbin/gorm-adapter/v3"
+	"go.uber.org/zap"
 	"gorm.io/gorm"
 )
 
@@ -84,6 +84,7 @@ type Service struct {
 	mu           sync.RWMutex
 	knownRoles   map[string]struct{}
 	knownActions map[string]struct{}
+	logger       *zap.Logger
 }
 
 // NewService 复用现有 GORM 连接并从 PostgreSQL 加载策略。
@@ -106,6 +107,7 @@ func NewService(db *gorm.DB) (*Service, error) {
 		enforcer:     enforcer,
 		knownRoles:   make(map[string]struct{}),
 		knownActions: make(map[string]struct{}),
+		logger:       zap.L().Named("access_control"),
 	}
 	for _, action := range allActions() {
 		service.knownActions[action] = struct{}{}
@@ -141,7 +143,7 @@ func (s *Service) BindRole(actor, principal, role string) error {
 	if _, err := s.enforcer.AddRoleForUser(principal, role); err != nil {
 		return fmt.Errorf("绑定角色 %s -> %s: %w", principal, role, err)
 	}
-	log.Printf("[access_control] actor=%s bind principal=%s role=%s", actor, principal, role)
+	s.logger.Info("绑定角色", zap.String("actor", actor), zap.String("principal", principal), zap.String("role", role))
 	return nil
 }
 
@@ -158,7 +160,7 @@ func (s *Service) UnbindRole(actor, principal, role string) error {
 	if _, err := s.enforcer.DeleteRoleForUser(principal, role); err != nil {
 		return fmt.Errorf("解绑角色 %s -> %s: %w", principal, role, err)
 	}
-	log.Printf("[access_control] actor=%s unbind principal=%s role=%s", actor, principal, role)
+	s.logger.Info("解绑角色", zap.String("actor", actor), zap.String("principal", principal), zap.String("role", role))
 	return nil
 }
 
@@ -175,7 +177,7 @@ func (s *Service) GrantAction(actor, role, action string) error {
 	if _, err := s.enforcer.AddPolicy(role, action); err != nil {
 		return fmt.Errorf("授予动作 %s -> %s: %w", role, action, err)
 	}
-	log.Printf("[access_control] actor=%s grant role=%s action=%s", actor, role, action)
+	s.logger.Info("授予动作", zap.String("actor", actor), zap.String("role", role), zap.String("action", action))
 	return nil
 }
 
@@ -192,7 +194,7 @@ func (s *Service) RevokeAction(actor, role, action string) error {
 	if _, err := s.enforcer.RemovePolicy(role, action); err != nil {
 		return fmt.Errorf("撤销动作 %s -> %s: %w", role, action, err)
 	}
-	log.Printf("[access_control] actor=%s revoke role=%s action=%s", actor, role, action)
+	s.logger.Info("撤销动作", zap.String("actor", actor), zap.String("role", role), zap.String("action", action))
 	return nil
 }
 
@@ -286,7 +288,7 @@ func (s *Service) InitBuiltinPolicies(superUserPrincipals []string) error {
 		if _, err := s.enforcer.AddRoleForUser(principal, RoleBotOwner); err != nil {
 			return fmt.Errorf("引导 bot_owner %s: %w", principal, err)
 		}
-		log.Printf("[access_control] bootstrap principal=%s role=%s", principal, RoleBotOwner)
+		s.logger.Info("引导 bot_owner", zap.String("principal", principal), zap.String("role", RoleBotOwner))
 	}
 	return nil
 }

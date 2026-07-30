@@ -1,13 +1,14 @@
 package bot
 
 import (
-	"log"
 	"time"
 
 	"github.com/zrurf/conduit"
+	"go.uber.org/zap"
 
 	"github.com/DaWesen/lanmei-dream/internal/ai"
 	"github.com/DaWesen/lanmei-dream/internal/ai/llm"
+	"github.com/DaWesen/lanmei-dream/internal/ai/tool"
 	"github.com/DaWesen/lanmei-dream/internal/command"
 	"github.com/DaWesen/lanmei-dream/internal/config"
 	"github.com/DaWesen/lanmei-dream/internal/database"
@@ -20,6 +21,7 @@ type Bot struct {
 	engine  *conduit.Engine
 	plugins *pluginpkg.Registry
 	gw      *gateway.Server
+	logger  *zap.Logger
 }
 
 // New 创建 Bot 实例，初始化 Conduit 引擎、行为树和插件系统。
@@ -28,7 +30,7 @@ type Bot struct {
 // llmClient 为 LLM 客户端，用于意图分析（nil 时降级为纯聊天路由）
 // pluginReg 为插件注册表（nil 时跳过插件初始化）
 // gwServer 为网关服务端（反向 WS，由 gateway 包提供）
-func New(cfg *config.BotConfig, cmdSys *command.System, chatSvc *ai.ChatService, db *database.DB, store conduit.StateStore, llmClient llm.LLMClient, pluginReg *pluginpkg.Registry, gwServer *gateway.Server) *Bot {
+func New(cfg *config.BotConfig, cmdSys *command.System, chatSvc *ai.ChatService, db *database.DB, store conduit.StateStore, llmClient llm.LLMClient, pluginReg *pluginpkg.Registry, gwServer *gateway.Server, toolReg *tool.Registry, logger *zap.Logger) *Bot {
 	nick := cfg.NickName
 	if nick == "" {
 		nick = "蓝妹"
@@ -47,12 +49,13 @@ func New(cfg *config.BotConfig, cmdSys *command.System, chatSvc *ai.ChatService,
 	))
 
 	engine.MustRegisterPipeline(conduit.NewPipeline("pipeline.command",
-		&CommandPass{CmdSys: cmdSys},
+		&CommandRouterPass{CmdSys: cmdSys},
+		&ExecuteCommandPass{},
 	))
 
 	// 意图分析管线：LLM 判断 → command / chat / ignore
 	engine.MustRegisterPipeline(conduit.NewPipeline("pipeline.intent",
-		NewIntentPass(llmClient, cmdSys, chatSvc, db),
+		NewIntentPass(llmClient, cmdSys, chatSvc, db, toolReg, logger),
 	))
 
 	engine.MustRegisterPipeline(conduit.NewPipeline("pipeline.fallback",
@@ -89,6 +92,7 @@ func New(cfg *config.BotConfig, cmdSys *command.System, chatSvc *ai.ChatService,
 		engine:  engine,
 		plugins: pluginReg,
 		gw:      gwServer,
+		logger:  logger,
 	}
 }
 
@@ -126,7 +130,7 @@ func (b *Bot) Run() {
 	defer func() { _ = b.engine.Stop() }()
 
 	if err := b.gw.Run(); err != nil {
-		log.Fatalf("gateway: 服务运行失败: %v", err)
+		b.logger.Fatal("gateway: 服务运行失败", zap.Error(err))
 	}
 }
 
@@ -154,7 +158,7 @@ func (b *Bot) OnMessage(msg *gateway.NormalizedMessage) {
 	// 同步处理，直接拿到结果
 	result, err := b.engine.Process(input)
 	if err != nil {
-		log.Printf("conduit: process failed: %v", err)
+		b.logger.Error("conduit: process failed", zap.Error(err))
 		b.reply(msg, "蓝妹现在有点迷糊，稍后再试~")
 		return
 	}
@@ -168,6 +172,6 @@ func (b *Bot) OnMessage(msg *gateway.NormalizedMessage) {
 // reply 通过网关回复消息
 func (b *Bot) reply(msg *gateway.NormalizedMessage, text string) {
 	if err := b.gw.Hub().SendMessageTo(msg.ConnID, msg, text); err != nil {
-		log.Printf("bot: 回复失败 conn=%s err=%v", msg.ConnID, err)
+		b.logger.Error("bot: 回复失败", zap.String("conn", msg.ConnID), zap.Error(err))
 	}
 }

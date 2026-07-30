@@ -5,24 +5,25 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
 	"sync"
 	"time"
 
 	extism "github.com/extism/go-sdk"
+	"go.uber.org/zap"
 )
 
 // Runtime 封装 Extism 实例创建和所有 Guest Export 调用。
 type Runtime struct {
 	limits RuntimeLimits
+	logger *zap.Logger
 }
 
 // NewRuntime 创建 Extism 运行时。
-func NewRuntime(limits *RuntimeLimits) *Runtime {
+func NewRuntime(limits *RuntimeLimits, logger *zap.Logger) *Runtime {
 	if limits == nil {
 		limits = &DefaultLimits
 	}
-	return &Runtime{limits: *limits}
+	return &Runtime{limits: *limits, logger: logger}
 }
 
 func (rt *Runtime) manifest(wasmPath, wasmHash string) extism.Manifest {
@@ -211,21 +212,21 @@ func (rt *Runtime) CallStop(ctx context.Context, plugin *extism.Plugin, mu *sync
 	}
 	input, err := json.Marshal(StopRequest{Reason: string(reason)})
 	if err != nil {
-		log.Printf("[wasm] 编码 stop 请求失败: %v", err)
+		rt.logger.Error("[wasm] 编码 stop 请求失败", zap.Error(err))
 		return
 	}
 	output, err := rt.CallExport(ctx, plugin, mu, ExportStop, input)
 	if err != nil {
-		log.Printf("[wasm] lanmei_stop 失败 reason=%s: %v", reason, err)
+		rt.logger.Error("[wasm] lanmei_stop 失败", zap.String("reason", string(reason)), zap.Error(err))
 		return
 	}
 	var resp GenericOKResponse
 	if err := UnmarshalGuestInput(output, &resp, &rt.limits); err != nil {
-		log.Printf("[wasm] 解码 stop 响应失败: %v", err)
+		rt.logger.Error("[wasm] 解码 stop 响应失败", zap.Error(err))
 		return
 	}
 	if !resp.OK {
-		log.Printf("[wasm] lanmei_stop 返回失败: %s", resp.Error)
+		rt.logger.Error("[wasm] lanmei_stop 返回失败", zap.String("error", resp.Error))
 	}
 }
 

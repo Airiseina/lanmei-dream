@@ -10,6 +10,7 @@ import (
 
 	"github.com/DaWesen/lanmei-dream/internal/command"
 	"github.com/zrurf/conduit"
+	"go.uber.org/zap"
 )
 
 // fakeWasmRuntime 实现 WasmRuntime 接口，用于 Conduit 集成测试。
@@ -47,7 +48,7 @@ func TestWasmCommandPass_ConduitIntegration(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	reg := NewRegistry(engine, store, nil, cmdSys)
+	reg := NewRegistry(engine, store, nil, cmdSys, nil, zap.NewNop())
 
 	pluginInfo := PluginInfoResponse{
 		ABIVersion:  ABIVersion,

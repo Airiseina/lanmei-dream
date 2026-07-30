@@ -1,13 +1,13 @@
 package bot
 
 import (
-	"log"
-
 	"github.com/zrurf/conduit"
+	"go.uber.org/zap"
 
 	"github.com/DaWesen/lanmei-dream/internal/ai"
 	"github.com/DaWesen/lanmei-dream/internal/ai/intent"
 	"github.com/DaWesen/lanmei-dream/internal/ai/llm"
+	"github.com/DaWesen/lanmei-dream/internal/ai/tool"
 	"github.com/DaWesen/lanmei-dream/internal/command"
 	"github.com/DaWesen/lanmei-dream/internal/database"
 )
@@ -19,22 +19,30 @@ type IntentPass struct {
 	Command  *CommandPass
 	Roleplay *RoleplayPass
 	Fallback *FallbackPass
+	logger   *zap.Logger
 }
 
 func (p *IntentPass) Execute(ctx *conduit.MessageContext) error {
 	result, err := p.Analyzer.Analyze(ctx.Ctx, ctx.RawMsg)
 	if err != nil {
-		log.Printf("intent: analyze failed: %v, falling back to chat", err)
+		p.logger.Error("intent: analyze failed, falling back to chat", zap.Error(err))
 		// 意图分析失败，降级为聊天
 		return p.routeToChat(ctx)
 	}
 
-	log.Printf("intent: msg=%q → intent=%s command=%s confidence=%.2f",
-		truncate(ctx.RawMsg, 20), result.Intent, result.CommandName, result.Confidence)
+	p.logger.Info("intent: result",
+		zap.String("msg", truncate(ctx.RawMsg, 20)),
+		zap.String("intent", string(result.Intent)),
+		zap.String("command", result.CommandName),
+		zap.Float64("confidence", result.Confidence),
+	)
 
 	switch result.Intent {
 	case intent.IntentCommand:
 		return p.routeToCommand(ctx, result.CommandName)
+	case intent.IntentTool:
+		// 工具意图：让 AI 在对话中调用对应工具
+		return p.routeToChat(ctx)
 	case intent.IntentIgnore:
 		return nil // 静默忽略
 	case intent.IntentChat:
@@ -46,13 +54,17 @@ func (p *IntentPass) Execute(ctx *conduit.MessageContext) error {
 
 // routeToCommand 把消息路由到命令处理
 func (p *IntentPass) routeToCommand(ctx *conduit.MessageContext, cmdName string) error {
-	// 将自然语言命令转换为 /命令 格式，复用 CommandPass
-	// 例如 "帮我签到" → "/签到"
+	// 将自然语言命令转换为命令处理，通过 MessageContext 传递命令信息
 	if cmdName != "" {
-		// 保存原始消息，修改为 /命令 格式
-		originalMsg := ctx.RawMsg
-		ctx.RawMsg = "/" + cmdName
-		defer func() { ctx.RawMsg = originalMsg }()
+		// Set command info directly in MessageContext
+		conduit.Set(ctx, commandNameKey, cmdName)
+		cmd, ok := p.Command.CmdSys.Lookup(cmdName)
+		if !ok {
+			return p.routeToChat(ctx)
+		}
+		conduit.Set(ctx, commandHandlerKey, cmd.Handler)
+		conduit.Set(ctx, commandArgsKey, []string{})
+		return (&ExecuteCommandPass{}).Execute(ctx)
 	}
 	return p.Command.Execute(ctx)
 }
@@ -88,15 +100,33 @@ func BuildIntentCommands(cmdSys *command.System) []intent.CommandDef {
 	return defs
 }
 
+// BuildIntentTools 从 tool.Registry 提取工具定义，用于意图分析 prompt
+func BuildIntentTools(toolReg *tool.Registry) []intent.ToolDef {
+	if toolReg == nil {
+		return nil
+	}
+	infos := toolReg.ToolInfos()
+	defs := make([]intent.ToolDef, len(infos))
+	for i, info := range infos {
+		defs[i] = intent.ToolDef{
+			Name:        info.Name,
+			Description: info.Desc,
+		}
+	}
+	return defs
+}
+
 // NewIntentPass 创建完整的 IntentPass（需要 LLM 可用）
-func NewIntentPass(llmClient llm.LLMClient, cmdSys *command.System, chatSvc *ai.ChatService, db *database.DB) *IntentPass {
+func NewIntentPass(llmClient llm.LLMClient, cmdSys *command.System, chatSvc *ai.ChatService, db *database.DB, toolReg *tool.Registry, logger *zap.Logger) *IntentPass {
 	cmdDefs := BuildIntentCommands(cmdSys)
-	analyzer := intent.NewAnalyzer(llmClient, cmdDefs)
+	toolDefs := BuildIntentTools(toolReg)
+	analyzer := intent.NewAnalyzer(llmClient, cmdDefs, toolDefs)
 
 	ip := &IntentPass{
 		Analyzer: analyzer,
 		Command:  &CommandPass{CmdSys: cmdSys},
 		Fallback: &FallbackPass{},
+		logger:   logger,
 	}
 
 	if chatSvc != nil && db != nil {

@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+
+	"go.uber.org/zap"
 )
 
 // 真实 Extism runtime 冒烟测试：用 SDK 自带 count_vowels.wasm 验证 CallWithContext 链路可用。
@@ -20,7 +22,7 @@ func TestExtismRuntime_SmokeTest(t *testing.T) {
 		t.Skipf("count_vowels.wasm not available: %v", err)
 	}
 
-	rt := NewRuntime(&DefaultLimits)
+	rt := NewRuntime(&DefaultLimits, zap.NewNop())
 	ctx := context.Background()
 
 	plugin, err := rt.CreateCheckInstance(ctx, wasmPath, hash)

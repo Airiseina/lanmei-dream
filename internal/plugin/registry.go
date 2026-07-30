@@ -3,13 +3,15 @@ package plugin
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"slices"
 	"sync"
 
+	"github.com/DaWesen/lanmei-dream/internal/ai/tool"
 	"github.com/DaWesen/lanmei-dream/internal/command"
 	"github.com/DaWesen/lanmei-dream/internal/database"
+	"github.com/cloudwego/eino/schema"
 	"github.com/zrurf/conduit"
+	"go.uber.org/zap"
 )
 
 // ============================================================
@@ -45,8 +47,10 @@ type Registry struct {
 	db *database.DB
 	// cmdSys 命令系统
 	cmdSys *command.System
+	// toolReg AI 工具注册表
+	toolReg *tool.Registry
 	// logger 日志记录器
-	logger *slog.Logger
+	logger *zap.Logger
 
 	// plugins 已注册的插件实例（按注册顺序）
 	plugins []Plugin
@@ -65,6 +69,7 @@ type pluginState struct {
 	passIDs      []string  // 注册的 Pass ID 列表
 	pipelineIDs  []string  // 注册的 Pipeline ID 列表
 	commandNames []string  // 注册的命令名列表
+	toolNames    []string  // 注册的工具名列表
 }
 
 type stateKind int
@@ -78,13 +83,14 @@ const (
 
 // NewRegistry 创建插件注册表。
 // engine 可以为 nil，稍后通过 SetEngine 设置（适用于引擎在 Bot.New 中创建的场景）。
-func NewRegistry(engine *conduit.Engine, store conduit.StateStore, db *database.DB, cmdSys *command.System) *Registry {
+func NewRegistry(engine *conduit.Engine, store conduit.StateStore, db *database.DB, cmdSys *command.System, toolReg *tool.Registry, logger *zap.Logger) *Registry {
 	return &Registry{
 		engine:      engine,
 		store:       store,
 		db:          db,
 		cmdSys:      cmdSys,
-		logger:      slog.Default(),
+		toolReg:     toolReg,
+		logger:      logger,
 		pluginState: make(map[string]pluginState),
 	}
 }
@@ -125,7 +131,7 @@ func (r *Registry) Register(p Plugin) error {
 
 	r.plugins = append(r.plugins, p)
 	r.pluginState[info.ID] = pluginState{state: stateRegistered}
-	r.logger.Info("plugin registered", "id", info.ID, "name", info.Name, "version", info.Version)
+	r.logger.Info("plugin registered", zap.String("id", info.ID), zap.String("name", info.Name), zap.String("version", info.Version))
 	return nil
 }
 
@@ -161,7 +167,7 @@ func (r *Registry) Unregister(pluginID string) error {
 	if wasStarted {
 		pCtx := r.newPluginContext()
 		if err := p.OnStop(pCtx); err != nil {
-			r.logger.Error("plugin OnStop failed", "id", pluginID, "error", err)
+			r.logger.Error("plugin OnStop failed", zap.String("id", pluginID), zap.Error(err))
 		}
 	}
 
@@ -184,7 +190,7 @@ func (r *Registry) Unregister(pluginID string) error {
 	delete(r.pluginState, pluginID)
 	r.mu.Unlock()
 
-	r.logger.Info("plugin unregistered", "id", pluginID)
+	r.logger.Info("plugin unregistered", zap.String("id", pluginID))
 
 	// 通知重建行为树（在锁外调用，避免 rebuildBT → SubtreeRefs → r.mu.RLock 死锁）
 	if r.rebuildBT != nil {
@@ -245,15 +251,41 @@ func (r *Registry) InitPlugin(ctx context.Context, pluginID string) error {
 		cmdNames = append(cmdNames, cmd.Name)
 	}
 
+	// Register tools if PluginInfo has them
+	toolNames := make([]string, 0, len(info.Tools))
+	if len(info.Tools) > 0 && r.toolReg != nil {
+		for _, td := range info.Tools {
+			toolInfo := &schema.ToolInfo{
+				Name:        td.Name,
+				Desc:        td.Description,
+				ParamsOneOf: td.Parameters,
+			}
+			t := &tool.Tool{Info: toolInfo, Handler: td.Handler}
+			if err := r.toolReg.Register(t); err != nil {
+				r.mu.RLock()
+				failedState := r.pluginState[pluginID]
+				r.mu.RUnlock()
+				failedState.subtreeID = info.SubtreeID
+				failedState.commandNames = cmdNames
+				failedState.toolNames = toolNames
+				r.cleanupResources(pluginID, failedState)
+				r.logger.Warn("插件工具注册失败", zap.String("plugin", pluginID), zap.String("tool", td.Name), zap.Error(err))
+				continue
+			}
+			toolNames = append(toolNames, td.Name)
+		}
+	}
+
 	r.mu.Lock()
 	st = r.pluginState[pluginID]
 	st.state = stateInitialized
 	st.subtreeID = info.SubtreeID
 	st.commandNames = cmdNames
+	st.toolNames = toolNames
 	r.pluginState[pluginID] = st
 	r.mu.Unlock()
 
-	r.logger.Info("plugin initialized", "id", pluginID, "commands", cmdNames)
+	r.logger.Info("plugin initialized", zap.String("id", pluginID), zap.Strings("commands", cmdNames), zap.Strings("tools", toolNames))
 	if r.rebuildBT != nil {
 		r.rebuildBT()
 	}
@@ -290,7 +322,7 @@ func (r *Registry) StartPlugin(ctx context.Context, pluginID string) error {
 		r.pluginState[pluginID] = current
 	}
 	r.mu.Unlock()
-	r.logger.Info("plugin started", "id", pluginID)
+	r.logger.Info("plugin started", zap.String("id", pluginID))
 	return nil
 }
 
@@ -321,7 +353,7 @@ func (r *Registry) StopPlugin(ctx context.Context, pluginID string) error {
 		r.pluginState[pluginID] = current
 	}
 	r.mu.Unlock()
-	r.logger.Info("plugin stopped", "id", pluginID)
+	r.logger.Info("plugin stopped", zap.String("id", pluginID))
 	return nil
 }
 
@@ -367,7 +399,7 @@ func (r *Registry) StopPlugins(ctx context.Context) {
 	r.mu.RUnlock()
 	for _, id := range ids {
 		if err := r.StopPlugin(ctx, id); err != nil {
-			r.logger.Error("plugin OnStop failed", "id", id, "error", err)
+			r.logger.Error("plugin OnStop failed", zap.String("id", id), zap.Error(err))
 		}
 	}
 }
@@ -452,6 +484,8 @@ func (r *Registry) newPluginContext() *PluginContext {
 		DB:       r.db,
 		CmdSys:   r.cmdSys,
 		Registry: r,
+		ToolReg:  r.toolReg,
+		Logger:   r.logger,
 		Ctx:      context.Background(),
 	}
 }
@@ -464,18 +498,23 @@ func (r *Registry) newPluginContextWith(ctx context.Context) *PluginContext {
 		DB:       r.db,
 		CmdSys:   r.cmdSys,
 		Registry: r,
+		ToolReg:  r.toolReg,
+		Logger:   r.logger,
 		Ctx:      ctx,
 	}
 }
 
 // makeCommandHandler 将插件的命令处理包装为 command.Handler。
+//
+// 插件命令的实际执行由行为树子树路由到插件管线完成，
+// 此 handler 仅作为 command.System 中的注册占位（供帮助列表和 Lookup 查询使用）。
+// 当通过意图分析路由到插件命令时，handler 会通过插件管线执行命令逻辑。
 func (r *Registry) makeCommandHandler(p Plugin, cmd CommandDef) func(ctx *command.Context) error {
 	return func(cmdCtx *command.Context) error {
 		pluginID := p.Info().ID
 		extra := map[string]any{
 			"plugin_id":    pluginID,
 			"command_name": cmd.Name,
-			SkipCommandKey: true,
 		}
 		if wasmPlugin, ok := p.(*WasmPlugin); ok {
 			extra["installation_id"] = wasmPlugin.InstallationID()
@@ -502,21 +541,26 @@ func (r *Registry) makeCommandHandler(p Plugin, cmd CommandDef) func(ctx *comman
 func (r *Registry) cleanupResources(pluginID string, st pluginState) {
 	if st.subtreeID != "" {
 		if err := r.engine.UnregisterSubtree(st.subtreeID); err != nil {
-			r.logger.Warn("failed to unregister subtree", "id", st.subtreeID, "error", err)
+			r.logger.Warn("failed to unregister subtree", zap.String("id", st.subtreeID), zap.Error(err))
 		}
 	}
 	for _, id := range st.pipelineIDs {
 		if err := r.engine.UnregisterPipeline(id); err != nil {
-			r.logger.Warn("failed to unregister pipeline", "id", id, "error", err)
+			r.logger.Warn("failed to unregister pipeline", zap.String("id", id), zap.Error(err))
 		}
 	}
 	for _, id := range st.passIDs {
 		if err := r.engine.UnregisterPass(id); err != nil {
-			r.logger.Warn("failed to unregister pass", "id", id, "error", err)
+			r.logger.Warn("failed to unregister pass", zap.String("id", id), zap.Error(err))
 		}
 	}
 	for _, name := range st.commandNames {
 		r.cmdSys.Unregister(name)
+	}
+	if r.toolReg != nil {
+		for _, toolName := range st.toolNames {
+			r.toolReg.Unregister(toolName)
+		}
 	}
 }
 
@@ -535,5 +579,14 @@ func (r *Registry) TrackPipeline(pluginID, pipelineID string) {
 	defer r.mu.Unlock()
 	st := r.pluginState[pluginID]
 	st.pipelineIDs = append(st.pipelineIDs, pipelineID)
+	r.pluginState[pluginID] = st
+}
+
+// TrackTool 记录插件注册的工具名。
+func (r *Registry) TrackTool(pluginID, toolName string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	st := r.pluginState[pluginID]
+	st.toolNames = append(st.toolNames, toolName)
 	r.pluginState[pluginID] = st
 }

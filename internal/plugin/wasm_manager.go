@@ -17,6 +17,7 @@ import (
 	"github.com/DaWesen/lanmei-dream/internal/config"
 	"github.com/DaWesen/lanmei-dream/internal/database"
 	"github.com/DaWesen/lanmei-dream/internal/model"
+	"go.uber.org/zap"
 )
 
 // WasmManager 负责 Wasm 文件托管、安装记录和运行时生命周期。
@@ -28,10 +29,11 @@ type WasmManager struct {
 	authorizer Authorizer
 	store      *database.PluginInstallationStore
 	registry   *Registry
+	logger     *zap.Logger
 }
 
 // NewWasmManager 创建插件管理器，并确保受控目录存在。
-func NewWasmManager(cfg *config.PluginConfig, db *database.DB, registry *Registry, authorizer Authorizer, limits *RuntimeLimits) (*WasmManager, error) {
+func NewWasmManager(cfg *config.PluginConfig, db *database.DB, registry *Registry, authorizer Authorizer, logger *zap.Logger, limits *RuntimeLimits) (*WasmManager, error) {
 	if cfg == nil || strings.TrimSpace(cfg.RootDir) == "" {
 		return nil, fmt.Errorf("插件 root_dir 不能为空")
 	}
@@ -55,11 +57,12 @@ func NewWasmManager(cfg *config.PluginConfig, db *database.DB, registry *Registr
 	return &WasmManager{
 		rootDir:    root,
 		limits:     selectedLimits,
-		runtime:    NewRuntime(&selectedLimits),
+		runtime:    NewRuntime(&selectedLimits, logger),
 		httpClient: newRemoteWasmHTTPClient(),
 		authorizer: authorizer,
 		store:      database.NewPluginInstallationStore(db.Orm),
 		registry:   registry,
+		logger:     logger,
 	}, nil
 }
 
@@ -155,7 +158,7 @@ func (m *WasmManager) Load(ctx context.Context, actor, installationID string) er
 		ctx,
 		installation.WasmPath,
 		installation.WasmSHA256,
-		NewStateHostFunctions(m.authorizer, m.registry.store, PluginPrincipal(installation.PluginID, installation.ID), installation.ID, &m.limits),
+		NewStateHostFunctions(m.authorizer, m.registry.store, PluginPrincipal(installation.PluginID, installation.ID), installation.ID, &m.limits, m.logger),
 	)
 	if err != nil {
 		return err
