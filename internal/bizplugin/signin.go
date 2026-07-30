@@ -2,14 +2,15 @@ package bizplugin
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
-	"log/slog"
 	"strings"
 	"time"
 
 	"github.com/DaWesen/lanmei-dream/internal/database"
 	pluginpkg "github.com/DaWesen/lanmei-dream/internal/plugin"
 	"github.com/zrurf/conduit"
+	"go.uber.org/zap"
 )
 
 // ============================================================
@@ -31,13 +32,14 @@ import (
 //
 //	pipeline.plugin.signin → [executePass, replyPass]
 type SigninPlugin struct {
-	db    *database.DB
-	store conduit.StateStore
+	db     *database.DB
+	store  conduit.StateStore
+	logger *zap.Logger
 }
 
 // NewSigninPlugin 创建签到插件。
-func NewSigninPlugin(db *database.DB) *SigninPlugin {
-	return &SigninPlugin{db: db}
+func NewSigninPlugin(db *database.DB, logger *zap.Logger) *SigninPlugin {
+	return &SigninPlugin{db: db, logger: logger}
 }
 
 // Info 返回签到插件元信息。
@@ -51,6 +53,13 @@ func (p *SigninPlugin) Info() pluginpkg.PluginInfo {
 			{Name: "签到", Description: "每日试试手气"},
 		},
 		SubtreeID: pluginpkg.SubtreeID("signin"),
+		Tools: []pluginpkg.ToolDef{
+			{
+				Name:        "signin_status",
+				Description: "查询用户签到状态和积分",
+				Handler:     p.toolSigninStatus,
+			},
+		},
 	}
 }
 
@@ -63,7 +72,7 @@ func (p *SigninPlugin) OnInit(ctx *pluginpkg.PluginContext) error {
 	executePassID := pluginpkg.PassID("signin", "execute")
 	replyPassID := pluginpkg.PassID("signin", "reply")
 
-	executePass := &signinExecutePass{db: p.db, store: p.store}
+	executePass := &signinExecutePass{db: p.db, store: p.store, logger: p.logger}
 	replyPass := &signinReplyPass{}
 
 	if err := ctx.Engine.RegisterPass(executePassID, executePass); err != nil {
@@ -140,8 +149,9 @@ const (
 
 // signinExecutePass 执行签到逻辑：读取状态 → 计算积分 → 写入状态
 type signinExecutePass struct {
-	db    *database.DB
-	store conduit.StateStore
+	db     *database.DB
+	store  conduit.StateStore
+	logger *zap.Logger
 }
 
 func (pass *signinExecutePass) Execute(ctx *conduit.MessageContext) error {
@@ -162,7 +172,7 @@ func (pass *signinExecutePass) Execute(ctx *conduit.MessageContext) error {
 	stateKey := pluginpkg.StoreKey("signin", "state:"+ctx.UserID)
 	lastDate, err := pass.store.Get(ctx.Ctx, stateKey+":date")
 	if err != nil {
-		slog.Warn("signin: failed to read last sign-in date", "user", ctx.UserID, "error", err)
+		pass.logger.Warn("signin: failed to read last sign-in date", zap.String("user", ctx.UserID), zap.Error(err))
 	}
 	streakDays := storeGetInt(pass.store, ctx.Ctx, stateKey+":streak")
 	totalPoints := storeGetInt(pass.store, ctx.Ctx, stateKey+":total")
@@ -185,13 +195,13 @@ func (pass *signinExecutePass) Execute(ctx *conduit.MessageContext) error {
 
 		// 更新 StateStore
 		if err := pass.store.Set(ctx.Ctx, stateKey+":date", today, 0); err != nil {
-			slog.Error("signin: failed to save sign-in date", "user", ctx.UserID, "error", err)
+			pass.logger.Error("signin: failed to save sign-in date", zap.String("user", ctx.UserID), zap.Error(err))
 		}
 		if err := pass.store.Set(ctx.Ctx, stateKey+":streak", fmt.Sprintf("%d", streakDays), 0); err != nil {
-			slog.Error("signin: failed to save streak days", "user", ctx.UserID, "error", err)
+			pass.logger.Error("signin: failed to save streak days", zap.String("user", ctx.UserID), zap.Error(err))
 		}
 		if err := pass.store.Set(ctx.Ctx, stateKey+":total", fmt.Sprintf("%d", totalPoints), 0); err != nil {
-			slog.Error("signin: failed to save total points", "user", ctx.UserID, "error", err)
+			pass.logger.Error("signin: failed to save total points", zap.String("user", ctx.UserID), zap.Error(err))
 		}
 	}
 
@@ -256,4 +266,22 @@ func storeGetInt(store conduit.StateStore, ctx context.Context, key string) int 
 	var n int
 	fmt.Sscanf(val, "%d", &n)
 	return n
+}
+
+// toolSigninStatus 是 AI 工具处理器，查询用户签到状态和积分。
+func (p *SigninPlugin) toolSigninStatus(ctx context.Context, argsJSON string) (string, error) {
+	var args struct {
+		UserID string `json:"user_id"`
+	}
+	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
+		return "", fmt.Errorf("参数解析失败: %w", err)
+	}
+
+	stateKey := pluginpkg.StoreKey("signin", "state:"+args.UserID)
+	lastDate, _ := p.store.Get(ctx, stateKey+":date")
+	streakDays := storeGetInt(p.store, ctx, stateKey+":streak")
+	totalPoints := storeGetInt(p.store, ctx, stateKey+":total")
+
+	return fmt.Sprintf("用户 %s: 最后签到日期=%s, 连续天数=%d, 累计积分=%d",
+		args.UserID, lastDate, streakDays, totalPoints), nil
 }

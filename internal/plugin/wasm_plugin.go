@@ -3,7 +3,9 @@ package plugin
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
+	"time"
 
 	extism "github.com/extism/go-sdk"
 	"github.com/zrurf/conduit"
@@ -68,6 +70,14 @@ func (p *WasmPlugin) Info() PluginInfo {
 	for _, command := range p.metadata.Commands {
 		commands = append(commands, CommandDef{Name: command.Name, Description: command.Description})
 	}
+	tools := make([]ToolDef, 0, len(p.metadata.Tools))
+	for _, td := range p.metadata.Tools {
+		tools = append(tools, ToolDef{
+			Name:        td.Name,
+			Description: td.Description,
+			Handler:     p.handleToolCall(td.Name),
+		})
+	}
 	return PluginInfo{
 		ID:          p.metadata.ID,
 		Name:        p.metadata.Name,
@@ -75,6 +85,7 @@ func (p *WasmPlugin) Info() PluginInfo {
 		Version:     p.metadata.Version,
 		Commands:    commands,
 		SubtreeID:   SubtreeID(p.metadata.ID),
+		Tools:       tools,
 	}
 }
 
@@ -93,13 +104,25 @@ func (p *WasmPlugin) OnInit(ctx *PluginContext) error {
 	}
 	ctx.Registry.TrackPipeline(p.metadata.ID, pipelineID)
 
+	// 构建命令名匹配条件：检查 RawMsg 是否以 /<命令名> 开头
+	commandNames := make([]string, 0, len(p.metadata.Commands))
+	for _, cmd := range p.metadata.Commands {
+		commandNames = append(commandNames, cmd.Name)
+	}
 	subtree := conduit.NewSequence(
 		conduit.NewCondition(func(message *conduit.MessageContext) bool {
-			pluginID, pluginOK := message.Extra["plugin_id"].(string)
-			installationID, installationOK := message.Extra["installation_id"].(string)
-			skip, skipOK := message.Extra[SkipCommandKey].(bool)
-			return pluginOK && installationOK && skipOK && skip &&
-				pluginID == p.metadata.ID && installationID == p.installationID
+			for _, name := range commandNames {
+				if strings.HasPrefix(message.RawMsg, "/"+name) {
+					// 将命令名写入 Extra，供 WasmCommandPass 使用
+					message.Extra["command_name"] = name
+					message.Extra["plugin_id"] = p.metadata.ID
+					if p.installationID != "" {
+						message.Extra["installation_id"] = p.installationID
+					}
+					return true
+				}
+			}
+			return false
 		}),
 		conduit.NewAction(pipelineID),
 	)
@@ -121,6 +144,41 @@ func (p *WasmPlugin) OnStop(ctx *PluginContext) error {
 		p.closeErr = p.runtime.Close(ctx.Ctx, p.instance, &p.callMu)
 	})
 	return p.closeErr
+}
+
+// handleToolCall 返回一个工具调用处理函数，用于处理 AI 对 WASM 插件工具的调用。
+func (p *WasmPlugin) handleToolCall(toolName string) func(ctx context.Context, argsJSON string) (string, error) {
+	return func(ctx context.Context, argsJSON string) (string, error) {
+		req := HandleRequest{
+			ABIVersion: ABIVersion,
+			EventID:    generateEventID(),
+			EventType:  EventTypeToolCall,
+			Timestamp:  time.Now().UTC().Format(time.RFC3339),
+			Message:    MessageInfo{},
+			ToolCall: &ToolCallInfo{
+				ToolName:  toolName,
+				Arguments: argsJSON,
+				CallID:    generateEventID(),
+			},
+		}
+		resp, err := p.runtime.CallHandle(ctx, p.instance, &p.callMu, req)
+		if err != nil {
+			return "", fmt.Errorf("Wasm 工具调用失败 plugin=%s tool=%s: %w", p.metadata.ID, toolName, err)
+		}
+		if !resp.Handled {
+			// 插件未处理此工具调用，返回错误让 LLM 知道调用失败
+			return "", fmt.Errorf("Wasm 插件 %s 未处理工具调用 %s", p.metadata.ID, toolName)
+		}
+		if len(resp.Outputs) == 0 {
+			return "", nil
+		}
+		return resp.Outputs[0].Content, nil
+	}
+}
+
+// generateEventID 生成唯一事件 ID。
+func generateEventID() string {
+	return fmt.Sprintf("evt-%d", time.Now().UTC().UnixNano())
 }
 
 // Close 在 Registry 注册前失败时回收实例。

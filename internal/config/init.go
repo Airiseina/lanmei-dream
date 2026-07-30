@@ -74,6 +74,14 @@ func initFlags() {
 	pflag.String("bot.nickname", "", "机器人昵称")
 	pflag.String("bot.super_users", "", "超级用户列表（格式：platform:userID,逗号分隔）")
 	pflag.String("plugin.root_dir", "", "Wasm 插件根目录")
+	// Log
+	pflag.String("log.level", "", "日志级别：debug/info/warn/error")
+	pflag.Bool("log.persistent", false, "是否持久化日志到文件")
+	pflag.String("log.path", "", "日志文件路径")
+	pflag.Bool("log.compression", false, "是否压缩旧日志文件")
+	pflag.Int("log.max_size", 0, "单个日志文件最大大小（MB）")
+	pflag.Int("log.max_age", 0, "日志文件最大保留天数")
+	pflag.Int("log.max_backups", 0, "最多保留的旧日志文件数")
 }
 
 func setDefaults(v *viper.Viper) {
@@ -100,4 +108,13 @@ func setDefaults(v *viper.Viper) {
 
 	// Plugin 默认值
 	v.SetDefault("plugin.root_dir", "./data/plugins")
+
+	// Log 默认值
+	v.SetDefault("log.level", "info")
+	v.SetDefault("log.persistent", false)
+	v.SetDefault("log.path", "./logs/lanmei.log")
+	v.SetDefault("log.compression", true)
+	v.SetDefault("log.max_size", 100)
+	v.SetDefault("log.max_age", 30)
+	v.SetDefault("log.max_backups", 10)
 }

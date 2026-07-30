@@ -16,6 +16,7 @@ import (
 	"github.com/DaWesen/lanmei-dream/internal/config"
 	"github.com/DaWesen/lanmei-dream/internal/infra"
 	"github.com/zrurf/conduit"
+	"go.uber.org/zap"
 )
 
 // TestSigninWasm_EndToEnd 覆盖示例 Wasm 的构建产物经数据库安装、加载和启动后，
@@ -46,7 +47,7 @@ func TestSigninWasm_EndToEnd(t *testing.T) {
 		URL: envOr("LANMEI_DATABASE_URL", "postgres://lanmei:lanmei@localhost:55432/lanmei?sslmode=disable"),
 	}, &config.RedisConfig{
 		Addr: envOr("LANMEI_REDIS_ADDR", "localhost:56379"),
-	})
+	}, zap.NewNop())
 	if err != nil {
 		t.Fatalf("setup Docker integration infrastructure: %v", err)
 	}
@@ -67,8 +68,8 @@ func TestSigninWasm_EndToEnd(t *testing.T) {
 
 	engine := conduit.New(inf.StateStore, conduit.WithTimeout(10*time.Second))
 	cmdSys := command.New()
-	registry := NewRegistry(engine, inf.StateStore, inf.DB, cmdSys)
-	manager, err := NewWasmManager(&config.PluginConfig{RootDir: t.TempDir()}, inf.DB, registry, authorizer, nil)
+	registry := NewRegistry(engine, inf.StateStore, inf.DB, cmdSys, nil, zap.NewNop())
+	manager, err := NewWasmManager(&config.PluginConfig{RootDir: t.TempDir()}, inf.DB, registry, authorizer, zap.NewNop(), nil)
 	if err != nil {
 		t.Fatalf("create Wasm manager: %v", err)
 	}

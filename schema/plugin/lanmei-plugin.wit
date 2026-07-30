@@ -1,0 +1,240 @@
+package lanmei:plugin;
+
+/// 插件元信息
+record plugin-info {
+    abi-version: string,
+    id: string,
+    name: string,
+    description: string,
+    version: string,
+}
+
+/// 命令声明
+record command-decl {
+    name: string,
+    description: string,
+}
+
+/// 工具参数属性
+record property-schema {
+    type: string,
+    description: string,
+}
+
+/// 工具参数定义
+record parameter-schema {
+    properties: list<tuple<string, property-schema>>,
+    required: list<string>,
+}
+
+/// 工具声明
+record tool-decl {
+    name: string,
+    description: string,
+    parameters: option<parameter-schema>,
+}
+
+/// 权限请求
+record permission-request {
+    sets: list<string>,
+    permissions: list<string>,
+    scopes: list<tuple<string, list<tuple<string, string>>>>,
+    required: bool,
+    reason: string,
+}
+
+/// 完整的插件信息响应
+record plugin-info-response {
+    abi-version: string,
+    id: string,
+    name: string,
+    description: string,
+    version: string,
+    commands: list<command-decl>,
+    tools: list<tool-decl>,
+    requested-permissions: list<permission-request>,
+}
+
+/// 用户信息
+record user-info {
+    id: string,
+    nickname: option<string>,
+}
+
+/// 群组信息
+record group-info {
+    id: string,
+}
+
+/// 消息信息
+record message-info {
+    message-id: option<string>,
+    text: string,
+    raw: string,
+    user: user-info,
+    group: option<group-info>,
+    is-group: bool,
+}
+
+/// 命令信息
+record command-info {
+    name: string,
+    args: list<string>,
+    raw-args: string,
+    raw-message: string,
+}
+
+/// 工具调用信息
+record tool-call-info {
+    tool-name: string,
+    arguments: string,
+    call-id: string,
+}
+
+/// 事件类型
+variant event-type {
+    command,
+    tool-call,
+}
+
+/// 处理请求
+record handle-request {
+    abi-version: string,
+    event-id: string,
+    event-type: event-type,
+    timestamp: string,
+    message: message-info,
+    command: option<command-info>,
+    tool-call: option<tool-call-info>,
+}
+
+/// 输出项
+record output-item {
+    type: string,
+    content: string,
+}
+
+/// 处理响应
+record handle-response {
+    handled: bool,
+    outputs: list<output-item>,
+}
+
+/// 初始化请求
+record init-request {
+    abi-version: string,
+    plugin-id: string,
+    installation-id: string,
+    config: list<tuple<string, string>>,
+    granted-roles: list<string>,
+    effective-actions: list<string>,
+}
+
+/// 通用 OK 响应
+record generic-ok-response {
+    ok: bool,
+    error: option<string>,
+}
+
+/// 状态获取请求
+record state-get-request {
+    key: string,
+}
+
+/// 状态设置请求
+record state-set-request {
+    key: string,
+    value: string,
+    ttl-ms: s64,
+}
+
+/// 状态删除请求
+record state-delete-request {
+    key: string,
+}
+
+/// 原子操作 CAS 请求
+record compare-and-swap-request {
+    key: string,
+    old-value: string,
+    new-value: string,
+    ttl-ms: s64,
+}
+
+/// 原子操作 IncrBy 请求
+record incr-by-request {
+    key: string,
+    delta: s64,
+}
+
+/// 原子操作 SetIfNotExists 请求
+record set-if-not-exists-request {
+    key: string,
+    value: string,
+    ttl-ms: s64,
+}
+
+/// HTTP GET 请求
+record http-get-request {
+    url: string,
+    headers: list<tuple<string, string>>,
+}
+
+/// HTTP POST 请求
+record http-post-request {
+    url: string,
+    headers: list<tuple<string, string>>,
+    body: list<u8>,
+}
+
+/// 数据库查询请求
+record db-query-request {
+    table: string,
+    query-json: string,
+}
+
+/// 数据库执行请求
+record db-exec-request {
+    table: string,
+    exec-json: string,
+}
+
+/// Host Function 错误
+record host-error {
+    code: string,
+    message: string,
+}
+
+/// Host Function 响应信封
+variant host-response {
+    ok(option<list<u8>>),
+    err(host-error),
+}
+
+/// 插件必须导出的接口
+interface plugin {
+    plugin-info: func(host-abi-version: string) -> plugin-info-response;
+    init: func(request: init-request) -> generic-ok-response;
+    handle: func(request: handle-request) -> handle-response;
+    start: func(started-at: string) -> generic-ok-response;
+    stop: func(reason: string) -> generic-ok-response;
+}
+
+/// 宿主提供给插件的接口
+interface host {
+    state-get: func(request: state-get-request) -> host-response;
+    state-set: func(request: state-set-request) -> host-response;
+    state-delete: func(request: state-delete-request) -> host-response;
+    compare-and-swap: func(request: compare-and-swap-request) -> host-response;
+    incr-by: func(request: incr-by-request) -> host-response;
+    set-if-not-exists: func(request: set-if-not-exists-request) -> host-response;
+    http-get: func(request: http-get-request) -> host-response;
+    http-post: func(request: http-post-request) -> host-response;
+    db-query: func(request: db-query-request) -> host-response;
+    db-exec: func(request: db-exec-request) -> host-response;
+}
+
+world lanmei-plugin {
+    export plugin;
+    import host;
+}

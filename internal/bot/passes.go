@@ -10,13 +10,12 @@ import (
 	"github.com/DaWesen/lanmei-dream/internal/ai/llm"
 	"github.com/DaWesen/lanmei-dream/internal/command"
 	"github.com/DaWesen/lanmei-dream/internal/database"
-	pluginpkg "github.com/DaWesen/lanmei-dream/internal/plugin"
 )
 
 // ── 上下文键 ──
 
 const (
-	KeyPlatform       = "platform"        // string 平台标识（qq/wechat/telegram/...）
+	KeyPlatform       = "platform"         // string 平台标识（qq/wechat/telegram/...）
 	KeyPlatformUserID = "platform_user_id" // string 平台用户 ID
 	KeyNickname       = "nickname"         // string 昵称
 	KeyMessageID      = "message_id"       // string 消息 ID
@@ -54,6 +53,85 @@ func (p *CommandPass) Execute(ctx *conduit.MessageContext) error {
 	}
 
 	return err
+}
+
+// ── CommandRouterPass：解析斜杠命令并将命令信息写入 MessageContext ──
+
+// CommandRouterPass 解析斜杠命令并将命令信息写入 MessageContext
+type CommandRouterPass struct {
+	CmdSys *command.System
+}
+
+const (
+	commandNameKey    = "bot.command.name"
+	commandArgsKey    = "bot.command.args"
+	commandHandlerKey = "bot.command.handler"
+)
+
+func (p *CommandRouterPass) Execute(ctx *conduit.MessageContext) error {
+	name := strings.TrimPrefix(ctx.RawMsg, "/")
+	parts := strings.Fields(name)
+	if len(parts) == 0 {
+		return fmt.Errorf("empty command")
+	}
+
+	cmdName := parts[0]
+	cmd, ok := p.CmdSys.Lookup(cmdName)
+	if !ok {
+		conduit.AppendOutput(ctx, &conduit.Message{
+			UserID: ctx.UserID, GroupID: ctx.GroupID, IsGroup: ctx.IsGroup,
+			Content: fmt.Sprintf("未知命令: /%s\n输入 /帮助 查看可用命令", cmdName),
+		})
+		return nil
+	}
+
+	// 将命令信息写入 MessageContext
+	args := parts[1:]
+	conduit.Set(ctx, commandNameKey, cmdName)
+	conduit.Set(ctx, commandArgsKey, args)
+	conduit.Set(ctx, commandHandlerKey, cmd.Handler)
+
+	return nil
+}
+
+// ── ExecuteCommandPass：从 MessageContext 读取命令信息并执行 ──
+
+// ExecuteCommandPass 从 MessageContext 读取命令信息并执行
+type ExecuteCommandPass struct{}
+
+func (p *ExecuteCommandPass) Execute(ctx *conduit.MessageContext) error {
+	nameRaw, _ := conduit.Get[string](ctx, commandNameKey)
+	argsRaw, _ := conduit.Get[[]string](ctx, commandArgsKey)
+	handlerRaw, _ := conduit.Get[func(*command.Context) error](ctx, commandHandlerKey)
+
+	if handlerRaw == nil {
+		return nil
+	}
+
+	var replies []string
+	cmdCtx := &command.Context{
+		Platform:       platformFromCtx(ctx),
+		PlatformUserID: platformUserIDFromCtx(ctx),
+		GroupID:        ctx.GroupID,
+		IsGroup:        ctx.IsGroup,
+		CommandName:    nameRaw,
+		CommandArgs:    argsRaw,
+		Message:        ctx.RawMsg,
+		Reply:          func(s string) { replies = append(replies, s) },
+	}
+
+	if err := handlerRaw(cmdCtx); err != nil {
+		return err
+	}
+
+	for _, r := range replies {
+		conduit.AppendOutput(ctx, &conduit.Message{
+			UserID: ctx.UserID, GroupID: ctx.GroupID, IsGroup: ctx.IsGroup,
+			Content: r,
+		})
+	}
+
+	return nil
 }
 
 // ── RoleplayPass：AI 角色扮演对话 ──
@@ -127,20 +205,12 @@ func (p *FallbackPass) Execute(ctx *conduit.MessageContext) error {
 // ── 条件判断函数 ──
 
 // IsCommand 判断消息是否以 / 开头
-// 跳过由插件命令处理器发起的请求（SkipCommandKey），防止无限递归
 func IsCommand(ctx *conduit.MessageContext) bool {
-	if _, ok := ctx.Extra[pluginpkg.SkipCommandKey]; ok {
-		return false
-	}
 	return strings.HasPrefix(ctx.RawMsg, "/")
 }
 
 // IsAdminCommand 判断消息是否以 /admin 开头
-// 同样跳过插件命令处理器发起的请求
 func IsAdminCommand(ctx *conduit.MessageContext) bool {
-	if _, ok := ctx.Extra[pluginpkg.SkipCommandKey]; ok {
-		return false
-	}
 	return strings.HasPrefix(ctx.RawMsg, "/admin")
 }
 

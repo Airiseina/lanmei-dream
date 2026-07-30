@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/zrurf/conduit"
+	"go.uber.org/zap"
 )
 
 // fakeStateAuthorizer 是用于 Host Function 测试的 stub authorizer。
@@ -48,12 +49,12 @@ func TestHostStateIsolation_TwoInstallations(t *testing.T) {
 	// 安装实例 A
 	installA := "install-aaa"
 	principalA := PluginPrincipal("signin", installA)
-	hostFnsA := NewStateHostFunctions(auth, store, principalA, installA, &limits)
+	hostFnsA := NewStateHostFunctions(auth, store, principalA, installA, &limits, zap.NewNop())
 
 	// 安装实例 B
 	installB := "install-bbb"
 	principalB := PluginPrincipal("signin", installB)
-	hostFnsB := NewStateHostFunctions(auth, store, principalB, installB, &limits)
+	hostFnsB := NewStateHostFunctions(auth, store, principalB, installB, &limits, zap.NewNop())
 
 	ctx := context.Background()
 	guestKey := "user:10001:last_sign"
@@ -95,7 +96,7 @@ func TestHostState_PermissionDenied(t *testing.T) {
 
 	install := "install-deny"
 	principal := PluginPrincipal("signin", install)
-	_ = NewStateHostFunctions(auth, store, principal, install, &limits)
+	_ = NewStateHostFunctions(auth, store, principal, install, &limits, zap.NewNop())
 
 	// 直接检查 authorizer 拒绝写操作
 	if err := auth.Require(principal, ActionStateWrite); err == nil {

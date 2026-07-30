@@ -7,8 +7,10 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/DaWesen/lanmei-dream/internal/ai/tool"
 	"github.com/DaWesen/lanmei-dream/internal/command"
 	"github.com/zrurf/conduit"
+	"go.uber.org/zap"
 )
 
 // fakePlugin 用于测试 Registry 生命周期。
@@ -58,7 +60,7 @@ func TestRegistryInitPluginSingle(t *testing.T) {
 	store := newMemStateStore()
 	cmdSys := command.New()
 	engine := conduit.New(store)
-	reg := NewRegistry(engine, store, nil, cmdSys)
+	reg := NewRegistry(engine, store, nil, cmdSys, tool.NewRegistry(), zap.NewNop())
 
 	fp := &fakePlugin{info: PluginInfo{ID: "fp", Name: "Fake", Version: "1.0"}}
 	if err := reg.Register(fp); err != nil {
@@ -77,7 +79,7 @@ func TestRegistryInitPluginSingle(t *testing.T) {
 }
 
 func TestRegistryInitPluginNotFound(t *testing.T) {
-	reg := NewRegistry(nil, newMemStateStore(), nil, command.New())
+	reg := NewRegistry(nil, newMemStateStore(), nil, command.New(), nil, zap.NewNop())
 	if err := reg.InitPlugin(context.Background(), "missing"); err == nil {
 		t.Fatal("expected not found error")
 	}
@@ -87,7 +89,7 @@ func TestRegistryInitPluginOnInitErrorRollsBack(t *testing.T) {
 	store := newMemStateStore()
 	cmdSys := command.New()
 	engine := conduit.New(store)
-	reg := NewRegistry(engine, store, nil, cmdSys)
+	reg := NewRegistry(engine, store, nil, cmdSys, tool.NewRegistry(), zap.NewNop())
 
 	fp := &fakePlugin{
 		info:    PluginInfo{ID: "fail", Name: "F", Version: "1.0", Commands: []CommandDef{{Name: "fail", Description: "x"}}},
@@ -109,7 +111,7 @@ func TestRegistryStartStopPluginSingle(t *testing.T) {
 	store := newMemStateStore()
 	cmdSys := command.New()
 	engine := conduit.New(store)
-	reg := NewRegistry(engine, store, nil, cmdSys)
+	reg := NewRegistry(engine, store, nil, cmdSys, tool.NewRegistry(), zap.NewNop())
 
 	fp := &fakePlugin{info: PluginInfo{ID: "ss", Name: "SS", Version: "1.0"}}
 	_ = reg.Register(fp)
@@ -126,7 +128,7 @@ func TestRegistryStartStopPluginSingle(t *testing.T) {
 }
 
 func TestRegistryStartPluginNotInitializedFails(t *testing.T) {
-	reg := NewRegistry(nil, newMemStateStore(), nil, command.New())
+	reg := NewRegistry(nil, newMemStateStore(), nil, command.New(), nil, zap.NewNop())
 	fp := &fakePlugin{info: PluginInfo{ID: "n", Name: "N", Version: "1"}}
 	_ = reg.Register(fp)
 	if err := reg.StartPlugin(context.Background(), "n"); err == nil {
@@ -135,7 +137,7 @@ func TestRegistryStartPluginNotInitializedFails(t *testing.T) {
 }
 
 func TestRegistryStopPluginNotStartedNoOps(t *testing.T) {
-	reg := NewRegistry(nil, newMemStateStore(), nil, command.New())
+	reg := NewRegistry(nil, newMemStateStore(), nil, command.New(), nil, zap.NewNop())
 	fp := &fakePlugin{info: PluginInfo{ID: "n2", Name: "N2", Version: "1"}}
 	_ = reg.Register(fp)
 	_ = reg.InitPlugin(context.Background(), "n2")
@@ -150,7 +152,7 @@ func TestRegistryBatchCallsUsesSingle(t *testing.T) {
 	store := newMemStateStore()
 	engine := conduit.New(store)
 	cmdSys := command.New()
-	reg := NewRegistry(engine, store, nil, cmdSys)
+	reg := NewRegistry(engine, store, nil, cmdSys, tool.NewRegistry(), zap.NewNop())
 
 	for i := range 3 {
 		_ = reg.Register(&fakePlugin{info: PluginInfo{
@@ -179,7 +181,7 @@ func TestRegistryInitPluginRegistersCommand(t *testing.T) {
 	store := newMemStateStore()
 	engine := conduit.New(store)
 	cmdSys := command.New()
-	reg := NewRegistry(engine, store, nil, cmdSys)
+	reg := NewRegistry(engine, store, nil, cmdSys, tool.NewRegistry(), zap.NewNop())
 
 	fp := &fakePlugin{info: PluginInfo{
 		ID: "cmdp", Name: "C", Version: "1.0",

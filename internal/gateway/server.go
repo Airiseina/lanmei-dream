@@ -2,8 +2,8 @@ package gateway
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
-	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/lxzan/gws"
+	"go.uber.org/zap"
 )
 
 const (
@@ -33,6 +34,7 @@ type Server struct {
 	upgrader *gws.Upgrader
 	connSeq  atomic.Int64 // 连接 ID 递增序列
 	httpSrv  *http.Server // HTTP 服务（用于优雅关闭）
+	logger   *zap.Logger
 }
 
 // ListenConfig 网关监听配置
@@ -42,11 +44,12 @@ type ListenConfig struct {
 }
 
 // NewServer 创建网关服务端
-func NewServer(cfg *ListenConfig, handler EventHandler) *Server {
+func NewServer(cfg *ListenConfig, logger *zap.Logger, handler EventHandler) *Server {
 	s := &Server{
 		cfg:     cfg,
 		hub:     NewHub(),
 		handler: handler,
+		logger:  logger,
 	}
 	s.upgrader = gws.NewUpgrader(s, &gws.ServerOption{
 		ParallelEnabled: true,
@@ -77,8 +80,13 @@ func (s *Server) Run() error {
 
 	s.httpSrv = &http.Server{Addr: s.cfg.ListenAddr, Handler: mux}
 
-	log.Printf("gateway: 监听 %s", s.cfg.ListenAddr)
-	return s.httpSrv.ListenAndServe()
+	s.logger.Info("gateway: 监听", zap.String("addr", s.cfg.ListenAddr))
+	err := s.httpSrv.ListenAndServe()
+	// http.ErrServerClosed 是 Shutdown()/Close() 引起的正常关闭，不视为错误
+	if errors.Is(err, http.ErrServerClosed) {
+		return nil
+	}
+	return err
 }
 
 // Shutdown 优雅关闭：关闭所有 WS 连接，然后关闭 HTTP 监听器
@@ -125,7 +133,7 @@ func (s *Server) doUpgrade(w http.ResponseWriter, r *http.Request, protocol Prot
 
 	socket, err := s.upgrader.Upgrade(w, r)
 	if err != nil {
-		log.Printf("gateway: WS 升级失败: %v", err)
+		s.logger.Error("gateway: WS 升级失败", zap.Error(err))
 		return
 	}
 
@@ -143,8 +151,12 @@ func (s *Server) doUpgrade(w http.ResponseWriter, r *http.Request, protocol Prot
 	session.Store(sessionKeyPlat, string(platform))
 
 	s.hub.Register(conn)
-	log.Printf("gateway: 新连接 id=%s protocol=%s platform=%s remote=%s",
-		connID, protocol, platform, socket.RemoteAddr().String())
+	s.logger.Info("gateway: 新连接",
+		zap.String("id", connID),
+		zap.String("protocol", string(protocol)),
+		zap.String("platform", string(platform)),
+		zap.String("remote", socket.RemoteAddr().String()),
+	)
 
 	// 启动 ReadLoop 读取帧，否则 OnMessage/OnPing/OnClose 等回调不会被调用
 	go socket.ReadLoop()
@@ -209,9 +221,9 @@ func (s *Server) OnClose(socket *gws.Conn, err error) {
 	}
 	s.hub.Unregister(connID)
 	if err != nil {
-		log.Printf("gateway: 连接关闭 id=%s err=%v", connID, err)
+		s.logger.Info("gateway: 连接关闭", zap.String("id", connID), zap.Error(err))
 	} else {
-		log.Printf("gateway: 连接关闭 id=%s", connID)
+		s.logger.Info("gateway: 连接关闭", zap.String("id", connID))
 	}
 }
 
@@ -235,7 +247,7 @@ func (s *Server) OnMessage(socket *gws.Conn, message *gws.Message) {
 	}
 
 	data := message.Data.Bytes()
-	log.Printf("gateway: 收到帧 conn=%s protocol=%s len=%d", connID, conn.Protocol, len(data))
+	s.logger.Debug("gateway: 收到帧", zap.String("conn", connID), zap.String("protocol", string(conn.Protocol)), zap.Int("len", len(data)))
 
 	// 根据协议版本解析事件
 	switch conn.Protocol {
@@ -244,7 +256,7 @@ func (s *Server) OnMessage(socket *gws.Conn, message *gws.Message) {
 	case ProtocolV11:
 		s.handleV11Message(conn, data)
 	default:
-		log.Printf("gateway: 未知协议 conn=%s protocol=%s", connID, conn.Protocol)
+		s.logger.Warn("gateway: 未知协议", zap.String("conn", connID), zap.String("protocol", string(conn.Protocol)))
 	}
 }
 
@@ -266,19 +278,24 @@ func (s *Server) handleV12Message(conn *Connection, data []byte) {
 	if tag == "response" {
 		var resp ActionResponse
 		if err := json.Unmarshal(data, &resp); err != nil {
-			log.Printf("gateway: OB12 响应解析失败 conn=%s err=%v", conn.ID, err)
+			s.logger.Error("gateway: OB12 响应解析失败", zap.String("conn", conn.ID), zap.Error(err))
 			return
 		}
 		if resp.RetCode != 0 || resp.Status == "failed" {
-			log.Printf("gateway: OB12 API 失败 conn=%s echo=%s status=%s retcode=%d msg=%s",
-				conn.ID, resp.Echo, resp.Status, resp.RetCode, resp.Message)
+			s.logger.Warn("gateway: OB12 API 失败",
+				zap.String("conn", conn.ID),
+				zap.String("echo", resp.Echo),
+				zap.String("status", resp.Status),
+				zap.Int64("retcode", resp.RetCode),
+				zap.String("msg", resp.Message),
+			)
 		}
 		return
 	}
 
 	var evt EventV12
 	if err := json.Unmarshal(data, &evt); err != nil {
-		log.Printf("gateway: OB12 事件解析失败 conn=%s err=%v data=%s", conn.ID, err, string(data))
+		s.logger.Error("gateway: OB12 事件解析失败", zap.String("conn", conn.ID), zap.Error(err), zap.String("data", string(data)))
 		return
 	}
 
@@ -289,8 +306,12 @@ func (s *Server) handleV12Message(conn *Connection, data []byte) {
 
 	// 元事件处理
 	if evt.Type == "meta" {
-		log.Printf("gateway: 元事件 conn=%s impl=%s platform=%s self_id=%s",
-			conn.ID, evt.Impl, evt.Platform, evt.SelfID)
+		s.logger.Info("gateway: 元事件",
+			zap.String("conn", conn.ID),
+			zap.String("impl", evt.Impl),
+			zap.String("platform", evt.Platform),
+			zap.String("self_id", evt.SelfID),
+		)
 		if evt.Impl != "" {
 			conn.SetImpl(evt.Impl)
 		}
@@ -303,13 +324,18 @@ func (s *Server) handleV12Message(conn *Connection, data []byte) {
 		return // 非消息事件，暂不处理
 	}
 
-	log.Printf("gateway: OB12 消息 conn=%s user=%s group=%s is_group=%v content_len=%d",
-		conn.ID, msg.UserID, msg.GroupID, msg.IsGroup, len(msg.Content))
+	s.logger.Info("gateway: OB12 消息",
+		zap.String("conn", conn.ID),
+		zap.String("user", msg.UserID),
+		zap.String("group", msg.GroupID),
+		zap.Bool("is_group", msg.IsGroup),
+		zap.Int("content_len", len(msg.Content)),
+	)
 
 	if s.handler != nil {
 		s.handler.OnMessage(msg)
 	} else {
-		log.Printf("gateway: handler 未设置，消息被丢弃 conn=%s", conn.ID)
+		s.logger.Warn("gateway: handler 未设置，消息被丢弃", zap.String("conn", conn.ID))
 	}
 }
 
@@ -319,20 +345,25 @@ func (s *Server) handleV11Message(conn *Connection, data []byte) {
 	if tag == "response" {
 		var resp ActionResponse
 		if err := json.Unmarshal(data, &resp); err != nil {
-			log.Printf("gateway: OB11 响应解析失败 conn=%s err=%v", conn.ID, err)
+			s.logger.Error("gateway: OB11 响应解析失败", zap.String("conn", conn.ID), zap.Error(err))
 			return
 		}
 		// 仅当响应失败时打印警告
 		if resp.RetCode != 0 || resp.Status == "failed" {
-			log.Printf("gateway: OB11 API 失败 conn=%s echo=%s status=%s retcode=%d msg=%s",
-				conn.ID, resp.Echo, resp.Status, resp.RetCode, resp.Message)
+			s.logger.Warn("gateway: OB11 API 失败",
+				zap.String("conn", conn.ID),
+				zap.String("echo", resp.Echo),
+				zap.String("status", resp.Status),
+				zap.Int64("retcode", resp.RetCode),
+				zap.String("msg", resp.Message),
+			)
 		}
 		return
 	}
 
 	var evt EventV11
 	if err := json.Unmarshal(data, &evt); err != nil {
-		log.Printf("gateway: OB11 事件解析失败 conn=%s err=%v data=%s", conn.ID, err, string(data))
+		s.logger.Error("gateway: OB11 事件解析失败", zap.String("conn", conn.ID), zap.Error(err), zap.String("data", string(data)))
 		return
 	}
 
@@ -343,24 +374,29 @@ func (s *Server) handleV11Message(conn *Connection, data []byte) {
 
 	// 元事件处理
 	if evt.PostType == "meta_event" {
-		log.Printf("gateway: 元事件 conn=%s self_id=%d", conn.ID, evt.SelfID)
+		s.logger.Info("gateway: 元事件", zap.String("conn", conn.ID), zap.Int64("self_id", evt.SelfID))
 		return
 	}
 
 	// 标准化消息事件
 	msg := NormalizeV11(conn.ID, &evt, conn.Platform)
 	if msg == nil {
-		log.Printf("gateway: OB11 非消息事件 conn=%s post_type=%s", conn.ID, evt.PostType)
+		s.logger.Debug("gateway: OB11 非消息事件", zap.String("conn", conn.ID), zap.String("post_type", evt.PostType))
 		return
 	}
 
-	log.Printf("gateway: OB11 消息 conn=%s user=%s group=%s is_group=%v content_len=%d",
-		conn.ID, msg.UserID, msg.GroupID, msg.IsGroup, len(msg.Content))
+	s.logger.Info("gateway: OB11 消息",
+		zap.String("conn", conn.ID),
+		zap.String("user", msg.UserID),
+		zap.String("group", msg.GroupID),
+		zap.Bool("is_group", msg.IsGroup),
+		zap.Int("content_len", len(msg.Content)),
+	)
 
 	if s.handler != nil {
 		s.handler.OnMessage(msg)
 	} else {
-		log.Printf("gateway: handler 未设置，消息被丢弃 conn=%s", conn.ID)
+		s.logger.Warn("gateway: handler 未设置，消息被丢弃", zap.String("conn", conn.ID))
 	}
 }
 

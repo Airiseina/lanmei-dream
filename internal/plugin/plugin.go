@@ -3,9 +3,12 @@ package plugin
 import (
 	"context"
 
+	"github.com/DaWesen/lanmei-dream/internal/ai/tool"
 	"github.com/DaWesen/lanmei-dream/internal/command"
 	"github.com/DaWesen/lanmei-dream/internal/database"
+	"github.com/cloudwego/eino/schema"
 	"github.com/zrurf/conduit"
+	"go.uber.org/zap"
 )
 
 // ============================================================
@@ -83,6 +86,10 @@ type PluginInfo struct {
 	// 如果插件不需要子树（如纯命令插件），留空。
 	// Registry 会将此子树以 SubtreeRef 的形式挂载到主行为树。
 	SubtreeID string
+
+	// Tools 插件提供的 AI 工具列表。
+	// Registry 在 OnInit 阶段将这些工具注册到 ToolReg。
+	Tools []ToolDef
 }
 
 // CommandDef 描述一个斜杠命令。
@@ -92,6 +99,14 @@ type CommandDef struct {
 
 	// Description 命令描述，用于帮助信息和意图分析
 	Description string
+}
+
+// ToolDef 描述插件提供的 AI 工具
+type ToolDef struct {
+	Name        string
+	Description string
+	Parameters  *schema.ParamsOneOf // 使用 Eino 标准参数定义
+	Handler     func(ctx context.Context, argsJSON string) (string, error)
 }
 
 // ============================================================
@@ -119,6 +134,12 @@ type PluginContext struct {
 	// Registry 插件注册表，插件通过它跟踪注册的资源（TrackPass/TrackPipeline），
 	// 以便卸载时自动清理。
 	Registry *Registry
+
+	// ToolReg AI 工具注册表，插件通过它注册 AI 工具
+	ToolReg *tool.Registry
+
+	// Logger 日志记录器
+	Logger *zap.Logger
 
 	// Ctx 标准上下文，用于控制超时和取消
 	Ctx context.Context
@@ -155,7 +176,3 @@ func SubtreeID(pluginID string) string {
 func StoreKey(pluginID, key string) string {
 	return conduit.MakeStoreKey("plugin", pluginID, key)
 }
-
-// SkipCommandKey 是 InputMessage.Extra 中的键，
-// 用于标记由插件命令处理器发起的请求，防止行为树回退到命令管线时再次触发 handler 导致无限递归。
-const SkipCommandKey = "plugin._skip_command"

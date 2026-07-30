@@ -4,13 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 
 	"github.com/DaWesen/lanmei-dream/internal/ai/embedding"
 	"github.com/DaWesen/lanmei-dream/internal/ai/llm"
 	"github.com/DaWesen/lanmei-dream/internal/ai/memory"
 	"github.com/DaWesen/lanmei-dream/internal/database"
 	"github.com/DaWesen/lanmei-dream/internal/model"
+	"go.uber.org/zap"
 )
 
 // Compressor 使用 LLM 对记忆进行 LOD 压缩
@@ -19,11 +19,12 @@ type Compressor struct {
 	embedder embedding.Embedder
 	memStore memory.MemoryStore
 	db       *database.DB
+	logger   *zap.Logger
 }
 
 // NewCompressor 创建压缩器
-func NewCompressor(l llm.LLMClient, emb embedding.Embedder, mem memory.MemoryStore, db *database.DB) *Compressor {
-	return &Compressor{llm: l, embedder: emb, memStore: mem, db: db}
+func NewCompressor(l llm.LLMClient, emb embedding.Embedder, mem memory.MemoryStore, db *database.DB, logger *zap.Logger) *Compressor {
+	return &Compressor{llm: l, embedder: emb, memStore: mem, db: db, logger: logger}
 }
 
 // MaybeCompress 检查并触发压缩（L0→L1 和 L1→L2）
@@ -31,12 +32,12 @@ func NewCompressor(l llm.LLMClient, emb embedding.Embedder, mem memory.MemorySto
 func (c *Compressor) MaybeCompress(ctx context.Context, userID int64) {
 	// L0→L1：原始对话超过阈值时压缩
 	if err := c.compressL0ToL1(ctx, userID); err != nil {
-		log.Printf("compressor: L0→L1: %v", err)
+		c.logger.Error("compressor: L0→L1", zap.Error(err))
 	}
 
 	// L1→L2：episode 摘要超过阈值时聚合
 	if err := c.compressL1ToL2(ctx, userID); err != nil {
-		log.Printf("compressor: L1→L2: %v", err)
+		c.logger.Error("compressor: L1→L2", zap.Error(err))
 	}
 }
 
@@ -58,8 +59,11 @@ func (c *Compressor) compressL0ToL1(ctx context.Context, userID int64) error {
 
 	// 取最老的 N 条对话
 	convs, err := c.db.GetOldestConversations(ctx, userID, batchSize)
-	if err != nil || len(convs) == 0 {
+	if err != nil {
 		return fmt.Errorf("get oldest conversations: %w", err)
+	}
+	if len(convs) == 0 {
+		return nil // 无对话可压缩（可能在计数和查询间被并发删除）
 	}
 
 	// 构造压缩 prompt
@@ -106,10 +110,10 @@ func (c *Compressor) compressL0ToL1(ctx context.Context, userID int64) error {
 
 	// 再删原文
 	if err := c.db.DeleteConversationsInRange(ctx, userID, episode.FirstConvoID, episode.LastConvoID); err != nil {
-		log.Printf("compressor: delete compressed conversations: %v", err)
+		c.logger.Error("compressor: delete compressed conversations", zap.Error(err))
 	}
 
-	log.Printf("compressor: L0→L1 压缩完成, user=%d, %d条→1条摘要", userID, len(convs))
+	c.logger.Info("compressor: L0→L1 压缩完成", zap.Int64("user", userID), zap.Int("count", len(convs)))
 	return nil
 }
 
@@ -130,8 +134,11 @@ func (c *Compressor) compressL1ToL2(ctx context.Context, userID int64) error {
 	}
 
 	episodes, err := c.db.GetOldestEpisodes(ctx, userID, batchSize)
-	if err != nil || len(episodes) == 0 {
+	if err != nil {
 		return fmt.Errorf("get oldest episodes: %w", err)
+	}
+	if len(episodes) == 0 {
+		return nil // 无摘要可聚合（可能在计数和查询间被并发删除）
 	}
 
 	// 拼接 episode 内容
@@ -197,10 +204,10 @@ func (c *Compressor) compressL1ToL2(ctx context.Context, userID int64) error {
 		ids = append(ids, e.ID)
 	}
 	if err := c.db.DeleteEpisodesByID(ctx, userID, ids); err != nil {
-		log.Printf("compressor: delete clustered episodes: %v", err)
+		c.logger.Error("compressor: delete clustered episodes", zap.Error(err))
 	}
 
-	log.Printf("compressor: L1→L2 聚合完成, user=%d, %d条→1条主题", userID, len(episodes))
+	c.logger.Info("compressor: L1→L2 聚合完成", zap.Int64("user", userID), zap.Int("count", len(episodes)))
 	return nil
 }
 

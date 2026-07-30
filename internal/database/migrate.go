@@ -3,7 +3,6 @@ package database
 import (
 	"context"
 	"fmt"
-	"log"
 
 	"github.com/DaWesen/lanmei-dream/internal/model"
 )
@@ -14,7 +13,7 @@ func (db *DB) Migrate(ctx context.Context) error {
 	if err := db.Orm.WithContext(ctx).Exec("CREATE EXTENSION IF NOT EXISTS vector").Error; err != nil {
 		return fmt.Errorf("enable pgvector: %w", err)
 	}
-	log.Println("pgvector 扩展已启用")
+	db.logger.Info("pgvector 扩展已启用")
 
 	if err := db.Orm.WithContext(ctx).AutoMigrate(
 		&model.User{},
@@ -32,7 +31,7 @@ func (db *DB) Migrate(ctx context.Context) error {
 	db.Orm.WithContext(ctx).Exec(
 		"CREATE INDEX IF NOT EXISTS idx_memory_vectors_embedding ON memory_vectors USING hnsw (embedding vector_cosine_ops)",
 	)
-	log.Println("HNSW 向量索引已就绪")
+	db.logger.Info("HNSW 向量索引已就绪")
 
 	return nil
 }

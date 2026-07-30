@@ -9,11 +9,13 @@ import (
 
 // Context 是命令处理函数的上下文。
 type Context struct {
-	Platform       string // 平台标识（qq/wechat/telegram/...）
-	PlatformUserID string // 平台用户 ID
-	GroupID        string
-	IsGroup        bool
-	Message        string
+	Platform       string   // 平台标识（qq/wechat/telegram/...）
+	PlatformUserID string   // 平台用户 ID
+	GroupID        string   // 群组 ID
+	IsGroup        bool     // 是否群消息
+	CommandName    string   // 命令名（不含 / 前缀）
+	CommandArgs    []string // 命令参数
+	Message        string   // 原始消息
 	Reply          func(string)
 }
 
@@ -83,6 +85,14 @@ func (s *System) Process(input string, ctx *Context) error {
 		ctx.Message = "/" + cmdName
 	}
 	return cmd.Handler(ctx)
+}
+
+// Lookup 查找已注册的命令（只读）
+func (s *System) Lookup(name string) (Command, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	cmd, ok := s.commands[name]
+	return cmd, ok
 }
 
 // List 返回按名称排序的命令快照。
