@@ -1,0 +1,8 @@
+# 技能运行时启用/关闭配置
+# 每个技能对应 skills/<id>/ 目录
+
+[skill.roleplay_maid]
+enabled = true
+
+[skill.game_master]
+enabled = false

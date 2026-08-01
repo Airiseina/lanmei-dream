@@ -1,0 +1,29 @@
+# Prompt 元数据配置
+
+# 注入变量（可在所有 Markdown 中以 {{ .Vars.xxx }} 引用）
+[vars]
+# bot_name = "蓝妹"
+
+# Prompt Fragment 声明
+# builtin = true，核心片段，始终启用
+
+[fragment.system_static]
+file = "system_static.md"
+builtin = true
+
+[fragment.system_semi]
+file = "system_semi.md"
+builtin = true
+
+[fragment.system_persona]
+file = "system_persona.md"
+builtin = true
+
+[fragment.system_safety]
+file = "system_safety.md"
+builtin = true
+
+# 组装配置
+# template_file 指向组装模板（相对于 prompts/ 目录）
+[assembly]
+template_file = "assembly_template.md"

@@ -1,7 +1,7 @@
 services:
-  # ── PostgreSQL（含 pgvector 扩展）──
+  # ── PostgreSQL 18（含 pgvector 扩展）──
   postgres:
-    image: pgvector/pgvector:pg17
+    image: pgvector/pgvector:pg18
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-lanmei}
@@ -10,7 +10,8 @@ services:
     ports:
       - "${POSTGRES_PORT:-5432}:5432"
     volumes:
-      - pgdata:/var/lib/postgresql/data
+      # pg18+ 要求挂载到 /var/lib/postgresql（自动创建版本子目录，支持 pg_upgrade --link）
+      - pgdata:/var/lib/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-lanmei}"]
       interval: 5s
@@ -41,6 +42,13 @@ services:
       LANMEI_REDIS_ADDR: redis:6379
       LANMEI_BOT_GATEWAY_LISTEN_ADDR: "0.0.0.0:8080"
       LANMEI_BOT_GATEWAY_ACCESS_TOKEN: ${LANMEI_BOT_GATEWAY_ACCESS_TOKEN:-}
+    volumes:
+      # 配置文件（只读）
+      - ./config/config.toml:/app/config/config.toml:ro
+      # Prompt 系统（只读）
+      - ./prompts:/app/prompts:ro
+      # Skill 系统（只读）
+      - ./skills:/app/skills:ro
     ports:
       - "${LANMEI_PORT:-8080}:8080"
     depends_on:
@@ -55,9 +63,7 @@ services:
     container_name: onebots
     restart: unless-stopped
     volumes:
-      # 运行时数据（数据库、日志、审计，可写）
       - onebots:/data
-      # 版本控制的配置文件（挂载在目录之上，覆盖 data 中的同名文件）
       - ./config/onebots/config.yaml:/data/config.yaml
     depends_on:
       lanmei:
@@ -72,9 +78,7 @@ services:
       NAPCAT_GID: ${NAPCAT_QQ_NUMBER:-}
       NAPCAT_UID: ${NAPCAT_QQ_NUMBER:-}
     volumes:
-      # 运行时数据（账号配置、WebUI 配置等，可写）
       - napcat:/app/napcat/config
-      # 版本控制的配置文件（挂载在目录之上，覆盖 data 中的同名文件）
       - ./config/napcat/onebot11.json:/app/napcat/config/onebot11.json:ro
       - ./config/napcat/napcat.json:/app/napcat/config/napcat.json:ro
       - ./config/napcat/napcat_protocol.json:/app/napcat/config/napcat_protocol.json:ro

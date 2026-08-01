@@ -96,6 +96,16 @@ func NewAnalyzer(llmClient llm.LLMClient, commands []CommandDef, tools []ToolDef
 	}
 }
 
+// UpdateCommands 动态更新命令列表，供插件注册新命令后同步。
+func (a *Analyzer) UpdateCommands(commands []CommandDef) {
+	a.commands = commands
+}
+
+// UpdateTools 动态更新工具列表，供插件注册新工具后同步。
+func (a *Analyzer) UpdateTools(tools []ToolDef) {
+	a.tools = tools
+}
+
 // Analyze 分析用户消息的意图。
 //
 // 处理流程：

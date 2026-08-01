@@ -13,6 +13,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
@@ -20,6 +21,7 @@ import (
 	"github.com/DaWesen/lanmei-dream/internal/ai/embedding"
 	"github.com/DaWesen/lanmei-dream/internal/ai/llm"
 	"github.com/DaWesen/lanmei-dream/internal/ai/memory"
+	"github.com/DaWesen/lanmei-dream/internal/ai/prompt"
 	"github.com/DaWesen/lanmei-dream/internal/ai/tool"
 	"github.com/DaWesen/lanmei-dream/internal/database"
 	"go.uber.org/zap"
@@ -38,6 +40,7 @@ type ChatService struct {
 	db         *database.DB
 	compressor *Compressor
 	toolReg    *tool.Registry
+	promptMgr  *prompt.Manager // Prompt 管理器（可选，为 nil 时使用 DefaultSystemPrompt）
 	logger     *zap.Logger
 }
 
@@ -56,6 +59,12 @@ func NewChatService(client llm.LLMClient, emb embedding.Embedder, mem memory.Mem
 		svc.compressor = NewCompressor(client, emb, mem, db, logger)
 	}
 	return svc
+}
+
+// SetPromptManager 设置 Prompt 管理器，用于动态组装 System Prompt。
+// 可在初始化后调用，不设置时使用 DefaultSystemPrompt 兜底。
+func (s *ChatService) SetPromptManager(pm *prompt.Manager) {
+	s.promptMgr = pm
 }
 
 // Compressor 暴露压缩器给外部调用
@@ -78,39 +87,80 @@ func (s *ChatService) Chat(ctx context.Context, req *llm.ChatRequest) (*llm.Chat
 		return nil, fmt.Errorf("chat: empty messages")
 	}
 
-	// ── LOD 多级上下文组装 ──
 	msgs := make([]llm.Message, 0, len(req.Messages)+4)
-	msgs = append(msgs, llm.Message{Role: llm.RoleSystem, Content: SystemPrompt})
+	lastMsg := req.Messages[len(req.Messages)-1]
 
+	// ── LOD 多级上下文（必须在 System Prompt 组装之前加载，用于构建 Conversation 文本）──
+	var (
+		lod      *database.LODContext
+		queryVec []float32
+		err      error
+	)
 	if s.db != nil {
-		lod, err := s.db.GetLODContext(ctx, req.UserID, 3000) // 3000 token 预算给上下文
+		lod, err = s.db.GetLODContext(ctx, req.UserID, 3000)
 		if err != nil {
 			s.logger.Error("ai.Chat: lod context", zap.Error(err))
-		} else if lod != nil {
-			if len(lod.TopicBriefs) > 0 {
-				msgs = append(msgs, llm.Message{Role: llm.RoleSystem,
-					Content: "历史话题概览：\n" + strings.Join(lod.TopicBriefs, "\n")})
-			}
-			if len(lod.EpisodeDetails) > 0 {
-				msgs = append(msgs, llm.Message{Role: llm.RoleSystem,
-					Content: "过往对话摘要：\n" + strings.Join(lod.EpisodeDetails, "\n")})
-			} else if len(lod.EpisodeBriefs) > 0 {
-				msgs = append(msgs, llm.Message{Role: llm.RoleSystem,
-					Content: "过往对话概要：\n" + strings.Join(lod.EpisodeBriefs, "\n")})
-			}
-
-			// L0 原始对话（LOD 已经按预算筛选）
-			for _, c := range lod.RawConversations {
-				msgs = append(msgs, llm.Message{Role: llm.Role(c.Role), Content: c.Content})
-			}
 		}
 	}
 
+	// 从 LOD 构建 conversation 文本（仅 L2 话题 + L1 摘要，不含 L0 原文，
+	// L0 原文后续作为独立消息追加以保持正确的 role 格式）。
+	var conversationText string
+	if lod != nil {
+		var b strings.Builder
+		if len(lod.TopicBriefs) > 0 {
+			b.WriteString("## 历史话题\n")
+			for _, t := range lod.TopicBriefs {
+				b.WriteString("- ")
+				b.WriteString(t)
+				b.WriteString("\n")
+			}
+		}
+		if len(lod.EpisodeBriefs) > 0 {
+			b.WriteString("## 对话摘要\n")
+			for _, e := range lod.EpisodeBriefs {
+				b.WriteString("- ")
+				b.WriteString(e)
+				b.WriteString("\n")
+			}
+		}
+		conversationText = b.String()
+	}
+
+	// ── 组装 System Prompt（必须放在消息列表最前面）──
+	systemContent := DefaultSystemPrompt
+	if s.promptMgr != nil {
+		assembled, err := s.promptMgr.Assemble(prompt.AssemblyContext{
+			Vars:         s.promptMgr.Vars(),
+			CurrentTime:  time.Now().Format("2006-01-02 15:04:05"),
+			UserName:     req.UserName,
+			GroupName:    req.GroupName,
+			Conversation: conversationText,
+		})
+		if err != nil {
+			s.logger.Error("ai.Chat: prompt assembly failed, using default", zap.Error(err))
+		} else {
+			systemContent = assembled
+		}
+	}
+	msgs = append(msgs, llm.Message{Role: llm.RoleSystem, Content: systemContent})
+
+	// ── L0 原始对话保持独立 role 消息（user/assistant），不混入 system prompt ──
+	if lod != nil {
+		for _, c := range lod.RawConversations {
+			msgs = append(msgs, llm.Message{Role: llm.Role(c.Role), Content: c.Content})
+		}
+		// 在历史对话后追加强化指令，抵消历史中 assistant 旧风格对当前行为的模式污染。
+		// LLM 对 concrete example 的敏感度高于抽象规则，若不加固化指令，
+		// 历史中带 emoji 的 assistant 回复会让 LLM 认为"这是预期风格"。
+		msgs = append(msgs, llm.Message{
+			Role:    llm.RoleSystem,
+			Content: "注意：以上是历史对话记录，其中 assistant 的回复风格可能不完全符合当前规范。请严格遵守本 prompt 开头的「关键行为规则」，特别是 Emoji 使用规范和长回复分段规则，不要被历史中的回复模式带偏。",
+		})
+	}
+
 	// ── RAG 检索长期记忆 ──
-	lastMsg := req.Messages[len(req.Messages)-1]
-	var queryVec []float32
-	if s.embedder != nil {
-		var err error
+	if queryVec == nil && s.embedder != nil {
 		queryVec, err = s.embedder.Embed(ctx, lastMsg.Content)
 		if err != nil {
 			s.logger.Error("ai.Chat: embed failed", zap.Error(err))
@@ -122,13 +172,14 @@ func (s *ChatService) Chat(ctx context.Context, req *llm.ChatRequest) (*llm.Chat
 			s.logger.Error("ai.Chat: retrieve memory failed", zap.Error(err))
 		}
 		if ragCtx := BuildRAGContext(memories); ragCtx != "" {
-			msgs = append(msgs, llm.Message{Role: llm.RoleSystem, Content: ragCtx})
+			msgs = append(msgs, llm.Message{
+				Role:    llm.RoleSystem,
+				Content: "以下是与当前对话相关的记忆：\n" + ragCtx,
+			})
 		}
 	}
 
-	// 追加用户请求消息。
-	// 当 LOD 未返回 L0 原始对话时，req.Messages 是唯一的用户输入；
-	// 当 LOD 返回了 L0 原始对话时，req.Messages 中的最新消息仍需追加（当前轮次）。
+	// 追加用户请求消息（当前轮次）
 	msgs = append(msgs, req.Messages...)
 
 	req.Messages = msgs

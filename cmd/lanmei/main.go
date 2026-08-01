@@ -9,6 +9,8 @@ import (
 	"github.com/DaWesen/lanmei-dream/internal/ai"
 	"github.com/DaWesen/lanmei-dream/internal/ai/embedding"
 	"github.com/DaWesen/lanmei-dream/internal/ai/llm"
+	"github.com/DaWesen/lanmei-dream/internal/ai/prompt"
+	"github.com/DaWesen/lanmei-dream/internal/ai/skill"
 	"github.com/DaWesen/lanmei-dream/internal/ai/tool"
 	"github.com/DaWesen/lanmei-dream/internal/bizplugin"
 	"github.com/DaWesen/lanmei-dream/internal/bot"
@@ -27,7 +29,6 @@ func main() {
 	// ── 配置初始化 ──
 	cfg, err := config.Init()
 	if err != nil {
-		// 配置初始化失败时无法使用 zap，使用标准日志
 		zap.L().Fatal("配置初始化失败", zap.Error(err))
 	}
 
@@ -74,7 +75,7 @@ func main() {
 		logger.Warn("LLM API Key 未配置，角色扮演不可用")
 	}
 
-	// ── Embedder 客户端（eino，支持多 provider）──
+	// ── Embedder 客户端 ──
 	if cfg.AI.EmbeddingAPIKey != "" {
 		einoEmb, err := embedding.NewEinoEmbedder(ctx, &embedding.EinoOptions{
 			BaseURL:   cfg.AI.EmbeddingBaseURL,
@@ -91,6 +92,22 @@ func main() {
 		logger.Warn("Embedding API Key 未配置，RAG 检索不可用")
 	}
 
+	// ── Skill 系统 ──
+	skillMgr := skill.NewManager(cfg.Skills.Dir, cfg.Skills.Config)
+	if err := skillMgr.LoadAll(); err != nil {
+		logger.Warn("技能加载不完整", zap.Error(err))
+	} else {
+		logger.Info("Skill 系统就绪", zap.Int("count", len(skillMgr.List())), zap.String("dir", cfg.Skills.Dir))
+	}
+
+	// ── Prompt 系统 ──
+	promptMgr := prompt.NewManager(cfg.Prompts.Dir, cfg.Prompts.Config)
+	promptMgr.SetSkills(skillMgr)
+	if err := promptMgr.Load(cfg.Prompts.Config); err != nil {
+		logger.Fatal("Prompt 系统加载失败", zap.Error(err))
+	}
+	logger.Info("Prompt 系统就绪", zap.String("dir", cfg.Prompts.Dir))
+
 	var (
 		chatSvc *ai.ChatService
 		toolReg *tool.Registry
@@ -98,6 +115,7 @@ func main() {
 	if llmClient != nil {
 		toolReg = tool.NewRegistry()
 		chatSvc = ai.NewChatService(llmClient, embedder, inf.MemStore, inf.DB, toolReg, logger)
+		chatSvc.SetPromptManager(promptMgr)
 		logger.Info("AI 对话服务就绪")
 	} else {
 		logger.Warn("LLM 未配置，角色扮演不可用")
@@ -114,18 +132,16 @@ func main() {
 	}
 
 	// ── 插件系统 ──
-	// 创建插件注册表（引擎在 bot.New 中创建，随后通过 SetEngine 注入）
 	pluginReg := pluginpkg.NewRegistry(nil, inf.StateStore, inf.DB, cmdSys, toolReg, logger)
 
-	// ── 网关（反向 WebSocket 服务端）──
+	// ── 网关 ──
 	gwServer := gateway.NewServer(&gateway.ListenConfig{
 		ListenAddr:  cfg.Bot.Gateway.ListenAddr,
 		AccessToken: cfg.Bot.Gateway.AccessToken,
-	}, logger, nil) // handler 稍后由 Bot 设置
+	}, logger, nil)
 
 	b := bot.New(&cfg.Bot, cmdSys, chatSvc, inf.DB, inf.StateStore, llmClient, pluginReg, gwServer, toolReg, logger)
 
-	// 将 Bot 注册为网关事件处理器
 	gwServer.SetHandler(b)
 
 	wasmManager, err := pluginpkg.NewWasmManager(&cfg.Plugin, inf.DB, pluginReg, authorizer, logger, nil)
@@ -151,6 +167,9 @@ func main() {
 	if err := pluginReg.StartPlugins(ctx); err != nil {
 		logger.Fatal("插件启动失败", zap.Error(err))
 	}
+
+	// 插件可能注册了新的命令/工具，刷新意图分析器使其感知
+	b.RefreshIntentAnalyzer()
 
 	go func() {
 		sigCh := make(chan os.Signal, 1)

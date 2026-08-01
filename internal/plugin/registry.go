@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"strings"
 	"sync"
 
 	"github.com/DaWesen/lanmei-dream/internal/ai/tool"
@@ -519,10 +520,24 @@ func (r *Registry) makeCommandHandler(p Plugin, cmd CommandDef) func(ctx *comman
 		if wasmPlugin, ok := p.(*WasmPlugin); ok {
 			extra["installation_id"] = wasmPlugin.InstallationID()
 		}
+
+		// 构建输入内容：
+		// - 斜杠命令（如 /签到）：直接使用原始消息，插件子树可匹配
+		// - 自然语言触发（如 "我要签到"，通过意图分析路由至此）：
+		//   构造斜杠命令形式 "/签到"，确保插件子树能正确匹配，
+		//   避免以原始内容重新进入引擎导致再次落入意图分析形成死循环。
+		content := cmdCtx.Message
+		if !strings.HasPrefix(content, "/") {
+			content = "/" + cmd.Name
+			if len(cmdCtx.CommandArgs) > 0 {
+				content += " " + strings.Join(cmdCtx.CommandArgs, " ")
+			}
+		}
+
 		input := &conduit.InputMessage{
 			UserID:  cmdCtx.PlatformUserID,
 			GroupID: cmdCtx.GroupID,
-			Content: cmdCtx.Message,
+			Content: content,
 			IsGroup: cmdCtx.IsGroup,
 			Extra:   extra,
 		}

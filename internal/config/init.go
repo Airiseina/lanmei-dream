@@ -18,7 +18,7 @@ func Init() (*Config, error) {
 	v := viper.New()
 	setDefaults(v)
 
-	// 配置文件
+	// 配置文件（仅含非敏感配置）
 	configFile, _ := pflag.CommandLine.GetString("config")
 	v.SetConfigFile(configFile)
 
@@ -32,10 +32,45 @@ func Init() (*Config, error) {
 		}
 	}
 
-	// 环境变量：LANMEI_DATABASE_URL、LANMEI_BOT_GATEWAY_LISTEN_ADDR 等
+	// 环境变量优先（敏感信息）：LANMEI_DATABASE_URL、LANMEI_AI_LLM_API_KEY 等
 	v.SetEnvPrefix("LANMEI")
 	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
 	v.AutomaticEnv()
+
+	// ── 关键修复：Viper.Sub() 不传播 AutomaticEnv ──
+	// 当 Unmarshal 处理嵌套结构体（如 AIConfig）时，v.Sub("ai") 创建的子 Viper
+	// 是全新的实例，不会继承父 Viper 的 AutomaticEnv 设置。
+	// 因此只存在于环境变量而不在 config.toml 中的键（如 ai.llm_api_key）
+	// 无法被子 Viper 解析到，导致 Unmarshal 后对应字段为空。
+	//
+	// 解决方案：在 Unmarshal 前将 LANMEI_ 前缀环境变量按正确映射写入 Viper，
+	// 确保 Sub() 能通过 allKeys 找到它们。
+	// 注意：不能简单地 ReplaceAll("_", ".") 反推，因为部分键名本身包含下划线
+	//（如 llm_api_key, super_users），这个映射是 Viper 内部 (cfgKey → envVar)
+	// 的单向变换，不可逆。
+	envToCfg := map[string]string{
+		"LANMEI_DATABASE_URL":             "database.url",
+		"LANMEI_REDIS_ADDR":               "redis.addr",
+		"LANMEI_BOT_NICKNAME":             "bot.nickname",
+		"LANMEI_BOT_SUPER_USERS":          "bot.super_users",
+		"LANMEI_BOT_GATEWAY_LISTEN_ADDR":  "bot.gateway.listen_addr",
+		"LANMEI_BOT_GATEWAY_ACCESS_TOKEN": "bot.gateway.access_token",
+		"LANMEI_AI_LLM_API_KEY":           "ai.llm_api_key",
+		"LANMEI_AI_LLM_BASE_URL":          "ai.llm_base_url",
+		"LANMEI_AI_LLM_MODEL":             "ai.llm_model",
+		"LANMEI_AI_LLM_MAX_TOKENS":        "ai.llm_max_tokens",
+		"LANMEI_AI_LLM_TEMPERATURE":       "ai.llm_temperature",
+		"LANMEI_AI_EMBEDDING_API_KEY":     "ai.embedding_api_key",
+		"LANMEI_AI_EMBEDDING_BASE_URL":    "ai.embedding_base_url",
+		"LANMEI_AI_EMBEDDING_MODEL":       "ai.embedding_model",
+		"LANMEI_AI_EMBEDDING_DIM":         "ai.embedding_dim",
+		"LANMEI_PLUGIN_ROOT_DIR":          "plugin.root_dir",
+	}
+	for envKey, cfgKey := range envToCfg {
+		if val := os.Getenv(envKey); val != "" {
+			v.Set(cfgKey, val)
+		}
+	}
 
 	// 命令行参数绑定
 	pflag.CommandLine.VisitAll(func(f *pflag.Flag) {
@@ -54,27 +89,9 @@ func Init() (*Config, error) {
 }
 
 func initFlags() {
-	pflag.String("config", "./config.toml", "配置文件路径")
-	pflag.String("database.url", "", "PostgreSQL 连接字符串")
-	pflag.String("redis.addr", "", "Redis 地址")
-	// LLM
-	pflag.String("ai.llm_base_url", "", "LLM API 基础地址（OpenAI 兼容）")
-	pflag.String("ai.llm_api_key", "", "LLM API 密钥")
-	pflag.String("ai.llm_model", "", "LLM 模型名")
-	pflag.Int("ai.llm_max_tokens", 0, "LLM 单次回复最大 token 数")
-	pflag.Float64("ai.llm_temperature", 0, "LLM 生成温度")
-	// Embedding
-	pflag.String("ai.embedding_base_url", "", "Embedding API 基础地址")
-	pflag.String("ai.embedding_api_key", "", "Embedding API 密钥")
-	pflag.String("ai.embedding_model", "", "Embedding 模型名")
-	pflag.Int("ai.embedding_dim", 0, "向量维度")
-	// Bot
-	pflag.String("bot.gateway.listen_addr", "", "网关监听地址")
-	pflag.String("bot.gateway.access_token", "", "网关鉴权 token")
+	pflag.String("config", "./config/config.toml", "配置文件路径")
 	pflag.String("bot.nickname", "", "机器人昵称")
 	pflag.String("bot.super_users", "", "超级用户列表（格式：platform:userID,逗号分隔）")
-	pflag.String("plugin.root_dir", "", "Wasm 插件根目录")
-	// Log
 	pflag.String("log.level", "", "日志级别：debug/info/warn/error")
 	pflag.Bool("log.persistent", false, "是否持久化日志到文件")
 	pflag.String("log.path", "", "日志文件路径")
@@ -82,32 +99,20 @@ func initFlags() {
 	pflag.Int("log.max_size", 0, "单个日志文件最大大小（MB）")
 	pflag.Int("log.max_age", 0, "日志文件最大保留天数")
 	pflag.Int("log.max_backups", 0, "最多保留的旧日志文件数")
+	pflag.String("plugin.root_dir", "", "Wasm 插件根目录")
+	// Prompts 路径
+	pflag.String("prompts.dir", "", "Prompt 系统目录")
+	pflag.String("prompts.config", "", "Prompt 配置文件路径")
+	// Skills 路径
+	pflag.String("skills.dir", "", "Skill 目录")
+	pflag.String("skills.config", "", "Skill 配置文件路径")
 }
 
 func setDefaults(v *viper.Viper) {
-	// 数据库默认值
-	v.SetDefault("database.url", "postgres://postgres:postgres@localhost:5432/lanmei?sslmode=disable")
-
-	// Redis 默认值
-	v.SetDefault("redis.addr", "localhost:6379")
-
-	// AI 默认值
-	v.SetDefault("ai.llm_base_url", "https://api.openai.com/v1")
-	v.SetDefault("ai.llm_model", "gpt-4o-mini")
-	v.SetDefault("ai.llm_max_tokens", 4096)
-	v.SetDefault("ai.llm_temperature", 0.7)
-	v.SetDefault("ai.embedding_base_url", "https://api.openai.com/v1")
-	v.SetDefault("ai.embedding_model", "text-embedding-3-small")
-	v.SetDefault("ai.embedding_dim", 1536)
-
 	// Bot 默认值
-	v.SetDefault("bot.gateway.listen_addr", "0.0.0.0:8080")
-	v.SetDefault("bot.gateway.access_token", "")
 	v.SetDefault("bot.nickname", "蓝妹")
 	v.SetDefault("bot.super_users", "")
-
-	// Plugin 默认值
-	v.SetDefault("plugin.root_dir", "./data/plugins")
+	v.SetDefault("bot.gateway.listen_addr", "0.0.0.0:8080")
 
 	// Log 默认值
 	v.SetDefault("log.level", "info")
@@ -117,4 +122,32 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("log.max_size", 100)
 	v.SetDefault("log.max_age", 30)
 	v.SetDefault("log.max_backups", 10)
+
+	// Plugin 默认值
+	v.SetDefault("plugin.root_dir", "./data/plugins")
+
+	// Prompts 默认路径
+	v.SetDefault("prompts.dir", "./prompts")
+	v.SetDefault("prompts.config", "./prompts/prompts.toml")
+
+	// Skills 默认路径
+	v.SetDefault("skills.dir", "./skills")
+	v.SetDefault("skills.config", "./config/skills.toml")
+
+	// LLM 非敏感默认值（API Key 仅从环境变量读取）
+	v.SetDefault("ai.llm_base_url", "https://api.openai.com/v1")
+	v.SetDefault("ai.llm_model", "gpt-4o-mini")
+	v.SetDefault("ai.llm_max_tokens", 4096)
+	v.SetDefault("ai.llm_temperature", 0.7)
+
+	// Embedding 非敏感默认值（API Key 仅从环境变量读取）
+	v.SetDefault("ai.embedding_base_url", "https://api.openai.com/v1")
+	v.SetDefault("ai.embedding_model", "text-embedding-3-small")
+	v.SetDefault("ai.embedding_dim", 1536)
+
+	// 数据库连接字符串从环境变量 LANMEI_DATABASE_URL 获取，此处仅保留默认
+	v.SetDefault("database.url", "postgres://postgres:postgres@localhost:5432/lanmei?sslmode=disable")
+
+	// Redis 地址仅作为非敏感默认，密码通过环境变量覆盖
+	v.SetDefault("redis.addr", "localhost:6379")
 }
