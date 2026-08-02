@@ -26,10 +26,10 @@ type Message struct {
 
 // ChatRequest 是一次对话请求的入参
 type ChatRequest struct {
-	Messages []Message `json:"messages"`
-	UserID   int64     `json:"user_id"`
-	UserName  string   `json:"user_name"`  // 用户昵称，供 prompt 组装使用
-	GroupName string   `json:"group_name"` // 群组名称，供 prompt 组装使用
+	Messages  []Message `json:"messages"`
+	UserID    int64     `json:"user_id"`
+	UserName  string    `json:"user_name"`  // 用户昵称，供 prompt 组装使用
+	GroupName string    `json:"group_name"` // 群组名称，供 prompt 组装使用
 }
 
 // ChatResponse 是对话服务的返回
@@ -44,4 +44,18 @@ type ChatResponse struct {
 type LLMClient interface {
 	// Chat 执行一次对话补全
 	Chat(ctx context.Context, req *ChatRequest) (*ChatResponse, error)
+}
+
+// StreamingLLMClient 是 LLMClient 的可选扩展接口，表示支持流式响应。
+// EinoClient 默认实现此接口（eino BaseChatModel.Stream）。
+// 调用方通过类型断言检查是否支持流式：
+//
+//	if sc, ok := client.(StreamingLLMClient); ok { ... }
+type StreamingLLMClient interface {
+	LLMClient
+	// StreamChat 以流式方式返回聊天补全。
+	// 调用方负责通过 StreamReader.Recv 消费 chunk，并在结束时调用 Close。
+	StreamChat(ctx context.Context, req *ChatRequest) (*schema.StreamReader[*schema.Message], error)
+	// StreamChatWithTools 绑定工具后以流式方式返回聊天补全。
+	StreamChatWithTools(ctx context.Context, req *ChatRequest, tools []*schema.ToolInfo) (*schema.StreamReader[*schema.Message], error)
 }

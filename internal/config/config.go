@@ -52,6 +52,29 @@ type BotConfig struct {
 	NickName   string        `mapstructure:"nickname"`
 	SuperUsers string        `mapstructure:"super_users"` // 格式：platform:userID,... 如 qq:123456,wechat:wxid_xxx
 	Gateway    GatewayConfig `mapstructure:"gateway"`
+	Stream     StreamConfig  `mapstructure:"stream"`
+}
+
+// StreamConfig 流式回复配置
+type StreamConfig struct {
+	// TypingSpeedMS 打字速度（毫秒/字）。
+	// 段落发送间隔 = 下一段字数 × 打字速度，模拟真人打字耗时。
+	// 设为 0 则禁用间隔机制（段落间不延迟）。
+	TypingSpeedMS int `mapstructure:"typing_speed_ms"`
+
+	// MinIntervalMS 最小发送间隔（毫秒）。
+	// 无论字数多短，间隔不小于此值，保证平台不乱序。
+	MinIntervalMS int `mapstructure:"min_interval_ms"`
+
+	// MaxIntervalMS 最大发送间隔（毫秒）。
+	// 无论字数多长，间隔不大于此值，避免过长等待。
+	// 设为 0 表示不设上限。
+	MaxIntervalMS int `mapstructure:"max_interval_ms"`
+
+	// JitterPct 间隔抖动比例（0.0-1.0）。
+	// 实际间隔 = 基础间隔 × (1 ± JitterPct)，增加真实感。
+	// 0 表示无抖动。
+	JitterPct float64 `mapstructure:"jitter_pct"`
 }
 
 // GatewayConfig 网关（反向 WebSocket 服务端）配置

@@ -113,6 +113,10 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("bot.nickname", "蓝妹")
 	v.SetDefault("bot.super_users", "")
 	v.SetDefault("bot.gateway.listen_addr", "0.0.0.0:8080")
+	v.SetDefault("bot.stream.typing_speed_ms", 150)   // 150ms/字，模拟打字速度
+	v.SetDefault("bot.stream.min_interval_ms", 1000)  // 最小 1 秒
+	v.SetDefault("bot.stream.max_interval_ms", 10000) // 最大 10 秒
+	v.SetDefault("bot.stream.jitter_pct", 0.25)       // ±25% 抖动
 
 	// Log 默认值
 	v.SetDefault("log.level", "info")
