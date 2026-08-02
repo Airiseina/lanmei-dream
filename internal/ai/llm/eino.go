@@ -48,6 +48,12 @@ func (c *EinoClient) SupportsToolCalling() bool {
 	return ok
 }
 
+// BaseModel 返回底层 eino BaseChatModel，供调用方直接调用 Stream/Generate。
+// 用于流式工具调用循环中直接操作 schema.Message 列表。
+func (c *EinoClient) BaseModel() model.BaseChatModel {
+	return c.model
+}
+
 // ChatWithTools 返回绑定了工具的模型实例
 func (c *EinoClient) ChatWithTools(tools []*schema.ToolInfo) (model.BaseChatModel, error) {
 	tccm, ok := c.model.(model.ToolCallingChatModel)
@@ -59,17 +65,7 @@ func (c *EinoClient) ChatWithTools(tools []*schema.ToolInfo) (model.BaseChatMode
 
 // Chat 实现 LLMClient 接口
 func (c *EinoClient) Chat(ctx context.Context, req *ChatRequest) (*ChatResponse, error) {
-	msgs := make([]*schema.Message, len(req.Messages))
-	for i, m := range req.Messages {
-		schemaMsg := &schema.Message{
-			Role:    ToSchemaRole(m.Role),
-			Content: m.Content,
-		}
-		if m.ToolCallID != "" {
-			schemaMsg.ToolCallID = m.ToolCallID
-		}
-		msgs[i] = schemaMsg
-	}
+	msgs := ToSchemaMessages(req.Messages)
 
 	resp, err := c.model.Generate(ctx, msgs)
 	if err != nil {
@@ -88,19 +84,33 @@ func (c *EinoClient) Chat(ctx context.Context, req *ChatRequest) (*ChatResponse,
 	}, nil
 }
 
+// StreamChat 实现 StreamingLLMClient 接口，以流式方式返回聊天补全。
+func (c *EinoClient) StreamChat(ctx context.Context, req *ChatRequest) (*schema.StreamReader[*schema.Message], error) {
+	msgs := ToSchemaMessages(req.Messages)
+	reader, err := c.model.Stream(ctx, msgs)
+	if err != nil {
+		return nil, fmt.Errorf("llm: eino stream: %w", err)
+	}
+	return reader, nil
+}
+
+// StreamChatWithTools 绑定工具后以流式方式返回聊天补全。
+func (c *EinoClient) StreamChatWithTools(ctx context.Context, req *ChatRequest, tools []*schema.ToolInfo) (*schema.StreamReader[*schema.Message], error) {
+	chatModel, err := c.ChatWithTools(tools)
+	if err != nil {
+		return nil, fmt.Errorf("llm: bind tools for stream: %w", err)
+	}
+	msgs := ToSchemaMessages(req.Messages)
+	reader, err := chatModel.Stream(ctx, msgs)
+	if err != nil {
+		return nil, fmt.Errorf("llm: eino stream with tools: %w", err)
+	}
+	return reader, nil
+}
+
 // ChatWithModel 使用指定模型执行对话（用于工具调用流程中切换绑定了工具的模型）
 func (c *EinoClient) ChatWithModel(ctx context.Context, req *ChatRequest, chatModel model.BaseChatModel) (*ChatResponse, error) {
-	msgs := make([]*schema.Message, len(req.Messages))
-	for i, m := range req.Messages {
-		schemaMsg := &schema.Message{
-			Role:    ToSchemaRole(m.Role),
-			Content: m.Content,
-		}
-		if m.ToolCallID != "" {
-			schemaMsg.ToolCallID = m.ToolCallID
-		}
-		msgs[i] = schemaMsg
-	}
+	msgs := ToSchemaMessages(req.Messages)
 
 	resp, err := chatModel.Generate(ctx, msgs)
 	if err != nil {
@@ -117,6 +127,23 @@ func (c *EinoClient) ChatWithModel(ctx context.Context, req *ChatRequest, chatMo
 		TokensUsed: tokensUsed,
 		ToolCalls:  ToToolCallPointers(resp.ToolCalls),
 	}, nil
+}
+
+// ToSchemaMessages 将内部 llm.Message 列表转为 eino schema.Message 列表。
+// 保留 ToolCallID 以支持多轮工具调用场景。
+func ToSchemaMessages(msgs []Message) []*schema.Message {
+	result := make([]*schema.Message, len(msgs))
+	for i, m := range msgs {
+		schemaMsg := &schema.Message{
+			Role:    ToSchemaRole(m.Role),
+			Content: m.Content,
+		}
+		if m.ToolCallID != "" {
+			schemaMsg.ToolCallID = m.ToolCallID
+		}
+		result[i] = schemaMsg
+	}
+	return result
 }
 
 // ToSchemaRole 将内部 Role 转为 eino schema.RoleType

@@ -92,7 +92,7 @@ func (p *IntentIgnorePass) Execute(ctx *conduit.MessageContext) error {
 	// 保存用户消息到对话历史（供后续压缩/记忆使用）
 	platform := platformFromCtx(ctx)
 	platformUserID := platformUserIDFromCtx(ctx)
-	nickname, _ := conduit.Get[string](ctx, KeyNickname)
+	nickname := nicknameFromCtx(ctx)
 	user, err := p.DB.GetOrCreateUser(ctx.Ctx, platform, platformUserID, nickname)
 	if err != nil {
 		return conduit.NewSoftError(fmt.Errorf("intent_ignore: get or create user: %w", err))
@@ -167,10 +167,14 @@ func BuildIntentTools(toolReg *tool.Registry) []intent.ToolDef {
 	return defs
 }
 
-// truncate 截断字符串用于日志输出。
+// truncate 按 rune 截断字符串用于日志输出，避免切断多字节 UTF-8 字符。
 func truncate(s string, n int) string {
-	if len(s) <= n {
+	r := []rune(s)
+	if len(r) <= n {
 		return s
 	}
-	return s[:n] + "..."
+	if n <= 3 {
+		return string(r[:n])
+	}
+	return string(r[:n-3]) + "..."
 }

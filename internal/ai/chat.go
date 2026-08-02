@@ -87,19 +87,49 @@ func (s *ChatService) Chat(ctx context.Context, req *llm.ChatRequest) (*llm.Chat
 		return nil, fmt.Errorf("chat: empty messages")
 	}
 
+	queryVec, lastMsgContent, err := s.assembleContext(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+
+	// ── 工具调用判断 ──
+	einoClient, isEino := s.client.(*llm.EinoClient)
+	if isEino && s.toolReg != nil && len(s.toolReg.ToolInfos()) > 0 && einoClient.SupportsToolCalling() {
+		return s.chatWithToolLoop(ctx, req, einoClient)
+	}
+
+	resp, err := s.client.Chat(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("chat: llm call: %w", err)
+	}
+
+	// ── 异步：存记忆 + 触发压缩 ──
+	s.asyncStoreAndCompress(ctx, req.UserID, lastMsgContent, queryVec)
+
+	return resp, nil
+}
+
+// assembleContext 执行 LOD 多级上下文组装、RAG 检索和 System Prompt 拼装。
+// 组装后的消息列表直接写入 req.Messages，供 Chat 和 ChatStream 共用。
+//
+// 返回值：
+//   - queryVec: 用户消息的向量嵌入（供异步存记忆），可能为 nil
+//   - lastMsgContent: 最后一条用户消息的文本（供异步存记忆）
+//   - err: 组装过程中的致命错误
+//
+// 此方法是 Chat 和 ChatStream 的共享前置步骤，确保两条路径的上下文组装逻辑一致。
+func (s *ChatService) assembleContext(ctx context.Context, req *llm.ChatRequest) (queryVec []float32, lastMsgContent string, err error) {
 	msgs := make([]llm.Message, 0, len(req.Messages)+4)
 	lastMsg := req.Messages[len(req.Messages)-1]
+	lastMsgContent = lastMsg.Content
 
 	// ── LOD 多级上下文（必须在 System Prompt 组装之前加载，用于构建 Conversation 文本）──
-	var (
-		lod      *database.LODContext
-		queryVec []float32
-		err      error
-	)
+	var lod *database.LODContext
 	if s.db != nil {
 		lod, err = s.db.GetLODContext(ctx, req.UserID, 3000)
 		if err != nil {
-			s.logger.Error("ai.Chat: lod context", zap.Error(err))
+			s.logger.Error("ai: lod context", zap.Error(err))
+			err = nil // LOD 失败不中断流程
 		}
 	}
 
@@ -130,15 +160,15 @@ func (s *ChatService) Chat(ctx context.Context, req *llm.ChatRequest) (*llm.Chat
 	// ── 组装 System Prompt（必须放在消息列表最前面）──
 	systemContent := DefaultSystemPrompt
 	if s.promptMgr != nil {
-		assembled, err := s.promptMgr.Assemble(prompt.AssemblyContext{
+		assembled, assembleErr := s.promptMgr.Assemble(prompt.AssemblyContext{
 			Vars:         s.promptMgr.Vars(),
 			CurrentTime:  time.Now().Format("2006-01-02 15:04:05"),
 			UserName:     req.UserName,
 			GroupName:    req.GroupName,
 			Conversation: conversationText,
 		})
-		if err != nil {
-			s.logger.Error("ai.Chat: prompt assembly failed, using default", zap.Error(err))
+		if assembleErr != nil {
+			s.logger.Error("ai: prompt assembly failed, using default", zap.Error(assembleErr))
 		} else {
 			systemContent = assembled
 		}
@@ -163,13 +193,14 @@ func (s *ChatService) Chat(ctx context.Context, req *llm.ChatRequest) (*llm.Chat
 	if queryVec == nil && s.embedder != nil {
 		queryVec, err = s.embedder.Embed(ctx, lastMsg.Content)
 		if err != nil {
-			s.logger.Error("ai.Chat: embed failed", zap.Error(err))
+			s.logger.Error("ai: embed failed", zap.Error(err))
+			err = nil // 嵌入失败不中断流程
 		}
 	}
 	if queryVec != nil && s.memory != nil {
-		memories, err := s.memory.Retrieve(ctx, queryVec, req.UserID, 5)
-		if err != nil {
-			s.logger.Error("ai.Chat: retrieve memory failed", zap.Error(err))
+		memories, retrieveErr := s.memory.Retrieve(ctx, queryVec, req.UserID, 5)
+		if retrieveErr != nil {
+			s.logger.Error("ai: retrieve memory failed", zap.Error(retrieveErr))
 		}
 		if ragCtx := BuildRAGContext(memories); ragCtx != "" {
 			msgs = append(msgs, llm.Message{
@@ -184,21 +215,7 @@ func (s *ChatService) Chat(ctx context.Context, req *llm.ChatRequest) (*llm.Chat
 
 	req.Messages = msgs
 
-	// ── 工具调用判断 ──
-	einoClient, isEino := s.client.(*llm.EinoClient)
-	if isEino && s.toolReg != nil && len(s.toolReg.ToolInfos()) > 0 && einoClient.SupportsToolCalling() {
-		return s.chatWithToolLoop(ctx, req, einoClient)
-	}
-
-	resp, err := s.client.Chat(ctx, req)
-	if err != nil {
-		return nil, fmt.Errorf("chat: llm call: %w", err)
-	}
-
-	// ── 异步：存记忆 + 触发压缩 ──
-	s.asyncStoreAndCompress(ctx, req.UserID, lastMsg.Content, queryVec)
-
-	return resp, nil
+	return queryVec, lastMsgContent, nil
 }
 
 // chatWithToolLoop 执行带工具调用循环的对话流程。

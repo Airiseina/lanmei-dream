@@ -12,6 +12,14 @@ mention_suffix = ""
 [bot.gateway]
 listen_addr = "0.0.0.0:8080"
 
+[bot.stream]
+# 流式段落发送间隔配置（模拟真人打字节奏，避免平台乱序）
+# 间隔 = 下一段字数 × typing_speed_ms，再 clamp 到 [min, max]，最后加 ±jitter_pct 抖动
+typing_speed_ms = 150    # 打字速度：毫秒/字
+min_interval_ms = 1000   # 最小间隔（毫秒）
+max_interval_ms = 10000  # 最大间隔（毫秒），0 表示不限
+jitter_pct = 0.25        # 间隔抖动比例（0.0-1.0），0 表示无抖动
+
 [log]
 level = "info"
 persistent = false
