@@ -12,6 +12,8 @@ type Config struct {
 	Bot      BotConfig      `mapstructure:"bot"`
 	Plugin   PluginConfig   `mapstructure:"plugin"`
 	Log      LogConfig      `mapstructure:"log"`
+	Prompts  PromptsConfig  `mapstructure:"prompts"`
+	Skills   SkillsConfig   `mapstructure:"skills"`
 }
 
 // PluginConfig 插件系统配置
@@ -56,6 +58,18 @@ type BotConfig struct {
 type GatewayConfig struct {
 	ListenAddr  string `mapstructure:"listen_addr"`  // 监听地址，如 "0.0.0.0:8080"
 	AccessToken string `mapstructure:"access_token"` // 鉴权 token（空则不鉴权）
+}
+
+// PromptsConfig Prompt 系统路径配置
+type PromptsConfig struct {
+	Dir    string `mapstructure:"dir"`
+	Config string `mapstructure:"config"`
+}
+
+// SkillsConfig Skill 系统路径配置
+type SkillsConfig struct {
+	Dir    string `mapstructure:"dir"`
+	Config string `mapstructure:"config"`
 }
 
 // LogConfig 日志相关配置

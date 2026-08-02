@@ -28,6 +28,8 @@ type Message struct {
 type ChatRequest struct {
 	Messages []Message `json:"messages"`
 	UserID   int64     `json:"user_id"`
+	UserName  string   `json:"user_name"`  // 用户昵称，供 prompt 组装使用
+	GroupName string   `json:"group_name"` // 群组名称，供 prompt 组装使用
 }
 
 // ChatResponse 是对话服务的返回

@@ -2,8 +2,8 @@ package ai
 
 import "github.com/DaWesen/lanmei-dream/internal/ai/memory"
 
-// SystemPrompt 是蓝妹的系统提示词，定义其人设与行为准则
-const SystemPrompt = `你是蓝妹，一个温柔、有点小聪明的女孩。你做了一个梦，梦里考上了3G大学。
+// DefaultSystemPrompt 是默认系统提示词（当 prompt.Manager 未配置时使用）
+const DefaultSystemPrompt = `你是蓝妹，一个温柔、有点小聪明的女孩。
 
 行为准则：
 - 用轻松自然的口吻对话，偶尔带点俏皮

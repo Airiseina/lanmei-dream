@@ -148,6 +148,11 @@ func (p *RoleplayPass) Execute(ctx *conduit.MessageContext) error {
 		return nil
 	}
 
+	// 防御性检查：LLM 未配置时 chatSvc 为 nil，直接返回错误以触发 fallback
+	if p.Chat == nil {
+		return fmt.Errorf("roleplay: chat service not available")
+	}
+
 	platform := platformFromCtx(ctx)
 	platformUserID := platformUserIDFromCtx(ctx)
 	nickname, _ := conduit.Get[string](ctx, KeyNickname)
@@ -161,8 +166,10 @@ func (p *RoleplayPass) Execute(ctx *conduit.MessageContext) error {
 	// ChatService 内部通过 LOD 组装上下文（L2→L1→L0 + RAG）
 	// 这里只传当前用户消息，不再手动拉对话历史
 	resp, err := p.Chat.Chat(ctx.Ctx, &llm.ChatRequest{
-		Messages: []llm.Message{{Role: llm.RoleUser, Content: userMsg}},
-		UserID:   user.ID,
+		Messages:  []llm.Message{{Role: llm.RoleUser, Content: userMsg}},
+		UserID:    user.ID,
+		UserName:  nickname,
+		GroupName: ctx.GroupID, // 目前只有 GroupID，暂时作为 group 标识传入
 	})
 	if err != nil {
 		return fmt.Errorf("roleplay: chat: %w", err)
@@ -176,15 +183,84 @@ func (p *RoleplayPass) Execute(ctx *conduit.MessageContext) error {
 		return conduit.NewSoftError(fmt.Errorf("roleplay: save assistant conversation: %w", err))
 	}
 
-	// 输出
-	conduit.AppendOutput(ctx, &conduit.Message{
-		UserID:  ctx.UserID,
-		GroupID: ctx.GroupID,
-		Content: resp.Content,
-		IsGroup: ctx.IsGroup,
-	})
+	// 分割输出：优先按 \n\n\n 分割（AI 主动分段），回退到按 \n\n 分割（长回复）
+	// 短回复（无分隔符）保持单条消息不变
+	segments := splitResponse(resp.Content)
+	for _, seg := range segments {
+		conduit.AppendOutput(ctx, &conduit.Message{
+			UserID:  ctx.UserID,
+			GroupID: ctx.GroupID,
+			Content: seg,
+			IsGroup: ctx.IsGroup,
+		})
+	}
 
 	return nil
+}
+
+// ── 回复分割 ──
+
+const (
+	responseDelimiter    = "\n\n\n" // AI 长回复的主动分段标记
+	maxResponseSegments  = 6        // 最大分段数，防止滥用
+	minSegmentLen        = 30       // 最小分段长度（字符），避免过短分段
+	doubleNewlineBufSize = 200      // 触发 \n\n 回退分割的最小内容长度
+)
+
+// splitResponse 将 AI 回复拆分为多条消息。
+//
+// 分割策略（优先级从高到低）：
+//  1. 显式分段：按 \n\n\n（三个换行，AI 主动分段）分割
+//  2. 隐式分段：内容较长（>200 字符）且含 \n\n（段落分隔），按 \n\n 分割
+//  3. 无分段：直接返回单条消息
+//
+// 所有分段结果都会经过：去空 → 过滤过短分段 → 限数。
+func splitResponse(content string) []string {
+	content = strings.TrimSpace(content)
+	if content == "" {
+		return nil
+	}
+
+	// 策略 1：显式分段标记 \n\n\n
+	if strings.Contains(content, responseDelimiter) {
+		parts := splitAndFilter(content, responseDelimiter, 0)
+		if len(parts) >= 2 {
+			return capSegments(parts)
+		}
+		// 只有一段（AI 误用了分隔符），降级到策略 2
+	}
+
+	// 策略 2：长内容按段落 \n\n 隐式分割
+	if len(content) >= doubleNewlineBufSize && strings.Contains(content, "\n\n") {
+		parts := splitAndFilter(content, "\n\n", minSegmentLen)
+		if len(parts) >= 2 {
+			return capSegments(parts)
+		}
+	}
+
+	// 策略 3：单条消息
+	return []string{content}
+}
+
+// splitAndFilter 按分隔符分割后去空、过滤过短分段。
+func splitAndFilter(content, delimiter string, minLen int) []string {
+	raw := strings.Split(content, delimiter)
+	result := make([]string, 0, len(raw))
+	for _, p := range raw {
+		trimmed := strings.TrimSpace(p)
+		if trimmed != "" && len(trimmed) >= minLen {
+			result = append(result, trimmed)
+		}
+	}
+	return result
+}
+
+// capSegments 限制分段数量。
+func capSegments(segments []string) []string {
+	if len(segments) > maxResponseSegments {
+		return segments[:maxResponseSegments]
+	}
+	return segments
 }
 
 // ── FallbackPass：兜底回复 ──

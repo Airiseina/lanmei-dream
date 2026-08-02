@@ -1,0 +1,39 @@
+# ============================================
+# Lanmei 主配置文件（仅含非敏感配置）
+# 敏感信息（API Key、数据库密码等）通过环境变量设置
+# 环境变量前缀：LANMEI_，例如 LANMEI_AI_LLM_API_KEY
+# ============================================
+
+[bot]
+nickname = "蓝妹"
+super_users = ""
+mention_suffix = ""
+
+[bot.gateway]
+listen_addr = "0.0.0.0:8080"
+
+[log]
+level = "info"
+persistent = false
+path = "./logs/lanmei.log"
+compression = true
+max_size = 100
+max_age = 30
+max_backups = 10
+
+[plugin]
+root_dir = "./data/plugins"
+
+# ============================================
+# Prompt 系统路径声明
+# ============================================
+[prompts]
+dir = "./prompts"
+config = "./prompts/prompts.toml"
+
+# ============================================
+# Skill 系统路径声明
+# ============================================
+[skills]
+dir = "./skills"
+config = "./config/skills.toml"
