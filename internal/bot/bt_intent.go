@@ -18,6 +18,7 @@ import (
 	"github.com/DaWesen/lanmei-dream/internal/ai/tool"
 	"github.com/DaWesen/lanmei-dream/internal/command"
 	"github.com/DaWesen/lanmei-dream/internal/database"
+	"github.com/DaWesen/lanmei-dream/internal/model"
 )
 
 // intentResultKey 存储意图分析结果的上下文键
@@ -97,7 +98,7 @@ func (p *IntentIgnorePass) Execute(ctx *conduit.MessageContext) error {
 	if err != nil {
 		return conduit.NewSoftError(fmt.Errorf("intent_ignore: get or create user: %w", err))
 	}
-	if err := p.DB.SaveConversation(ctx.Ctx, user.ID, "user", ctx.RawMsg); err != nil {
+	if err := p.DB.SaveConversation(ctx.Ctx, user.ID, "user", ctx.RawMsg, model.SourceChat, ""); err != nil {
 		return conduit.NewSoftError(fmt.Errorf("intent_ignore: save conversation: %w", err))
 	}
 	// 不生成任何回复 → 静默忽略

@@ -71,6 +71,7 @@ func (s *ChatService) chatStreamWithToolLoop(
 	schemaMsgs := llm.ToSchemaMessages(req.Messages)
 	segmenter := NewStreamSegmenter()
 	totalTokens := 0
+	var invokedTools []string
 
 	for round := 0; round < maxToolCallRounds; round++ {
 		reader, streamErr := chatModel.Stream(ctx, schemaMsgs)
@@ -132,6 +133,7 @@ func (s *ChatService) chatStreamWithToolLoop(
 					ToolCallID: tc.ID,
 					Content:    result,
 				})
+				invokedTools = append(invokedTools, tc.Function.Name)
 			}
 			continue // 下一轮
 		}
@@ -185,8 +187,9 @@ func (s *ChatService) chatStreamWithToolLoop(
 		s.asyncStoreAndCompress(ctx, req.UserID, lastMsgContent, queryVec)
 
 		return &llm.ChatResponse{
-			Content:    segmenter.FullText(),
-			TokensUsed: totalTokens,
+			Content:       segmenter.FullText(),
+			TokensUsed:    totalTokens,
+			InvolvedTools: invokedTools,
 		}, nil
 	}
 
@@ -194,8 +197,9 @@ func (s *ChatService) chatStreamWithToolLoop(
 	s.asyncStoreAndCompress(ctx, req.UserID, lastMsgContent, queryVec)
 
 	return &llm.ChatResponse{
-		Content:    segmenter.FullText(),
-		TokensUsed: totalTokens,
+		Content:       segmenter.FullText(),
+		TokensUsed:    totalTokens,
+		InvolvedTools: invokedTools,
 	}, nil
 }
 

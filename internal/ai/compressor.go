@@ -227,6 +227,12 @@ facts 规则：
 - 格式："用户喜欢猫"、"用户的猫叫小雪"、"用户提到贫血"
 - 每条事实不超过20字
 
+插件输出规则：
+- 标有 [插件:XXX] 的内容是工具生成的随机结果，不是真实事实
+- 压缩时只记录"用户请求了XXX"，不提取插件输出的具体内容
+- 例如：不要写"用户运势大吉"，应写"用户请求了算命"
+- 不要将插件随机结果当作真实事实写入 brief/detailed/facts
+
 注意：只输出 JSON，不要任何额外文字。`
 
 const clusterSystemPrompt = `你是一个记忆聚合引擎。你的任务是阅读多段对话摘要，聚合为一个主题。
@@ -266,7 +272,12 @@ func formatConversations(convs []*model.Conversation) string {
 		if c.Role == "assistant" {
 			role = "蓝妹"
 		}
-		s += fmt.Sprintf("%s: %s\n", role, c.Content)
+		// 插件来源的对话标注工具名，帮助压缩器区分真实对话与工具输出
+		if c.Source == model.SourcePlugin && c.PluginTag != "" {
+			s += fmt.Sprintf("%s: [插件:%s] %s\n", role, c.PluginTag, c.Content)
+		} else {
+			s += fmt.Sprintf("%s: %s\n", role, c.Content)
+		}
 	}
 	return s
 }

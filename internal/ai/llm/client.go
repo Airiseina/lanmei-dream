@@ -34,9 +34,10 @@ type ChatRequest struct {
 
 // ChatResponse 是对话服务的返回
 type ChatResponse struct {
-	Content    string             `json:"content"`
-	TokensUsed int                `json:"tokens_used"`
-	ToolCalls  []*schema.ToolCall `json:"tool_calls,omitempty"` // LLM 返回的工具调用
+	Content       string             `json:"content"`
+	TokensUsed    int                `json:"tokens_used"`
+	ToolCalls     []*schema.ToolCall `json:"tool_calls,omitempty"`      // LLM 返回的工具调用
+	InvolvedTools []string           `json:"involved_tools,omitempty"`  // 本次对话中实际调用的工具名列表
 }
 
 // LLMClient 抽象大语言模型的对话能力。
