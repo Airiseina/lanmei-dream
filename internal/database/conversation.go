@@ -8,11 +8,14 @@ import (
 )
 
 // SaveConversation 存储一条对话记录
-func (db *DB) SaveConversation(ctx context.Context, userID int64, role, content string) error {
+// source: 来源标记（chat/plugin），pluginTag: 插件标识（source=plugin 时必填）
+func (db *DB) SaveConversation(ctx context.Context, userID int64, role, content string, source model.ConversationSource, pluginTag string) error {
 	c := model.Conversation{
-		UserID:  userID,
-		Role:    role,
-		Content: content,
+		UserID:    userID,
+		Role:      role,
+		Content:   content,
+		Source:    source,
+		PluginTag: pluginTag,
 	}
 	if err := db.Orm.WithContext(ctx).Create(&c).Error; err != nil {
 		return fmt.Errorf("save_conversation: %w", err)

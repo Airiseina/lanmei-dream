@@ -414,6 +414,6 @@ erDiagram
 - [x] Command 管线优化（CommandRouterPass + ExecuteCommandPass 分离）
 - [x] WIT 接口定义（schema/plugin/lanmei-plugin.wit，含 db/http Host Functions）
 - [x] LOD 记忆压缩（L0 原文 → L1 摘要 → L2 主题）
-- [ ] 多路召回（向量 + 关键词 + 时间）
+- [x] 多路召回（向量 + 关键词 + 时间，memory.MultiRetriever 加权合并）
 - [ ] 签到记录表
 - [ ] 状态面板前端

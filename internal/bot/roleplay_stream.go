@@ -11,6 +11,7 @@ import (
 	"github.com/DaWesen/lanmei-dream/internal/ai"
 	"github.com/DaWesen/lanmei-dream/internal/ai/llm"
 	"github.com/DaWesen/lanmei-dream/internal/database"
+	"github.com/DaWesen/lanmei-dream/internal/model"
 )
 
 // streamTimeout 流式回复的最大持续时间。
@@ -117,10 +118,17 @@ func (p *RoleplayStreamPass) runStream(
 	// 保存对话记录（L0 原始记录，后续由 Compressor 自动压缩）
 	// 使用 context.Background() 因为 streamCtx 可能已接近超时
 	bgCtx := context.Background()
-	if saveErr := p.DB.SaveConversation(bgCtx, userID, "user", userMsg); saveErr != nil {
+	if saveErr := p.DB.SaveConversation(bgCtx, userID, "user", userMsg, model.SourceChat, ""); saveErr != nil {
 		p.Logger.Error("roleplay stream: save user conversation", zap.Error(saveErr))
 	}
-	if saveErr := p.DB.SaveConversation(bgCtx, userID, "assistant", resp.Content); saveErr != nil {
+	// 根据是否调用了工具决定 assistant 消息的来源标记
+	source := model.SourceChat
+	pluginTag := ""
+	if len(resp.InvolvedTools) > 0 {
+		source = model.SourcePlugin
+		pluginTag = resp.InvolvedTools[0] // 取首个工具名作为标签
+	}
+	if saveErr := p.DB.SaveConversation(bgCtx, userID, "assistant", resp.Content, source, pluginTag); saveErr != nil {
 		p.Logger.Error("roleplay stream: save assistant conversation", zap.Error(saveErr))
 	}
 }

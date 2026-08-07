@@ -33,5 +33,29 @@ func (db *DB) Migrate(ctx context.Context) error {
 	)
 	db.logger.Info("HNSW 向量索引已就绪")
 
+	// 创建 GIN 全文搜索索引（用于关键词召回）
+	db.Orm.WithContext(ctx).Exec(
+		"CREATE INDEX IF NOT EXISTS idx_memory_vectors_search_vec ON memory_vectors USING gin (search_vec)",
+	)
+	db.logger.Info("GIN 全文搜索索引已就绪")
+
+	// 创建触发器函数：INSERT/UPDATE 时自动从 content 生成 tsvector
+	// 使用 simple 配置（不分词，按空白切割），适合中文等非空格分词语言
+	db.Orm.WithContext(ctx).Exec(`
+CREATE OR REPLACE FUNCTION memory_vectors_search_vec_trigger() RETURNS trigger AS $$
+BEGIN
+  NEW.search_vec := to_tsvector('simple', COALESCE(NEW.content, ''));
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql`)
+
+	// 幂等创建触发器（DROP IF EXISTS 再 CREATE，避免重复绑定）
+	db.Orm.WithContext(ctx).Exec(`DROP TRIGGER IF EXISTS trg_memory_vectors_search_vec ON memory_vectors`)
+	db.Orm.WithContext(ctx).Exec(`
+CREATE TRIGGER trg_memory_vectors_search_vec
+  BEFORE INSERT OR UPDATE OF content ON memory_vectors
+  FOR EACH ROW EXECUTE FUNCTION memory_vectors_search_vec_trigger()`)
+	db.logger.Info("全文搜索触发器已就绪")
+
 	return nil
 }

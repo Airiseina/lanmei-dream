@@ -37,6 +37,7 @@ type ChatService struct {
 	client     llm.LLMClient
 	embedder   embedding.Embedder
 	memory     memory.MemoryStore
+	retriever  *memory.MultiRetriever // 多路召回合并器（为 nil 时降级为单一向量召回）
 	db         *database.DB
 	compressor *Compressor
 	toolReg    *tool.Registry
@@ -47,12 +48,13 @@ type ChatService struct {
 // NewChatService 创建对话服务
 func NewChatService(client llm.LLMClient, emb embedding.Embedder, mem memory.MemoryStore, db *database.DB, toolReg *tool.Registry, logger *zap.Logger) *ChatService {
 	svc := &ChatService{
-		client:   client,
-		embedder: emb,
-		memory:   mem,
-		db:       db,
-		toolReg:  toolReg,
-		logger:   logger,
+		client:    client,
+		embedder:  emb,
+		memory:    mem,
+		retriever: memory.NewMultiRetriever(mem, memory.DefaultRecallWeight),
+		db:        db,
+		toolReg:   toolReg,
+		logger:    logger,
 	}
 	// 压缩器依赖 ChatService 的各组件
 	if client != nil {
@@ -189,7 +191,7 @@ func (s *ChatService) assembleContext(ctx context.Context, req *llm.ChatRequest)
 		})
 	}
 
-	// ── RAG 检索长期记忆 ──
+	// ── RAG 检索长期记忆（多路召回）──
 	if queryVec == nil && s.embedder != nil {
 		queryVec, err = s.embedder.Embed(ctx, lastMsg.Content)
 		if err != nil {
@@ -197,17 +199,27 @@ func (s *ChatService) assembleContext(ctx context.Context, req *llm.ChatRequest)
 			err = nil // 嵌入失败不中断流程
 		}
 	}
-	if queryVec != nil && s.memory != nil {
-		memories, retrieveErr := s.memory.Retrieve(ctx, queryVec, req.UserID, 5)
+	var memories []*memory.Memory
+	if s.retriever != nil {
+		// 多路召回：向量 + 关键词 + 时间
+		var retrieveErr error
+		memories, retrieveErr = s.retriever.Retrieve(ctx, queryVec, lastMsg.Content, req.UserID, 5)
+		if retrieveErr != nil {
+			s.logger.Error("ai: multi-retrieve memory failed", zap.Error(retrieveErr))
+		}
+	} else if queryVec != nil && s.memory != nil {
+		// 降级：仅向量召回
+		var retrieveErr error
+		memories, retrieveErr = s.memory.Retrieve(ctx, queryVec, req.UserID, 5)
 		if retrieveErr != nil {
 			s.logger.Error("ai: retrieve memory failed", zap.Error(retrieveErr))
 		}
-		if ragCtx := BuildRAGContext(memories); ragCtx != "" {
-			msgs = append(msgs, llm.Message{
-				Role:    llm.RoleSystem,
-				Content: "以下是与当前对话相关的记忆：\n" + ragCtx,
-			})
-		}
+	}
+	if ragCtx := BuildRAGContext(memories); ragCtx != "" {
+		msgs = append(msgs, llm.Message{
+			Role:    llm.RoleSystem,
+			Content: "以下是与当前对话相关的记忆：\n" + ragCtx,
+		})
 	}
 
 	// 追加用户请求消息（当前轮次）
@@ -269,7 +281,7 @@ func (s *ChatService) chatWithToolLoop(ctx context.Context, req *llm.ChatRequest
 	}
 
 	// 进入工具调用循环：LLM 生成 → 执行工具 → 回传结果 → 再次生成，直至完成
-	schemaMsgs, totalTokens, err := s.processToolCalls(ctx, chatModel, schemaMsgs)
+	schemaMsgs, totalTokens, invokedTools, err := s.processToolCalls(ctx, chatModel, schemaMsgs)
 	if err != nil {
 		return nil, fmt.Errorf("chat: tool call loop: %w", err)
 	}
@@ -293,8 +305,9 @@ func (s *ChatService) chatWithToolLoop(ctx context.Context, req *llm.ChatRequest
 	s.asyncStoreAndCompress(ctx, req.UserID, req.Messages[len(req.Messages)-1].Content, nil)
 
 	return &llm.ChatResponse{
-		Content:    finalContent,
-		TokensUsed: totalTokens,
+		Content:       finalContent,
+		TokensUsed:    totalTokens,
+		InvolvedTools: invokedTools,
 	}, nil
 }
 
@@ -327,13 +340,14 @@ func (s *ChatService) chatWithToolLoop(ctx context.Context, req *llm.ChatRequest
 //   - []*schema.Message: 包含所有中间轮次消息的完整消息列表
 //   - int: 累计消耗的 token 总量
 //   - error: LLM 调用失败时的错误
-func (s *ChatService) processToolCalls(ctx context.Context, chatModel model.BaseChatModel, msgs []*schema.Message) ([]*schema.Message, int, error) {
+func (s *ChatService) processToolCalls(ctx context.Context, chatModel model.BaseChatModel, msgs []*schema.Message) ([]*schema.Message, int, []string, error) {
 	totalTokens := 0
+	var invokedTools []string
 	for round := 0; round < maxToolCallRounds; round++ {
 		// 调用 LLM 生成回复（可能包含工具调用请求）
 		resp, err := chatModel.Generate(ctx, msgs)
 		if err != nil {
-			return msgs, totalTokens, err
+			return msgs, totalTokens, invokedTools, err
 		}
 		// 将 LLM 回复追加到消息列表，作为下一轮的上下文
 		msgs = append(msgs, resp)
@@ -345,7 +359,7 @@ func (s *ChatService) processToolCalls(ctx context.Context, chatModel model.Base
 
 		// 如果 LLM 没有请求任何工具调用，说明已经产出最终文本回复，循环结束
 		if len(resp.ToolCalls) == 0 {
-			return msgs, totalTokens, nil
+			return msgs, totalTokens, invokedTools, nil
 		}
 
 		// 逐个执行 LLM 请求的工具调用
@@ -363,10 +377,12 @@ func (s *ChatService) processToolCalls(ctx context.Context, chatModel model.Base
 				ToolCallID: tc.ID,
 				Content:    result,
 			})
+			// 记录实际调用的工具名
+			invokedTools = append(invokedTools, tc.Function.Name)
 		}
 	}
 	// 达到最大轮次限制，强制退出循环
-	return msgs, totalTokens, nil
+	return msgs, totalTokens, invokedTools, nil
 }
 
 // asyncStoreAndCompress 异步存记忆 + 触发压缩
