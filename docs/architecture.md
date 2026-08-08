@@ -388,6 +388,18 @@ erDiagram
         vector_1024 embedding "pgvector 向量"
         timestamptz created_at
     }
+    knowledge_chunks {
+        bigserial id PK
+        varchar knowledge_base_id UK "配置 bases[].id"
+        varchar provider "local/feishu"
+        varchar source_id UK "文件路径/llm:时间戳:hash"
+        varchar title "标题"
+        text content "正文"
+        vector_1024 embedding "pgvector 向量"
+        jsonb meta "source/tags 等筛选元数据"
+        timestamptz created_at
+        timestamptz updated_at
+    }
     conduit_states {
         varchar key PK
         text value
@@ -399,6 +411,55 @@ erDiagram
     users ||--o{ memories : "has"
     users ||--o{ memory_vectors : "向量记忆"
 ```
+
+## 知识库系统
+
+```mermaid
+graph TB
+    subgraph 消息处理接入
+        ChatSvc[ai.ChatService]
+        KBRecall[隐式召回<br/>每轮自动注入 system 消息]
+        ToolReg[ai.tool.Registry]
+        KBTool[kb_search / kb_add<br/>LLM 主动调用]
+    end
+
+    subgraph 知识库核心 kb
+        Svc[kb.Service<br/>配置加载+工具注册]
+        Eng[kb.Engine<br/>多路召回合并]
+        Filter[kb.RecallFilter<br/>白名单/时序/来源/标签]
+        Rank[rank 加权合并<br/>vector 1.0 / fuzzy 0.8 / time 0.5]
+        Prov[kb.Provider 抽象<br/>Name/Capabilities/Search/Close]
+        Fac[Factory 注册表<br/>local/feishu/未来扩展]
+    end
+
+    subgraph Provider 实现
+        Local[kb/provider/local<br/>PostgreSQL 向量+模糊+时间]
+        Feishu[kb/provider/feishu<br/>Wiki API + 本地评分+向量]
+        Future[未来：腾讯 IMA / 图召回 ...]
+    end
+
+    ChatSvc --> KBRecall
+    KBRecall --> Svc
+    ToolReg --> KBTool
+    KBTool --> Svc
+    Svc --> Eng
+    Eng --> Filter
+    Eng --> Rank
+    Eng --> Prov
+    Fac --> Prov
+    Prov --> Local
+    Prov --> Feishu
+    Prov -.-> Future
+    Local --> PG[(PostgreSQL 17<br/>pgvector + pg_trgm)]
+    Feishu --> FS[飞书开放平台<br/>Wiki/Docx API]
+```
+
+知识库设计要点：
+- Provider 抽象层抹平不同知识库产品差异，未来新增 provider 只需实现 `kb.Provider` 并注册工厂；
+- 召回模式可扩展：`RecallMode` 追加常量（如 graph），Provider 在 Capabilities 声明支持即可接入；
+- 多路召回合并采用 rank 加权（与 ai/memory 的 MultiRetriever 算法一致），跨 provider 分数可比；
+- 筛选条件（时序/来源/标签/知识库白名单）在本地 Provider 做 SQL 下推，引擎层兜底保证语义一致；
+- 主动召回通过 `kb_search`/`kb_add` 工具参与 eino 工具调用循环，隐式召回由 ChatService 每轮注入。
 
 ## 已实现 / 规划中
 
@@ -415,5 +476,9 @@ erDiagram
 - [x] WIT 接口定义（schema/plugin/lanmei-plugin.wit，含 db/http Host Functions）
 - [x] LOD 记忆压缩（L0 原文 → L1 摘要 → L2 主题）
 - [x] 多路召回（向量 + 关键词 + 时间，memory.MultiRetriever 加权合并）
+- [x] 知识库系统（kb 包：Provider 抽象 + 多路召回引擎 + 召回筛选 + kb_search/kb_add 工具）
+- [x] 本地知识库 Provider（PostgreSQL pgvector + pg_trgm，docs_dir 文件同步 + LLM 录入）
+- [x] 飞书知识库 Provider（Wiki/Docx API，文档/向量 TTL 缓存，本地评分召回）
+- [x] 隐式知识召回（ChatService 每轮注入 system 消息）+ 显式 kb_search 工具
 - [ ] 签到记录表
 - [ ] 状态面板前端

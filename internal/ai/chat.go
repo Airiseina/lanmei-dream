@@ -24,6 +24,7 @@ import (
 	"github.com/DaWesen/lanmei-dream/internal/ai/prompt"
 	"github.com/DaWesen/lanmei-dream/internal/ai/tool"
 	"github.com/DaWesen/lanmei-dream/internal/database"
+	kbpkg "github.com/DaWesen/lanmei-dream/internal/kb"
 	"go.uber.org/zap"
 )
 
@@ -32,7 +33,7 @@ import (
 // 又触发了新的工具调用）。5 轮通常足以覆盖大多数多步推理场景。
 const maxToolCallRounds = 5
 
-// ChatService 编排 RAG 流程：LOD 上下文组装 → RAG 检索 → 提示构建 → LLM 调用 → 异步压缩
+// ChatService 编排 RAG 流程：LOD 上下文组装 → RAG 检索 → 知识库召回 → 提示构建 → LLM 调用 → 异步压缩
 type ChatService struct {
 	client     llm.LLMClient
 	embedder   embedding.Embedder
@@ -42,6 +43,7 @@ type ChatService struct {
 	compressor *Compressor
 	toolReg    *tool.Registry
 	promptMgr  *prompt.Manager // Prompt 管理器（可选，为 nil 时使用 DefaultSystemPrompt）
+	knowledge  *kbpkg.Service  // 知识库系统（可选，为 nil 时跳过隐式召回）
 	logger     *zap.Logger
 }
 
@@ -67,6 +69,13 @@ func NewChatService(client llm.LLMClient, emb embedding.Embedder, mem memory.Mem
 // 可在初始化后调用，不设置时使用 DefaultSystemPrompt 兜底。
 func (s *ChatService) SetPromptManager(pm *prompt.Manager) {
 	s.promptMgr = pm
+}
+
+// SetKnowledge 注入知识库系统。注入后每轮对话自动执行隐式知识召回
+// （作为 system 消息注入上下文），并暴露 kb_search/kb_add 工具给 LLM。
+// 为 nil 时知识库能力整体关闭。
+func (s *ChatService) SetKnowledge(svc *kbpkg.Service) {
+	s.knowledge = svc
 }
 
 // Compressor 暴露压缩器给外部调用
@@ -220,6 +229,24 @@ func (s *ChatService) assembleContext(ctx context.Context, req *llm.ChatRequest)
 			Role:    llm.RoleSystem,
 			Content: "以下是与当前对话相关的记忆：\n" + ragCtx,
 		})
+	}
+
+	// ── 知识库隐式召回（RAG 增强，可选）──
+	// 每轮对话按默认模式自动召回少量相关条目注入上下文；
+	// 复用 RAG 阶段已算好的 queryVec，避免同一句话重复向量化；
+	// 失败（网络/向量化异常）仅记日志，不中断主流程。
+	if s.knowledge != nil {
+		kbResults, kbErr := s.knowledge.Recall(ctx, &kbpkg.RecallRequest{
+			Query:       lastMsg.Content,
+			QueryVector: queryVec,
+			Modes:       s.knowledge.DefaultModes(),
+			Limit:       s.knowledge.AutoRecallLimit(),
+		})
+		if kbErr != nil {
+			s.logger.Warn("ai: 知识库隐式召回失败", zap.Error(kbErr))
+		} else if kbCtx := BuildKBContext(kbResults); kbCtx != "" {
+			msgs = append(msgs, llm.Message{Role: llm.RoleSystem, Content: kbCtx})
+		}
 	}
 
 	// 追加用户请求消息（当前轮次）

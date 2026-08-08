@@ -9,6 +9,7 @@ require (
 	github.com/cloudwego/eino-ext/components/embedding/openai v0.0.0-20260724103301-c9a5dc923462
 	github.com/cloudwego/eino-ext/components/model/openai v0.1.13
 	github.com/extism/go-sdk v1.7.1
+	github.com/larksuite/oapi-sdk-go/v3 v3.9.10
 	github.com/lxzan/gws v1.10.0
 	github.com/pelletier/go-toml/v2 v2.2.4
 	github.com/pgvector/pgvector-go v0.4.0

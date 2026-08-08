@@ -20,8 +20,9 @@ type Infra struct {
 	Logger     *zap.Logger
 }
 
-// Setup 初始化所有基础设施连接，返回可统一关闭的 Infra 实例
-func Setup(ctx context.Context, dbCfg *config.DatabaseConfig, redisCfg *config.RedisConfig, logger *zap.Logger) (*Infra, error) {
+// Setup 初始化所有基础设施连接，返回可统一关闭的 Infra 实例。
+// embeddingDim 为知识库向量列的目标维度（来自 ai.embedding_dim 配置），透传给数据库迁移。
+func Setup(ctx context.Context, dbCfg *config.DatabaseConfig, redisCfg *config.RedisConfig, embeddingDim int, logger *zap.Logger) (*Infra, error) {
 	inf := &Infra{Logger: logger}
 
 	// ── PostgreSQL（含 pgvector 扩展）──
@@ -32,7 +33,7 @@ func Setup(ctx context.Context, dbCfg *config.DatabaseConfig, redisCfg *config.R
 	inf.DB = db
 	logger.Info("PostgreSQL 已连接")
 
-	if err := db.Migrate(ctx); err != nil {
+	if err := db.Migrate(ctx, embeddingDim); err != nil {
 		return nil, fmt.Errorf("数据库迁移失败: %w", err)
 	}
 	logger.Info("数据库迁移完成")
