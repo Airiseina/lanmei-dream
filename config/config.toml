@@ -45,3 +45,51 @@ config = "./prompts/prompts.toml"
 [skills]
 dir = "./skills"
 config = "./config/skills.toml"
+
+# ============================================
+# 知识库系统
+# 总开关：enabled = true 后按 bases 列表构建各知识库。
+# 召回模式：vector=向量 / fuzzy=模糊 / time=时间（多路命中按 weights 加权合并）。
+# ============================================
+[knowledge]
+enabled = true                     # 知识库总开关
+default_recall_modes = ["vector", "fuzzy"]  # 隐式召回与 kb_search 的默认模式
+auto_recall_limit = 3               # 每轮对话隐式召回注入的条数
+
+[knowledge.weights]
+vector = 1.0                        # 向量召回权重
+fuzzy = 0.8                         # 模糊召回权重
+time = 0.5                          # 时间召回权重
+
+# ── 本地知识库（PostgreSQL + pgvector + pg_trgm）──
+[[knowledge.bases]]
+id = "main"
+name = "主知识库"
+description = "本地文件知识库，docs_dir 下的 Markdown 自动同步"
+provider = "local"
+enabled = true
+recall_limit = 5                    # 单模式召回上限
+
+[knowledge.bases.config]
+docs_dir = "./docs"                 # Markdown 文件目录（相对程序运行目录）
+fuzzy_threshold = 0.1               # 模糊召回最低相似度阈值
+
+# ── 飞书知识库（Wiki，应用身份访问）──
+# 凭据支持 "env:VAR_NAME" 语法从环境变量读取，避免敏感信息入库
+# [[knowledge.bases]]
+# id = "feishu-main"
+# name = "飞书知识库"
+# description = "飞书知识空间文档"
+# provider = "feishu"
+# enabled = true
+# recall_limit = 5
+#
+# [knowledge.bases.config]
+# app_id = "env:FEISHU_APP_ID"
+# app_secret = "env:FEISHU_APP_SECRET"
+# # space_id = ""                    # 缺省取第一个有权限的知识空间
+# # node_token = ""                  # 起始节点，缺省从空间根节点遍历
+# max_nodes = 200                    # 拉取节点数上限
+# fuzzy_threshold = 0.1              # 模糊召回最低分数
+# cache_ttl_seconds = 600            # 文档/向量缓存有效期（秒）
+# fetch_workers = 8                  # 拉取文档内容并发数

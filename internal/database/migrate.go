@@ -5,15 +5,29 @@ import (
 	"fmt"
 
 	"github.com/DaWesen/lanmei-dream/internal/model"
+	"go.uber.org/zap"
 )
 
-// Migrate 使用 GORM AutoMigrate 自动建表（幂等），并确保 pgvector 扩展和索引就绪
-func (db *DB) Migrate(ctx context.Context) error {
+// defaultKnowledgeVectorDim 知识库向量列的默认维度（与 memory_vectors 保持一致）。
+// 若配置的 ai.embedding_dim 不同，迁移时会 ALTER 到配置维度。
+const defaultKnowledgeVectorDim = 1024
+
+// Migrate 使用 GORM AutoMigrate 自动建表（幂等），并确保 pgvector / pg_trgm 扩展和索引就绪。
+//
+// vectorDim 为知识库向量列的目标维度（来自 ai.embedding_dim 配置）；
+// 若 >0 且与默认维度不同，迁移时对 knowledge_chunks.embedding 执行 ALTER 自适应。
+func (db *DB) Migrate(ctx context.Context, vectorDim int) error {
 	// 启用 pgvector 扩展
 	if err := db.Orm.WithContext(ctx).Exec("CREATE EXTENSION IF NOT EXISTS vector").Error; err != nil {
 		return fmt.Errorf("enable pgvector: %w", err)
 	}
 	db.logger.Info("pgvector 扩展已启用")
+
+	// 启用 pg_trgm 扩展（本地知识库模糊召回倒排索引）
+	if err := db.Orm.WithContext(ctx).Exec("CREATE EXTENSION IF NOT EXISTS pg_trgm").Error; err != nil {
+		return fmt.Errorf("enable pg_trgm: %w", err)
+	}
+	db.logger.Info("pg_trgm 扩展已启用")
 
 	if err := db.Orm.WithContext(ctx).AutoMigrate(
 		&model.User{},
@@ -23,6 +37,7 @@ func (db *DB) Migrate(ctx context.Context) error {
 		&model.TopicCluster{},
 		&model.MemoryVector{},
 		&model.PluginInstallation{},
+		&model.KnowledgeChunk{},
 	); err != nil {
 		return fmt.Errorf("migrate: %w", err)
 	}
@@ -56,6 +71,28 @@ CREATE TRIGGER trg_memory_vectors_search_vec
   BEFORE INSERT OR UPDATE OF content ON memory_vectors
   FOR EACH ROW EXECUTE FUNCTION memory_vectors_search_vec_trigger()`)
 	db.logger.Info("全文搜索触发器已就绪")
+
+	// ── 知识库索引 ──
+	// 向量召回（HNSW）
+	db.Orm.WithContext(ctx).Exec(
+		"CREATE INDEX IF NOT EXISTS idx_knowledge_chunks_embedding ON knowledge_chunks USING hnsw (embedding vector_cosine_ops)",
+	)
+	// 模糊召回（pg_trgm GIN 倒排索引，中英文子串/模糊匹配）
+	db.Orm.WithContext(ctx).Exec(
+		"CREATE INDEX IF NOT EXISTS idx_knowledge_chunks_trgm ON knowledge_chunks USING gin (content gin_trgm_ops)",
+	)
+	db.logger.Info("知识库索引已就绪")
+
+	// 向量维度自适应：与配置的 ai.embedding_dim 保持一致
+	// 注意：vector(N) 的类型修饰符无法参数化，N 为配置的整数维度（非用户输入），直接拼接安全。
+	if vectorDim > 0 && vectorDim != defaultKnowledgeVectorDim {
+		if err := db.Orm.WithContext(ctx).Exec(
+			fmt.Sprintf("ALTER TABLE knowledge_chunks ALTER COLUMN embedding TYPE vector(%d)", vectorDim),
+		).Error; err != nil {
+			return fmt.Errorf("alter knowledge_chunks embedding dimension: %w", err)
+		}
+		db.logger.Info("知识库向量维度已调整", zap.Int("dim", vectorDim))
+	}
 
 	return nil
 }

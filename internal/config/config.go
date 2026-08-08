@@ -6,14 +6,15 @@ import (
 
 // Config 应用总配置，按模块拆分为子结构体
 type Config struct {
-	Database DatabaseConfig `mapstructure:"database"`
-	Redis    RedisConfig    `mapstructure:"redis"`
-	AI       AIConfig       `mapstructure:"ai"`
-	Bot      BotConfig      `mapstructure:"bot"`
-	Plugin   PluginConfig   `mapstructure:"plugin"`
-	Log      LogConfig      `mapstructure:"log"`
-	Prompts  PromptsConfig  `mapstructure:"prompts"`
-	Skills   SkillsConfig   `mapstructure:"skills"`
+	Database  DatabaseConfig  `mapstructure:"database"`
+	Redis     RedisConfig     `mapstructure:"redis"`
+	AI        AIConfig        `mapstructure:"ai"`
+	Bot       BotConfig       `mapstructure:"bot"`
+	Plugin    PluginConfig    `mapstructure:"plugin"`
+	Log       LogConfig       `mapstructure:"log"`
+	Prompts   PromptsConfig   `mapstructure:"prompts"`
+	Skills    SkillsConfig    `mapstructure:"skills"`
+	Knowledge KnowledgeConfig `mapstructure:"knowledge"`
 }
 
 // PluginConfig 插件系统配置
@@ -93,6 +94,45 @@ type PromptsConfig struct {
 type SkillsConfig struct {
 	Dir    string `mapstructure:"dir"`
 	Config string `mapstructure:"config"`
+}
+
+// KnowledgeConfig 知识库系统配置
+type KnowledgeConfig struct {
+	// Enabled 知识库总开关，默认 false
+	Enabled bool `mapstructure:"enabled"`
+
+	// DefaultModes 隐式召回与 kb_search 工具的默认召回模式，可选值：vector/fuzzy/time
+	// 空数组表示使用各 provider 的全部能力
+	DefaultModes []string `mapstructure:"default_recall_modes"`
+
+	// AutoRecallLimit 每轮对话隐式召回注入上下文的条数，默认 3
+	AutoRecallLimit int `mapstructure:"auto_recall_limit"`
+
+	// Weights 多路召回合并权重
+	Weights RecallWeightsConfig `mapstructure:"weights"`
+
+	// Bases 知识库列表
+	Bases []KnowledgeBaseConfig `mapstructure:"bases"`
+}
+
+// RecallWeightsConfig 各召回模式的合并权重（多路命中时按权重累加排名分）
+type RecallWeightsConfig struct {
+	Vector float64 `mapstructure:"vector"`
+	Fuzzy  float64 `mapstructure:"fuzzy"`
+	Time   float64 `mapstructure:"time"`
+}
+
+// KnowledgeBaseConfig 单个知识库的配置。
+// Config 为 provider 私有配置（如 local 的 docs_dir、feishu 的 app_id 等），
+// 由对应 provider 工厂解析；敏感值支持 "env:VAR_NAME" 语法从环境变量读取。
+type KnowledgeBaseConfig struct {
+	ID          string         `mapstructure:"id"`
+	Name        string         `mapstructure:"name"`
+	Description string         `mapstructure:"description"`
+	Provider    string         `mapstructure:"provider"` // local / feishu
+	Enabled     bool           `mapstructure:"enabled"`
+	RecallLimit int            `mapstructure:"recall_limit"` // 单模式召回上限，默认 5
+	Config      map[string]any `mapstructure:"config"`
 }
 
 // LogConfig 日志相关配置

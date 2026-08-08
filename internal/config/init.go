@@ -49,22 +49,24 @@ func Init() (*Config, error) {
 	//（如 llm_api_key, super_users），这个映射是 Viper 内部 (cfgKey → envVar)
 	// 的单向变换，不可逆。
 	envToCfg := map[string]string{
-		"LANMEI_DATABASE_URL":             "database.url",
-		"LANMEI_REDIS_ADDR":               "redis.addr",
-		"LANMEI_BOT_NICKNAME":             "bot.nickname",
-		"LANMEI_BOT_SUPER_USERS":          "bot.super_users",
-		"LANMEI_BOT_GATEWAY_LISTEN_ADDR":  "bot.gateway.listen_addr",
-		"LANMEI_BOT_GATEWAY_ACCESS_TOKEN": "bot.gateway.access_token",
-		"LANMEI_AI_LLM_API_KEY":           "ai.llm_api_key",
-		"LANMEI_AI_LLM_BASE_URL":          "ai.llm_base_url",
-		"LANMEI_AI_LLM_MODEL":             "ai.llm_model",
-		"LANMEI_AI_LLM_MAX_TOKENS":        "ai.llm_max_tokens",
-		"LANMEI_AI_LLM_TEMPERATURE":       "ai.llm_temperature",
-		"LANMEI_AI_EMBEDDING_API_KEY":     "ai.embedding_api_key",
-		"LANMEI_AI_EMBEDDING_BASE_URL":    "ai.embedding_base_url",
-		"LANMEI_AI_EMBEDDING_MODEL":       "ai.embedding_model",
-		"LANMEI_AI_EMBEDDING_DIM":         "ai.embedding_dim",
-		"LANMEI_PLUGIN_ROOT_DIR":          "plugin.root_dir",
+		"LANMEI_DATABASE_URL":                "database.url",
+		"LANMEI_REDIS_ADDR":                  "redis.addr",
+		"LANMEI_BOT_NICKNAME":                "bot.nickname",
+		"LANMEI_BOT_SUPER_USERS":             "bot.super_users",
+		"LANMEI_BOT_GATEWAY_LISTEN_ADDR":     "bot.gateway.listen_addr",
+		"LANMEI_BOT_GATEWAY_ACCESS_TOKEN":    "bot.gateway.access_token",
+		"LANMEI_AI_LLM_API_KEY":              "ai.llm_api_key",
+		"LANMEI_AI_LLM_BASE_URL":             "ai.llm_base_url",
+		"LANMEI_AI_LLM_MODEL":                "ai.llm_model",
+		"LANMEI_AI_LLM_MAX_TOKENS":           "ai.llm_max_tokens",
+		"LANMEI_AI_LLM_TEMPERATURE":          "ai.llm_temperature",
+		"LANMEI_AI_EMBEDDING_API_KEY":        "ai.embedding_api_key",
+		"LANMEI_AI_EMBEDDING_BASE_URL":       "ai.embedding_base_url",
+		"LANMEI_AI_EMBEDDING_MODEL":          "ai.embedding_model",
+		"LANMEI_AI_EMBEDDING_DIM":            "ai.embedding_dim",
+		"LANMEI_PLUGIN_ROOT_DIR":             "plugin.root_dir",
+		"LANMEI_KNOWLEDGE_ENABLED":           "knowledge.enabled",
+		"LANMEI_KNOWLEDGE_AUTO_RECALL_LIMIT": "knowledge.auto_recall_limit",
 	}
 	for envKey, cfgKey := range envToCfg {
 		if val := os.Getenv(envKey); val != "" {
@@ -137,6 +139,14 @@ func setDefaults(v *viper.Viper) {
 	// Skills 默认路径
 	v.SetDefault("skills.dir", "./skills")
 	v.SetDefault("skills.config", "./config/skills.toml")
+
+	// Knowledge 默认值（知识库默认关闭，需在配置中显式启用）
+	v.SetDefault("knowledge.enabled", false)
+	v.SetDefault("knowledge.default_recall_modes", []string{"vector", "fuzzy"})
+	v.SetDefault("knowledge.auto_recall_limit", 3)
+	v.SetDefault("knowledge.weights.vector", 1.0)
+	v.SetDefault("knowledge.weights.fuzzy", 0.8)
+	v.SetDefault("knowledge.weights.time", 0.5)
 
 	// LLM 非敏感默认值（API Key 仅从环境变量读取）
 	v.SetDefault("ai.llm_base_url", "https://api.openai.com/v1")

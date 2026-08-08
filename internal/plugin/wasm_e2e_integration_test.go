@@ -47,7 +47,7 @@ func TestSigninWasm_EndToEnd(t *testing.T) {
 		URL: envOr("LANMEI_DATABASE_URL", "postgres://lanmei:lanmei@localhost:55432/lanmei?sslmode=disable"),
 	}, &config.RedisConfig{
 		Addr: envOr("LANMEI_REDIS_ADDR", "localhost:56379"),
-	}, zap.NewNop())
+	}, 0, zap.NewNop())
 	if err != nil {
 		t.Fatalf("setup Docker integration infrastructure: %v", err)
 	}

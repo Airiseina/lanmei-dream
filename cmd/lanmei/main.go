@@ -18,6 +18,9 @@ import (
 	"github.com/DaWesen/lanmei-dream/internal/config"
 	"github.com/DaWesen/lanmei-dream/internal/gateway"
 	"github.com/DaWesen/lanmei-dream/internal/infra"
+	kbpkg "github.com/DaWesen/lanmei-dream/internal/kb"
+	"github.com/DaWesen/lanmei-dream/internal/kb/provider/feishu"
+	"github.com/DaWesen/lanmei-dream/internal/kb/provider/local"
 	pluginpkg "github.com/DaWesen/lanmei-dream/internal/plugin"
 	"go.uber.org/zap"
 )
@@ -37,7 +40,8 @@ func main() {
 	defer logger.Sync()
 
 	// ── 基础设施（PostgreSQL+pgvector + Redis）──
-	inf, err := infra.Setup(ctx, &cfg.Database, &cfg.Redis, logger)
+	// embeddingDim 透传给数据库迁移，保证 knowledge_chunks 向量列维度与模型一致
+	inf, err := infra.Setup(ctx, &cfg.Database, &cfg.Redis, cfg.AI.EmbeddingDim, logger)
 	if err != nil {
 		logger.Fatal("基础设施初始化失败", zap.Error(err))
 	}
@@ -111,11 +115,34 @@ func main() {
 	var (
 		chatSvc *ai.ChatService
 		toolReg *tool.Registry
+		kbSvc   *kbpkg.Service
 	)
 	if llmClient != nil {
 		toolReg = tool.NewRegistry()
 		chatSvc = ai.NewChatService(llmClient, embedder, inf.MemStore, inf.DB, toolReg, logger)
 		chatSvc.SetPromptManager(promptMgr)
+
+		// ── 知识库系统（provider 工厂注册 + 服务构建 + 工具注册 + 隐式召回注入）──
+		if cfg.Knowledge.Enabled {
+			// 注册 provider 工厂（未来新增 provider 在此追加注册即可）
+			if err := kbpkg.RegisterProvider("local", local.New); err != nil {
+				logger.Fatal("注册 local provider 失败", zap.Error(err))
+			}
+			if err := kbpkg.RegisterProvider("feishu", feishu.New); err != nil {
+				logger.Fatal("注册 feishu provider 失败", zap.Error(err))
+			}
+			kbSvc, err = kbpkg.NewService(ctx, &cfg.Knowledge, inf.DB.Orm, embedder, logger)
+			if err != nil {
+				logger.Fatal("知识库初始化失败", zap.Error(err))
+			}
+			if kbSvc != nil {
+				if err := kbSvc.RegisterTools(toolReg); err != nil {
+					logger.Fatal("注册知识库工具失败", zap.Error(err))
+				}
+				chatSvc.SetKnowledge(kbSvc)
+				logger.Info("知识库系统就绪", zap.Int("bases", len(kbSvc.List())))
+			}
+		}
 		logger.Info("AI 对话服务就绪")
 	} else {
 		logger.Warn("LLM 未配置，角色扮演不可用")
@@ -177,6 +204,9 @@ func main() {
 		<-sigCh
 		logger.Info("正在关闭...")
 		pluginReg.StopPlugins(ctx)
+		if kbSvc != nil {
+			kbSvc.Close()
+		}
 		gwServer.Shutdown()
 		cancel()
 	}()
