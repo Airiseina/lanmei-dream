@@ -224,17 +224,12 @@ func main() {
 		logger.Fatal("恢复已启用 Wasm 插件失败", zap.Error(err))
 	}
 
-	if _, wasmSigninLoaded := pluginReg.Get("signin"); !wasmSigninLoaded {
-		if err := pluginReg.Register(bizplugin.NewSigninPlugin(inf.DB, logger)); err != nil {
-			logger.Fatal("注册签到插件失败", zap.Error(err))
-		}
-	}
-
-	// 互动事件演示插件（占位实现，展示插件消费 notice 事件的范式）
-	if cfg.Bot.Notice.Enabled {
-		if err := pluginReg.Register(bizplugin.NewWelcomeDemoPlugin(logger)); err != nil {
-			logger.Fatal("注册欢迎演示插件失败", zap.Error(err))
-		}
+	// ── 内置业务插件：配置驱动注册（[plugin.builtins]）──
+	// 替代在 main.go 硬编码 if 块逐个注册的写法：启停由配置文件控制；
+	// 内置插件与 Wasm 插件同走一个注册表，同名插件已由 Wasm 加载时自动跳过，避免 ID 冲突。
+	bizReg := bizplugin.NewBusinessRegistry(&cfg.Plugin.Builtins, pluginReg, inf.DB, logger)
+	if err := bizReg.RegisterBuiltins(); err != nil {
+		logger.Fatal("内置业务插件注册失败", zap.Error(err))
 	}
 
 	if err := pluginReg.InitPlugins(ctx); err != nil {

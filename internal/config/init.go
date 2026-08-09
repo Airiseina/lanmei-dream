@@ -136,8 +136,9 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("bot.media.vision_enabled", false)
 	v.SetDefault("bot.media.vision_model", "")
 
-	// 互动事件预留默认值
-	v.SetDefault("bot.notice.enabled", true)
+	// 内置业务插件默认开启（配置驱动注册）
+	v.SetDefault("plugin.builtins.signin", true)
+	v.SetDefault("plugin.builtins.welcome", true)
 
 	// 限流默认值
 	v.SetDefault("bot.ratelimit.reply_per_group_per_min", 15)

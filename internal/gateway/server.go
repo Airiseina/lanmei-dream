@@ -300,8 +300,8 @@ func (s *Server) handleV12Message(conn *Connection, data []byte) {
 	}
 
 	// 更新连接的 SelfID（首次收到事件时，并发安全）
-	if evt.SelfID != "" {
-		conn.SetSelfID(evt.SelfID)
+	if sid := evt.ResolveSelfID(); sid != "" {
+		conn.SetSelfID(sid)
 	}
 
 	// 元事件处理
@@ -310,7 +310,7 @@ func (s *Server) handleV12Message(conn *Connection, data []byte) {
 			zap.String("conn", conn.ID),
 			zap.String("impl", evt.Impl),
 			zap.String("platform", evt.Platform),
-			zap.String("self_id", evt.SelfID),
+			zap.String("self_id", evt.ResolveSelfID()),
 		)
 		if evt.Impl != "" {
 			conn.SetImpl(evt.Impl)

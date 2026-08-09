@@ -266,6 +266,9 @@ func (b *Bot) Run() {
 //  1. 空文本消息过滤（但含媒体段或为事件的消息放行）
 //  2. message_id 去重（Deduper）
 //  3. 将完整事件上下文（含多模态段 / notice 信息）注入 InputMessage.Extra
+//
+// 通知事件（notice/request）无文本内容，与普通消息分流：
+// 事件信息经 Extra 写入黑板供插件消费；事件不产生回复，出错也保持静默。
 func (b *Bot) OnMessage(msg *gateway.NormalizedMessage) {
 	if msg == nil {
 		return
@@ -293,20 +296,47 @@ func (b *Bot) OnMessage(msg *gateway.NormalizedMessage) {
 			KeyMessageID:      msg.MessageID,
 			KeyConnID:         msg.ConnID,
 			KeySelfID:         msg.SelfID,
-			// ── 多模态 / 互动事件输入（只读 Extra）──
+			// ── 事件输入（只读 Extra）──
 			KeyMessageType:  msg.MessageType,
 			KeySegments:     msg.Segments,
 			KeyMimeTypes:    msg.MimeTypes,
 			KeyAtTargets:    msg.AtTargets,
-			KeyNoticeType:   msg.NoticeType,
-			KeyNoticeDetail: msg.NoticeDetail,
+			KeyEventType:    msg.EventType,
+			KeyEventSubType: msg.EventSubType,
+			KeyEventData:    msg.EventData,
 		},
 	}
-	input.ResponseCallback = b.makeResponseCallback(msg)
+	// 事件消息（notice/request）：出错也绝不向群里发消息（事件落空发"迷糊话术"是 bug）
+	isEvent := msg.MessageType == gateway.MessageTypeNotice || msg.MessageType == gateway.MessageTypeRequest
+	if isEvent {
+		input.ResponseCallback = b.makeEventCallback(msg)
+	} else {
+		input.ResponseCallback = b.makeResponseCallback(msg)
+	}
 
 	if err := b.engine.Submit(input); err != nil {
 		b.logger.Error("conduit: submit failed", zap.Error(err))
-		b.reply(msg, "蓝妹现在有点迷糊，稍后再试~")
+		if !isEvent {
+			b.reply(msg, "蓝妹现在有点迷糊，稍后再试~")
+		}
+	}
+}
+
+// makeEventCallback 构造通知事件专用回调：事件处理出错时只记日志、绝不回复；
+// 正常完成时遍历 Output 发送（供未来事件消费插件写入输出，如入群欢迎）。
+func (b *Bot) makeEventCallback(msg *gateway.NormalizedMessage) func(*conduit.MessageContext, error) {
+	return func(ctx *conduit.MessageContext, err error) {
+		if err != nil {
+			b.logger.Error("bot: event process failed",
+				zap.String("event", msg.EventType),
+				zap.String("group", msg.GroupID),
+				zap.Error(err),
+			)
+			return
+		}
+		for _, out := range ctx.Output {
+			b.reply(msg, out.Content)
+		}
 	}
 }
 

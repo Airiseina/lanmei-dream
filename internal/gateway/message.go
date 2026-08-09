@@ -88,31 +88,6 @@ const (
 	MessageTypeRequest MessageType = "request" // 请求（好友/加群）
 )
 
-// NoticeType 跨协议统一的通知子类型
-type NoticeType string
-
-const (
-	NoticeGroupMemberIncrease NoticeType = "group_member_increase" // 进群
-	NoticeGroupMemberDecrease NoticeType = "group_member_decrease" // 退群/被踢
-	NoticeFriendIncrease      NoticeType = "friend_increase"       // 好友添加
-	NoticePoke                NoticeType = "poke"                  // 戳一戳
-	NoticeGroupRecall         NoticeType = "group_recall"          // 消息撤回
-	NoticeGroupBan            NoticeType = "group_ban"             // 禁言
-	NoticeGroupUnban          NoticeType = "group_unban"           // 解除禁言
-)
-
-// NoticeDetail 通知事件的统一附加信息（跨协议归一）。
-// OperatorID 为操作者（拉人者/戳人者/执行禁言的管理员），
-// TargetID 为被操作者（进群者/被戳者/被禁言者），
-// 具体语义随 NoticeType 变化，见 NormalizeV12/NormalizeV11 的构造逻辑。
-type NoticeDetail struct {
-	OperatorID string            // 操作者 user_id
-	TargetID   string            // 被操作者 user_id
-	Duration   int               // 禁言时长（秒），非禁言事件为 0
-	MessageID  string            // 撤回的消息 ID（recall 事件）
-	Raw        map[string]string // 平台原始字段（差异补丁，供插件按需读取）
-}
-
 // NormalizedSegment 跨协议标准化消息段。
 // 保留 type / mime type / data，供需要结构化信息的消费方（MediaPass、Topic 提及检测等）使用。
 type NormalizedSegment struct {
@@ -137,13 +112,15 @@ type NormalizedMessage struct {
 	MessageID  string   // 消息 ID
 	ConnID     string   // 来源连接 ID（用于回复路由）
 
-	// ── 多模态 / 事件扩展字段（message 事件填充；notice 事件见 MessageType/NoticeType）──
+	// ── 多模态 / 事件扩展字段 ──
+	// 多模态段（message 事件填充）；事件字段（notice/request 事件填充，普通消息为空）
 	Segments     []NormalizedSegment // 完整段列表
 	AtTargets    []string            // at 目标 user_id 列表
 	MimeTypes    []string            // 去重后的 MIME 类型列表
 	MessageType  MessageType         // message / notice / request
-	NoticeType   NoticeType          // notice 子类型（message 事件为空）
-	NoticeDetail *NoticeDetail       // notice 附加信息（message 事件为 nil）
+	EventType    string              // 规范化事件类型（见 notice.go；普通消息为空）
+	EventSubType string              // 事件子类型（透传原始 sub_type，可为空）
+	EventData    map[string]any      // 事件全字段（普通消息为 nil）
 }
 
 // NormalizeV12 将 OneBot 12 事件标准化为 NormalizedMessage。
@@ -162,7 +139,7 @@ func NormalizeV12(connID string, evt *EventV12, platform Platform) *NormalizedMe
 	msg := &NormalizedMessage{
 		Platform:  p,
 		Protocol:  ProtocolV12,
-		SelfID:    evt.SelfID,
+		SelfID:    evt.ResolveSelfID(),
 		UserID:    evt.UserID,
 		GroupID:   evt.GroupID,
 		IsGroup:   evt.GroupID != "",
@@ -182,26 +159,25 @@ func NormalizeV12(connID string, evt *EventV12, platform Platform) *NormalizedMe
 		msg.SenderName = "" // OB12 消息事件不直接包含 sender nickname，需从 sender 子对象获取（如有）
 
 	case "notice":
+		// 通知事件：仅接收白名单内的事件类型（见 notice.go），白名单外返回 nil
+		eventType, subType, data, ok := normalizeNoticeV12(evt)
+		if !ok {
+			return nil
+		}
 		msg.MessageType = MessageTypeNotice
-		msg.NoticeType = MapNoticeTypeV12(evt.DetailType)
-		msg.NoticeDetail = &NoticeDetail{
-			OperatorID: evt.OperatorID,
-			TargetID:   evt.TargetID,
-			Duration:   int(evt.Duration),
-			MessageID:  evt.MessageID,
-			Raw:        map[string]string{"detail_type": evt.DetailType, "sub_type": evt.SubType},
-		}
-		// poke：戳人者为 user_id，被戳者为 target_id
-		if msg.NoticeType == NoticePoke && msg.NoticeDetail.OperatorID == "" {
-			msg.NoticeDetail.OperatorID = evt.UserID
-		}
+		msg.EventType = eventType
+		msg.EventSubType = subType
+		msg.EventData = data
 
 	case "request":
 		msg.MessageType = MessageTypeRequest
-		msg.NoticeType = NoticeType(evt.DetailType)
-		msg.NoticeDetail = &NoticeDetail{
-			OperatorID: evt.UserID,
-			Raw:        map[string]string{"detail_type": evt.DetailType, "sub_type": evt.SubType},
+		msg.EventType = evt.DetailType
+		msg.EventSubType = evt.SubType
+		msg.EventData = map[string]any{
+			"user_id":     evt.UserID,
+			"group_id":    evt.GroupID,
+			"sub_type":    evt.SubType,
+			"detail_type": evt.DetailType,
 		}
 
 	default:
@@ -233,6 +209,12 @@ func NormalizeV11(connID string, evt *EventV11, platform Platform) *NormalizedMe
 			msg.GroupID = strconv.FormatInt(evt.GroupID, 10)
 			msg.IsGroup = true
 		}
+		// 群聊兜底判定：message_type 缺失时 group_id 非 0 也判为群聊
+		//（防御 message_type 缺失的异常报文，notice 事件不经过此分支）
+		if !msg.IsGroup && evt.GroupID != 0 {
+			msg.GroupID = strconv.FormatInt(evt.GroupID, 10)
+			msg.IsGroup = true
+		}
 		msg.Segments = ParseSegmentsV11(evt.ParseMessageSegments())
 		msg.Content = evt.RawMessage
 		if msg.Content == "" {
@@ -248,32 +230,31 @@ func NormalizeV11(connID string, evt *EventV11, platform Platform) *NormalizedMe
 		msg.MessageID = strconv.FormatInt(evt.MessageID, 10)
 
 	case "notice":
+		// 通知事件：仅接收白名单内的事件类型（见 notice.go），白名单外返回 nil
+		eventType, subType, data, ok := normalizeNoticeV11(evt)
+		if !ok {
+			return nil
+		}
 		msg.MessageType = MessageTypeNotice
 		msg.UserID = strconv.FormatInt(evt.UserID, 10)
 		msg.GroupID = strconv.FormatInt(evt.GroupID, 10)
 		msg.IsGroup = evt.GroupID != 0
-		msg.NoticeType = MapNoticeTypeV11(evt.NoticeType, evt.SubType)
-		msg.NoticeDetail = &NoticeDetail{
-			OperatorID: strconv.FormatInt(evt.OperatorID, 10),
-			TargetID:   strconv.FormatInt(evt.TargetID, 10),
-			Duration:   int(evt.Duration),
-			MessageID:  strconv.FormatInt(evt.MessageID, 10),
-			Raw:        map[string]string{"notice_type": evt.NoticeType, "sub_type": evt.SubType},
-		}
-		// poke：戳人者为 user_id，被戳者为 target_id
-		if msg.NoticeType == NoticePoke && msg.NoticeDetail.OperatorID == "" {
-			msg.NoticeDetail.OperatorID = msg.UserID
-		}
+		msg.EventType = eventType
+		msg.EventSubType = subType
+		msg.EventData = data
 
 	case "request":
 		msg.MessageType = MessageTypeRequest
 		msg.UserID = strconv.FormatInt(evt.UserID, 10)
 		msg.GroupID = strconv.FormatInt(evt.GroupID, 10)
 		msg.IsGroup = evt.GroupID != 0
-		msg.NoticeType = NoticeType(evt.NoticeType)
-		msg.NoticeDetail = &NoticeDetail{
-			OperatorID: strconv.FormatInt(evt.UserID, 10),
-			Raw:        map[string]string{"notice_type": evt.NoticeType, "sub_type": evt.SubType},
+		msg.EventType = evt.RequestType
+		msg.EventSubType = evt.SubType
+		msg.EventData = map[string]any{
+			"user_id":      strconv.FormatInt(evt.UserID, 10),
+			"group_id":     strconv.FormatInt(evt.GroupID, 10),
+			"sub_type":     evt.SubType,
+			"request_type": evt.RequestType,
 		}
 
 	default:
@@ -353,53 +334,6 @@ func collectSegmentMeta(msg *NormalizedMessage, segs []NormalizedSegment) {
 			}
 		}
 	}
-}
-
-// MapNoticeTypeV12 将 OneBot 12 detail_type 映射为统一 NoticeType。
-// 未知类型保留原始字符串，避免丢信息。
-func MapNoticeTypeV12(detailType string) NoticeType {
-	switch detailType {
-	case "group_member_increase":
-		return NoticeGroupMemberIncrease
-	case "group_member_decrease":
-		return NoticeGroupMemberDecrease
-	case "friend_increase":
-		return NoticeFriendIncrease
-	case "group_recall":
-		return NoticeGroupRecall
-	case "group_ban":
-		return NoticeGroupBan
-	case "group_unban":
-		return NoticeGroupUnban
-	case "poke":
-		return NoticePoke
-	default:
-		return NoticeType(detailType)
-	}
-}
-
-// MapNoticeTypeV11 将 OneBot 11 notice_type/sub_type 映射为统一 NoticeType。
-func MapNoticeTypeV11(noticeType, subType string) NoticeType {
-	switch noticeType {
-	case "group_increase":
-		return NoticeGroupMemberIncrease
-	case "group_decrease":
-		return NoticeGroupMemberDecrease
-	case "friend_add":
-		return NoticeFriendIncrease
-	case "group_recall":
-		return NoticeGroupRecall
-	case "group_ban":
-		if subType == "lift_ban" {
-			return NoticeGroupUnban
-		}
-		return NoticeGroupBan
-	case "notify":
-		if subType == "poke" {
-			return NoticePoke
-		}
-	}
-	return NoticeType(noticeType)
 }
 
 // toStringMap 将任意值 map 转为字符串 map，兼容 JSON number/string/bool。

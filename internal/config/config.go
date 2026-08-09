@@ -19,7 +19,20 @@ type Config struct {
 
 // PluginConfig 插件系统配置
 type PluginConfig struct {
+	// RootDir Wasm 插件根目录
 	RootDir string `mapstructure:"root_dir"`
+	// Builtins 内置业务插件开关（配置驱动注册，替代 main.go 硬编码注册）
+	Builtins PluginBuiltinsConfig `mapstructure:"builtins"`
+}
+
+// PluginBuiltinsConfig 内置业务插件开关。
+// 每个开关对应一个内置插件；false 时不注册该插件。
+// 若同名插件已由 Wasm 动态加载，注册表会自动跳过内置注册，避免重复。
+type PluginBuiltinsConfig struct {
+	// Signin 签到插件
+	Signin bool `mapstructure:"signin"`
+	// Welcome 入群欢迎插件
+	Welcome bool `mapstructure:"welcome"`
 }
 
 // DatabaseConfig 数据库配置
@@ -55,7 +68,6 @@ type BotConfig struct {
 	Gateway    GatewayConfig   `mapstructure:"gateway"`
 	Stream     StreamConfig    `mapstructure:"stream"`
 	Media      MediaConfig     `mapstructure:"media"`
-	Notice     NoticeConfig    `mapstructure:"notice"`
 	RateLimit  RateLimitConfig `mapstructure:"ratelimit"`
 	Topic      TopicConfig     `mapstructure:"topic"`
 }
@@ -77,12 +89,6 @@ type MediaConfig struct {
 	VisionEnabled bool `mapstructure:"vision_enabled"`
 	// VisionModel 视觉模型名（空则复用主对话模型）
 	VisionModel string `mapstructure:"vision_model"`
-}
-
-// NoticeConfig 互动事件配置（本轮为预留：具体业务由插件子树实现）
-type NoticeConfig struct {
-	// Enabled 事件标准化总开关
-	Enabled bool `mapstructure:"enabled"`
 }
 
 // RateLimitConfig 消息去重与回复限流配置

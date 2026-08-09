@@ -24,13 +24,14 @@ const (
 	KeyIsSegment      = "bot.is_segment"   // bool 标记流式段落重入消息
 	KeyStreamChannel  = "bot.stream.ch"    // chan string 流式段落通道
 
-	// ── 多模态事件输入（Extra，由 OnMessage 注入，只读）──
-	KeyMessageType  = "bot.message_type"  // gateway.MessageType：message/notice/request
-	KeySegments     = "bot.segments"      // []gateway.NormalizedSegment 完整消息段
-	KeyMimeTypes    = "bot.mime_types"    // []string 去重后的 MIME 类型
-	KeyAtTargets    = "bot.at_targets"    // []string at 目标 user_id 列表
-	KeyNoticeType   = "bot.notice_type"   // gateway.NoticeType notice 子类型
-	KeyNoticeDetail = "bot.notice_detail" // *gateway.NoticeDetail notice 附加信息
+	// ── 事件输入（Extra，由 OnMessage 注入，只读）──
+	KeyMessageType  = "bot.message_type"   // gateway.MessageType：message/notice/request
+	KeySegments     = "bot.segments"       // []gateway.NormalizedSegment 完整消息段
+	KeyMimeTypes    = "bot.mime_types"     // []string 去重后的 MIME 类型
+	KeyAtTargets    = "bot.at_targets"     // []string at 目标 user_id 列表
+	KeyEventType    = "bot.event.type"     // string 规范化事件类型（普通消息为空）
+	KeyEventSubType = "bot.event.sub_type" // string 事件子类型
+	KeyEventData    = "bot.event.data"     // map[string]any 事件全字段
 
 	// ── 媒体处理中间结果（data，由 MediaPass 写入）──
 	KeyImageDesc    = "bot.image_desc"    // string 图片理解描述
@@ -242,16 +243,22 @@ func MessageTypeFromCtx(ctx *conduit.MessageContext) gateway.MessageType {
 	return mt
 }
 
-// NoticeTypeFromCtx 从 ctx.Extra 读取 notice 子类型。
-func NoticeTypeFromCtx(ctx *conduit.MessageContext) gateway.NoticeType {
-	nt, _ := ctx.Extra[KeyNoticeType].(gateway.NoticeType)
-	return nt
+// EventTypeFromCtx 从 ctx.Extra 读取规范化事件类型（普通消息为空串）。
+func EventTypeFromCtx(ctx *conduit.MessageContext) string {
+	et, _ := ctx.Extra[KeyEventType].(string)
+	return et
 }
 
-// NoticeDetailFromCtx 从 ctx.Extra 读取 notice 附加信息。
-func NoticeDetailFromCtx(ctx *conduit.MessageContext) *gateway.NoticeDetail {
-	nd, _ := ctx.Extra[KeyNoticeDetail].(*gateway.NoticeDetail)
-	return nd
+// EventSubTypeFromCtx 从 ctx.Extra 读取事件子类型（透传原始 sub_type，可为空）。
+func EventSubTypeFromCtx(ctx *conduit.MessageContext) string {
+	est, _ := ctx.Extra[KeyEventSubType].(string)
+	return est
+}
+
+// EventDataFromCtx 从 ctx.Extra 读取事件全字段（普通消息为 nil）。
+func EventDataFromCtx(ctx *conduit.MessageContext) map[string]any {
+	ed, _ := ctx.Extra[KeyEventData].(map[string]any)
+	return ed
 }
 
 // ImageDescFromCtx 从 ctx.data 读取图片理解描述（由 MediaPass 写入）。
