@@ -65,6 +65,7 @@ func Init() (*Config, error) {
 		"LANMEI_AI_EMBEDDING_MODEL":          "ai.embedding_model",
 		"LANMEI_AI_EMBEDDING_DIM":            "ai.embedding_dim",
 		"LANMEI_PLUGIN_ROOT_DIR":             "plugin.root_dir",
+		"LANMEI_PLUGIN_NCM_URL":              "plugin.ncm_url",
 		"LANMEI_KNOWLEDGE_ENABLED":           "knowledge.enabled",
 		"LANMEI_KNOWLEDGE_AUTO_RECALL_LIMIT": "knowledge.auto_recall_limit",
 		// 多媒体（RustFS）与机器人行为配置
@@ -110,6 +111,7 @@ func initFlags() {
 	pflag.Int("log.max_age", 0, "日志文件最大保留天数")
 	pflag.Int("log.max_backups", 0, "最多保留的旧日志文件数")
 	pflag.String("plugin.root_dir", "", "Wasm 插件根目录")
+	pflag.String("plugin.ncm_url", "", "网易云音乐 API 服务地址（点歌插件）")
 	// Prompts 路径
 	pflag.String("prompts.dir", "", "Prompt 系统目录")
 	pflag.String("prompts.config", "", "Prompt 配置文件路径")
@@ -167,6 +169,7 @@ func setDefaults(v *viper.Viper) {
 
 	// Plugin 默认值
 	v.SetDefault("plugin.root_dir", "./data/plugins")
+	v.SetDefault("plugin.ncm_url", "")
 
 	// Prompts 默认路径
 	v.SetDefault("prompts.dir", "./prompts")

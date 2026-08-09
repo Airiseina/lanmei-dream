@@ -25,6 +25,7 @@ type BusinessRegistry struct {
 	cfg      *config.PluginBuiltinsConfig // 内置插件开关配置
 	registry *pluginpkg.Registry          // 插件注册表
 	db       *database.DB                 // 数据库（签到等插件依赖）
+	ncmURL   string                       // 网易云音乐 API 地址（点歌插件使用）
 	logger   *zap.Logger
 }
 
@@ -36,6 +37,11 @@ func NewBusinessRegistry(cfg *config.PluginBuiltinsConfig, registry *pluginpkg.R
 		db:       db,
 		logger:   logger,
 	}
+}
+
+// SetNCMURL 设置网易云音乐 API 地址（点歌插件依赖）。
+func (r *BusinessRegistry) SetNCMURL(url string) {
+	r.ncmURL = url
 }
 
 // RegisterBuiltins 按配置注册所有内置业务插件。
@@ -55,28 +61,66 @@ func (r *BusinessRegistry) RegisterBuiltins() error {
 		logger = zap.NewNop()
 	}
 
-	// ── 签到插件 ──
-	enabled := r.cfg == nil || r.cfg.Signin // 配置为空时按默认开启处理
-	if !enabled {
-		logger.Info("bizplugin: 签到插件已由配置关闭，跳过注册")
-	} else if _, loaded := r.registry.Get("signin"); loaded {
-		logger.Info("bizplugin: 签到插件已由 Wasm 动态加载，跳过内置注册")
-	} else {
-		if err := r.registry.Register(NewSigninPlugin(r.db, logger)); err != nil {
-			return fmt.Errorf("bizplugin: 注册签到插件失败: %w", err)
+	// builtins 开关（配置为空时按默认开启处理）
+	builtins := r.cfg
+	if builtins == nil {
+		builtins = &config.PluginBuiltinsConfig{}
+	}
+
+	// 注册一个内置插件（启用开关 + Wasm 去重 + 注册）
+	register := func(sw bool, pluginID string, plugin pluginpkg.Plugin) error {
+		if !sw {
+			logger.Info("bizplugin: 插件已由配置关闭，跳过注册", zap.String("plugin", pluginID))
+			return nil
 		}
+		if _, loaded := r.registry.Get(pluginID); loaded {
+			logger.Info("bizplugin: 插件已由 Wasm 动态加载，跳过内置注册", zap.String("plugin", pluginID))
+			return nil
+		}
+		if err := r.registry.Register(plugin); err != nil {
+			return fmt.Errorf("bizplugin: 注册 %s 插件失败: %w", pluginID, err)
+		}
+		return nil
+	}
+
+	// ── 签到插件 ──
+	if err := register(builtins.Signin, "signin", NewSigninPlugin(r.db, logger)); err != nil {
+		return err
 	}
 
 	// ── 入群欢迎插件 ──
-	enabled = r.cfg == nil || r.cfg.Welcome
-	if !enabled {
-		logger.Info("bizplugin: 入群欢迎插件已由配置关闭，跳过注册")
-	} else if _, loaded := r.registry.Get("welcome"); loaded {
-		logger.Info("bizplugin: 入群欢迎插件已由 Wasm 动态加载，跳过内置注册")
-	} else {
-		if err := r.registry.Register(NewWelcomePlugin(logger)); err != nil {
-			return fmt.Errorf("bizplugin: 注册入群欢迎插件失败: %w", err)
-		}
+	if err := register(builtins.Welcome, "welcome", NewWelcomePlugin(logger)); err != nil {
+		return err
+	}
+
+	// ── 签到积分排行榜插件 ──
+	if err := register(builtins.Rank, "signin_rank", NewRankPlugin(r.db, logger)); err != nil {
+		return err
+	}
+
+	// ── 猫猫图片插件 ──
+	if err := register(builtins.Cat, "cat", NewCatPlugin()); err != nil {
+		return err
+	}
+
+	// ── 蔚蓝档案 LOGO 插件 ──
+	if err := register(builtins.BaLogo, "balogo", NewBaLogoPlugin()); err != nil {
+		return err
+	}
+
+	// ── Ping 连通性测试插件 ──
+	if err := register(builtins.Ping, "ping", NewPingPlugin()); err != nil {
+		return err
+	}
+
+	// ── GitHub 链接卡片插件 ──
+	if err := register(builtins.GitHubCard, "github_card", NewGitHubCardPlugin()); err != nil {
+		return err
+	}
+
+	// ── 网易云点歌插件 ──
+	if err := register(builtins.Music, "music", NewMusicPlugin(r.ncmURL, logger)); err != nil {
+		return err
 	}
 
 	return nil
