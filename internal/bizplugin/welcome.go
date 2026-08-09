@@ -1,0 +1,148 @@
+package bizplugin
+
+import (
+	"fmt"
+	"math/rand/v2"
+
+	pluginpkg "github.com/DaWesen/lanmei-dream/internal/plugin"
+	"github.com/zrurf/conduit"
+	"go.uber.org/zap"
+)
+
+// ============================================================
+// WelcomePlugin 入群欢迎插件
+// ============================================================
+
+// WelcomePlugin 实现新人入群欢迎功能，是消费 QQ 通知事件的模范示例。
+//
+// 功能：
+//   - 新人入群（group_increase）时发送欢迎消息
+//   - 多条内置文案随机挑选（纯文本，不 @ 新人）
+//   - 所有群都欢迎，不做按群配置、不做防刷限流
+//
+// 行为树：
+//
+//	subtree.welcome → Sequence(IsGroupIncreaseEvent, Action("pipeline.plugin.welcome.main"))
+//
+// 管线（动态模式，支持运行时热替换）：
+//
+//	pipeline.plugin.welcome.main → [welcomePass]
+//
+// 事件信息读取：插件不依赖 bot/gateway 包，直接从黑板 Extra 读取事件键
+// （"bot.event.type" / "bot.event.data"，由 bot 层 OnMessage 写入）。
+type WelcomePlugin struct {
+	logger *zap.Logger
+}
+
+// NewWelcomePlugin 创建入群欢迎插件。
+func NewWelcomePlugin(logger *zap.Logger) *WelcomePlugin {
+	return &WelcomePlugin{logger: logger}
+}
+
+// Info 返回入群欢迎插件元信息。
+func (p *WelcomePlugin) Info() pluginpkg.PluginInfo {
+	return pluginpkg.PluginInfo{
+		ID:          "welcome",
+		Name:        "入群欢迎",
+		Description: "新人入群时发送欢迎消息",
+		Version:     "1.0.0",
+		SubtreeID:   pluginpkg.SubtreeID("welcome"),
+	}
+}
+
+// OnInit 初始化入群欢迎插件，注册 Pass、Pipeline 和 Subtree。
+func (p *WelcomePlugin) OnInit(ctx *pluginpkg.PluginContext) error {
+	// 注册 Pass（依赖直接注入 Pass 结构体）
+	passID := pluginpkg.PassID("welcome", "welcome")
+	pass := &welcomePass{logger: p.logger}
+
+	if err := ctx.Engine.RegisterPass(passID, pass); err != nil {
+		return fmt.Errorf("register welcome pass: %w", err)
+	}
+
+	// 跟踪 Pass，卸载时自动清理
+	ctx.Registry.TrackPass("welcome", passID)
+
+	// 注册动态管线（通过 Pass ID 引用，支持运行时热替换）
+	pipelineID := pluginpkg.PipelineID("welcome", "main")
+	pl := conduit.NewPipelineFromIDs(pipelineID, passID)
+	if err := ctx.Engine.RegisterPipeline(pl); err != nil {
+		return fmt.Errorf("register pipeline: %w", err)
+	}
+
+	// 跟踪 Pipeline，卸载时自动清理
+	ctx.Registry.TrackPipeline("welcome", pipelineID)
+
+	// 注册行为树子树：入群事件路由
+	subtree := conduit.NewSequence(
+		conduit.NewCondition(isGroupIncreaseEvent),
+		conduit.NewAction(pipelineID),
+	)
+	if err := ctx.Engine.RegisterSubtree(pluginpkg.SubtreeID("welcome"), subtree); err != nil {
+		return fmt.Errorf("register subtree: %w", err)
+	}
+
+	return nil
+}
+
+// OnStart 入群欢迎插件无需后台任务。
+func (p *WelcomePlugin) OnStart(_ *pluginpkg.PluginContext) error { return nil }
+
+// OnStop 入群欢迎插件无需清理资源。
+func (p *WelcomePlugin) OnStop(_ *pluginpkg.PluginContext) error { return nil }
+
+// ============================================================
+// 条件判断
+// ============================================================
+
+// 黑板事件键（由 bot 层 OnMessage 写入，键定义见 internal/bot/passes.go）。
+// 插件按"不导包"约定直接使用字符串字面量。
+const (
+	eventKeyType = "bot.event.type" // string 规范化事件类型
+	eventKeyData = "bot.event.data" // map[string]any 事件全字段
+)
+
+// groupIncreaseEventType 规范化入群事件类型（对应 gateway 包的 EventTypeGroupIncrease）。
+const groupIncreaseEventType = "group_increase"
+
+// isGroupIncreaseEvent 判断当前消息是否为新人入群事件。
+func isGroupIncreaseEvent(ctx *conduit.MessageContext) bool {
+	eventType, _ := ctx.Extra[eventKeyType].(string)
+	return eventType == groupIncreaseEventType
+}
+
+// ============================================================
+// Pass 实现
+// ============================================================
+
+// welcomeMessages 内置欢迎文案（随机挑选，纯文本、不带新人信息）
+var welcomeMessages = []string{
+	"欢迎新同学加入！ヽ(✿ﾟ▽ﾟ)ノ",
+	"新人驾到，撒花欢迎~",
+	"欢迎欢迎~ 新朋友来啦！",
+	"欢迎加入本群，一起愉快玩耍吧~",
+	"有新同学来了，掌声欢迎！",
+}
+
+// welcomePass 发送欢迎消息：随机挑选文案并输出
+type welcomePass struct {
+	logger *zap.Logger
+}
+
+func (pass *welcomePass) Execute(ctx *conduit.MessageContext) error {
+	// 模范示例：从事件数据读取入群者/拉人者/子类型，记录消费信息
+	eventData, _ := ctx.Extra[eventKeyData].(map[string]any)
+	pass.logger.Info("welcome: 新人入群",
+		zap.Any("user_id", eventData["user_id"]),
+		zap.Any("operator_id", eventData["operator_id"]),
+		zap.Any("sub_type", eventData["sub_type"]),
+		zap.String("group_id", ctx.GroupID),
+	)
+
+	content := welcomeMessages[rand.IntN(len(welcomeMessages))]
+	conduit.AppendOutput(ctx, &conduit.Message{
+		UserID: ctx.UserID, GroupID: ctx.GroupID, IsGroup: ctx.IsGroup,
+		Content: content,
+	})
+	return nil
+}

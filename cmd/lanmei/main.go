@@ -188,6 +188,12 @@ func main() {
 		}
 	}
 
+	if _, wasmWelcomeLoaded := pluginReg.Get("welcome"); !wasmWelcomeLoaded {
+		if err := pluginReg.Register(bizplugin.NewWelcomePlugin(logger)); err != nil {
+			logger.Fatal("注册入群欢迎插件失败", zap.Error(err))
+		}
+	}
+
 	if err := pluginReg.InitPlugins(ctx); err != nil {
 		logger.Fatal("插件初始化失败", zap.Error(err))
 	}
