@@ -83,7 +83,7 @@ ctx.Engine.RegisterSubtree(pluginpkg.SubtreeID("xxx"), subtree)
 - 跨 Pass 传数据用 `conduit.Set(ctx, key, value)` / `conduit.Get[T](ctx, key)`，**key 必须带插件前缀**（如 `plugin.xxx.result`），避免与其他插件冲突
 - 状态持久化使用 `StoreKey(pluginID, key)` 生成隔离 key（`plugin:<pluginID>:<key>`）
 - 注册的任何资源都必须调用对应的 `TrackPass/TrackPipeline/TrackTool`，否则卸载时泄漏
-- 在 `cmd/lanmei/main.go` 的 `pluginReg.Register(...)` 处注册，与 `signin` 并列
+- 在 `internal/bizplugin/registry.go` 的 `RegisterBuiltins` 中追加注册分支，并在 `config.go` 的 `PluginBuiltinsConfig` 增加对应开关（见 `internal/bizplugin/README.md` 第 4 节），与 `signin` 并列；启动是否注册由 `[plugin.builtins]` 配置控制
 - 插件 ID 规则：小写字母+数字+下划线，以字母开头，长度 ≤64
 
 ### 3.4 可提供的资源

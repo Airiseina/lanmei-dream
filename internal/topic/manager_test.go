@@ -1,0 +1,292 @@
+package topic
+
+import (
+	"context"
+	"fmt"
+	"strconv"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/zrurf/conduit"
+	"github.com/zrurf/conduit/store/memory"
+	"go.uber.org/zap"
+
+	"github.com/DaWesen/lanmei-dream/internal/ai/embedding"
+	"github.com/DaWesen/lanmei-dream/internal/config"
+)
+
+const testGroup = "g1"
+
+// testManager 构造话题管理器测试实例。
+// store 为 nil 时纯内存运行；emb 为语义判定替身（nil 时降级成员制）。
+func testManager(cfg *config.TopicConfig, store *memory.Store, emb *mockEmbedder) *Manager {
+	if cfg == nil {
+		cfg = &config.TopicConfig{TopicWindowMsgs: 20, CoolingTimeoutMinutes: 1}
+	}
+	// nil *mockEmbedder / *memory.Store 装箱进接口后不为 nil，需显式留空接口
+	var e embedding.Embedder
+	if emb != nil {
+		e = emb
+	}
+	var st conduit.StateStore
+	if store != nil {
+		st = store
+	}
+	return NewManager(cfg, st, e, nil, nil, []string{"蓝妹", "蓝莓"}, zap.NewNop())
+}
+
+// groupMsg 构造一条群聊入站消息（默认 at 为空）。
+func groupMsg(groupID, userID, content string, at ...string) *IncomingMsg {
+	return &IncomingMsg{
+		Platform:  "qq",
+		SelfID:    "bot_self",
+		GroupID:   groupID,
+		UserID:    userID,
+		UserName:  "成员" + userID,
+		Content:   content,
+		AtTargets: at,
+		SentAt:    time.Now(),
+	}
+}
+
+func groupTopics(m *Manager) []*Topic { return m.groups[m.groupKey("qq", testGroup)] }
+
+// TestManagerStrongMentionCreatesTopic 强提及（at+请求）→ 创建话题并回复。
+func TestManagerStrongMentionCreatesTopic(t *testing.T) {
+	m := testManager(nil, nil, nil)
+	d := m.HandleGroupMessage(context.Background(), groupMsg(testGroup, "u1", "@蓝妹 帮我查一下天气", "bot_self"))
+	if !d.Reply {
+		t.Fatal("strong mention should reply")
+	}
+	if d.Topic == nil || !d.Topic.IsActive() {
+		t.Fatalf("topic state = %v, want active", d.Topic)
+	}
+	if d.Topic.MemberCount() != 1 || !d.Topic.isMember("u1") {
+		t.Fatalf("members = %v, want [u1]", d.Topic.Members)
+	}
+	if topics := groupTopics(m); len(topics) != 1 {
+		t.Fatalf("group topics = %d, want 1", len(topics))
+	}
+	if d.Topic.DisplayLabel() != defaultTopicLabel {
+		t.Fatalf("label = %q, want default %q", d.Topic.DisplayLabel(), defaultTopicLabel)
+	}
+}
+
+// TestManagerReenterExistingTopic 再次强提及 → 重入同一话题，不新建。
+func TestManagerReenterExistingTopic(t *testing.T) {
+	m := testManager(nil, nil, nil)
+	d1 := m.HandleGroupMessage(context.Background(), groupMsg(testGroup, "u1", "@蓝妹 帮我查天气", "bot_self"))
+	d2 := m.HandleGroupMessage(context.Background(), groupMsg(testGroup, "u2", "蓝妹，也帮我看看"))
+	if !d2.Reply || d2.Topic == nil || d2.Topic.ID != d1.Topic.ID {
+		t.Fatalf("reenter should hit same topic: got %v, first %v", d2.Topic, d1.Topic)
+	}
+	if topics := groupTopics(m); len(topics) != 1 {
+		t.Fatalf("topics = %d, want 1 (reuse existing)", len(topics))
+	}
+	if !d2.Topic.isMember("u2") {
+		t.Fatal("u2 should become member after reenter")
+	}
+}
+
+// TestManagerTopicSwitchDetachesMember 成员话题切换 → 脱离原话题，成员清空立即冷却。
+func TestManagerTopicSwitchDetachesMember(t *testing.T) {
+	m := testManager(&config.TopicConfig{TopicWindowMsgs: 20, CoolingTimeoutMinutes: 1, SemanticThreshold: 0.5}, nil, &mockEmbedder{dim: 64})
+	d := m.HandleGroupMessage(context.Background(), groupMsg(testGroup, "u1", "@蓝妹 帮我看看周末爬山装备怎么准备", "bot_self"))
+	if !d.Reply {
+		t.Fatal("strong mention should reply")
+	}
+	// 语义不相关消息 → 切换话题：脱离原话题、成员清空 → 立即冷却
+	m.HandleGroupMessage(context.Background(), groupMsg(testGroup, "u1", "今晚足球比赛谁赢了"))
+	topics := groupTopics(m)
+	if len(topics) != 1 || topics[0].State != TopicCooling {
+		t.Fatalf("switch should cool topic: topics=%d state=%v", len(topics), topics[0].State)
+	}
+	if topics[0].MemberCount() != 0 {
+		t.Fatalf("members should be empty, got %d", topics[0].MemberCount())
+	}
+}
+
+// TestManagerCoolingAfterWindow 窗口内无触碰 → 转冷却（消息序列窗口判定）。
+func TestManagerCoolingAfterWindow(t *testing.T) {
+	m := testManager(nil, nil, nil)
+	d := m.HandleGroupMessage(context.Background(), groupMsg(testGroup, "u1", "@蓝妹 在吗", "bot_self"))
+	if !d.Reply {
+		t.Fatal("strong mention should reply")
+	}
+	// 窗口内（20 条无触碰）→ 保持活跃
+	for i := 0; i < 20; i++ {
+		m.HandleGroupMessage(context.Background(), groupMsg(testGroup, "other", "闲聊"+strconv.Itoa(i)))
+	}
+	if topics := groupTopics(m); topics[0].State != TopicActive {
+		t.Fatalf("within window: state=%v, want active", topics[0].State)
+	}
+	// 超出窗口（第 21 条）→ 冷却
+	m.HandleGroupMessage(context.Background(), groupMsg(testGroup, "other", "闲聊21"))
+	if topics := groupTopics(m); topics[0].State != TopicCooling {
+		t.Fatalf("after window: state=%v, want cooling", topics[0].State)
+	}
+}
+
+// TestManagerReenterRecoversCoolingTopic 冷却话题被强提及 → 恢复活跃。
+func TestManagerReenterRecoversCoolingTopic(t *testing.T) {
+	m := testManager(nil, nil, nil)
+	d1 := m.HandleGroupMessage(context.Background(), groupMsg(testGroup, "u1", "@蓝妹 在吗", "bot_self"))
+	if !d1.Reply {
+		t.Fatal("strong mention should reply")
+	}
+	for i := 0; i < 21; i++ {
+		m.HandleGroupMessage(context.Background(), groupMsg(testGroup, "other", "闲聊"+strconv.Itoa(i)))
+	}
+	if topics := groupTopics(m); topics[0].State != TopicCooling {
+		t.Fatalf("precondition: state=%v, want cooling", topics[0].State)
+	}
+	d2 := m.HandleGroupMessage(context.Background(), groupMsg(testGroup, "u1", "@蓝妹 接着聊刚才的可以吗", "bot_self"))
+	if !d2.Reply || d2.Topic == nil || d2.Topic.ID != d1.Topic.ID {
+		t.Fatalf("reenter should hit same topic, got %v", d2.Topic)
+	}
+	if !d2.Topic.IsActive() {
+		t.Fatal("reenter should restore topic to active")
+	}
+}
+
+// TestManagerPassiveMentionPullsInAndCreditReplies 被动提及 → 拉入但不回复；
+// 授配额后下一条相关消息自动回复；配额消耗后静默。
+func TestManagerPassiveMentionPullsInAndCreditReplies(t *testing.T) {
+	m := testManager(&config.TopicConfig{TopicWindowMsgs: 20, CoolingTimeoutMinutes: 1, CreditEnabled: true}, nil, nil)
+	d := m.HandleGroupMessage(context.Background(), groupMsg(testGroup, "u1", "你们知道蓝妹吗"))
+	if d.Reply {
+		t.Fatal("passive mention should not reply immediately")
+	}
+	if d.Topic == nil || !d.Topic.isMember("u1") {
+		t.Fatal("passive mention should pull user into topic")
+	}
+	d2 := m.HandleGroupMessage(context.Background(), groupMsg(testGroup, "u1", "嗯 那她一般什么时候在线"))
+	if !d2.Reply {
+		t.Fatal("member continue with credit should reply")
+	}
+	d3 := m.HandleGroupMessage(context.Background(), groupMsg(testGroup, "u1", "好吧"))
+	if d3.Reply {
+		t.Fatal("member continue without credit should stay silent")
+	}
+}
+
+// TestManagerRecordBotReplyGrantsCredit Bot 回复记录 → 消息入窗 + 授配额。
+func TestManagerRecordBotReplyGrantsCredit(t *testing.T) {
+	m := testManager(&config.TopicConfig{TopicWindowMsgs: 20, CoolingTimeoutMinutes: 1, CreditEnabled: true}, nil, nil)
+	d := m.HandleGroupMessage(context.Background(), groupMsg(testGroup, "u1", "@蓝妹 帮我看看今天天气怎么样", "bot_self"))
+	if !d.Reply {
+		t.Fatal("strong mention should reply")
+	}
+	m.RecordBotReply(context.Background(), "qq", testGroup, d.Topic.ID, "bot_self", "u1", "今天晴转多云")
+	topic := groupTopics(m)[0]
+	foundBot := false
+	for _, tm := range topic.MsgWindow {
+		if tm.IsBot && tm.UserID == "bot_self" {
+			foundBot = true
+		}
+	}
+	if !foundBot {
+		t.Fatal("bot reply should be recorded in topic window")
+	}
+	d2 := m.HandleGroupMessage(context.Background(), groupMsg(testGroup, "u1", "那明天呢"))
+	if !d2.Reply {
+		t.Fatal("member continue after bot reply (credit) should reply")
+	}
+}
+
+// TestManagerArchiveCoolingTopic 冷却超时 → 归档（异步）→ 从内存与持久化移除。
+func TestManagerArchiveCoolingTopic(t *testing.T) {
+	store := memory.New()
+	arch := NewArchiver(nil, nil, nil, nil, zap.NewNop())
+	m := NewManager(&config.TopicConfig{TopicWindowMsgs: 20, CoolingTimeoutMinutes: 1}, store, nil, nil, arch, nil, zap.NewNop())
+	d := m.HandleGroupMessage(context.Background(), groupMsg(testGroup, "u1", "@蓝妹 在吗", "bot_self"))
+	if !d.Reply {
+		t.Fatal("strong mention should reply")
+	}
+	topic := groupTopics(m)[0]
+	topic.markCooling()
+	topic.LastActiveAt = time.Now().Add(-2 * time.Minute) // 超过冷却超时
+
+	m.scanAndArchive(context.Background())
+	m.wg.Wait() // 等待异步归档完成
+
+	if len(m.groups) != 0 {
+		t.Fatalf("after archive groups = %d, want 0", len(m.groups))
+	}
+	// 持久化键也应删除
+	if got, _ := store.Get(context.Background(), m.redisKey(m.groupKey("qq", testGroup))); got != "" {
+		t.Fatalf("persisted topic key not cleaned up: %q", got)
+	}
+}
+
+// TestManagerRestoreFromStore 持久化 → 重建管理器恢复话题状态。
+func TestManagerRestoreFromStore(t *testing.T) {
+	store := memory.New()
+	m1 := testManager(nil, store, nil)
+	d := m1.HandleGroupMessage(context.Background(), groupMsg(testGroup, "u1", "@蓝妹 你好吗", "bot_self"))
+	if !d.Reply {
+		t.Fatal("strong mention should reply")
+	}
+
+	// 模拟重启：同存储新建管理器并恢复
+	m2 := testManager(nil, store, nil)
+	m2.restore(context.Background())
+	topics, ok := m2.groups[m2.groupKey("qq", testGroup)]
+	if !ok || len(topics) != 1 {
+		t.Fatalf("restore: group missing or topics=%d", len(topics))
+	}
+	if topics[0].LastTouchSeq != 0 {
+		t.Fatalf("restore should reset LastTouchSeq, got %d", topics[0].LastTouchSeq)
+	}
+	if !topics[0].isMember("u1") {
+		t.Fatal("restore should keep members")
+	}
+	if len(topics[0].MsgWindow) == 0 {
+		t.Fatal("restore should keep message window")
+	}
+	if !topics[0].IsActive() {
+		t.Fatalf("restore with window+members should stay active, got %v", topics[0].State)
+	}
+}
+
+// TestManagerConcurrentHandling 并发压测：多协程同时投递群消息，
+// 验证状态机/序列/成员/持久化在读写锁下的并发安全（配合 go test -race）。
+func TestManagerConcurrentHandling(t *testing.T) {
+	store := memory.New()
+	m := testManager(&config.TopicConfig{TopicWindowMsgs: 20, CoolingTimeoutMinutes: 1, CreditEnabled: true}, store, nil)
+
+	const workers = 32
+	const perWorker = 25
+	var wg sync.WaitGroup
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func(w int) {
+			defer wg.Done()
+			for i := 0; i < perWorker; i++ {
+				uid := fmt.Sprintf("u%d", (w+i)%5)
+				content := "闲聊" + strconv.Itoa(w) + "-" + strconv.Itoa(i)
+				var at []string
+				if i%4 == 0 {
+					content = "@蓝妹 帮我看看" + strconv.Itoa(i)
+					at = []string{"bot_self"}
+				}
+				m.HandleGroupMessage(context.Background(), groupMsg(testGroup, uid, content, at...))
+			}
+		}(w)
+	}
+	wg.Wait()
+
+	// 收尾校验：不变量检查 —— 活跃话题必须至少有一名成员
+	//（成员切换路径保证"成员清空即冷却"，冷却可由窗口到期或成员清空触发，
+	// 因此冷却话题仍可能保留成员，属合法状态）。
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for gk, topics := range m.groups {
+		for _, topic := range topics {
+			if topic.IsActive() && topic.MemberCount() == 0 {
+				t.Errorf("group %s topic %s: active but empty members", gk, topic.ID)
+			}
+		}
+	}
+}

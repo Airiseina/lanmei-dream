@@ -31,6 +31,20 @@ services:
       timeout: 3s
       retries: 5
 
+  # ── RustFS（S3 兼容对象存储，多媒体缓存）──
+  rustfs:
+    image: rustfs/rustfs:1.0.0-beta.12
+    restart: unless-stopped
+    environment:
+      RUSTFS_ADDRESS: :9000
+      RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:-lanmei}
+      RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_KEY:-lanmei-secret}
+      RUSTFS_VOLUMES: /data
+    ports:
+      - "${RUSTFS_PORT:-9000}:9000"
+    volumes:
+      - rustfsdata:/data
+
   # ── 蓝妹 Bot ──
   lanmei:
     build: .
@@ -42,6 +56,11 @@ services:
       LANMEI_REDIS_ADDR: redis:6379
       LANMEI_BOT_GATEWAY_LISTEN_ADDR: "0.0.0.0:8080"
       LANMEI_BOT_GATEWAY_ACCESS_TOKEN: ${LANMEI_BOT_GATEWAY_ACCESS_TOKEN:-}
+      # RustFS 多媒体对象存储
+      LANMEI_MEDIA_ENDPOINT: http://rustfs:9000
+      LANMEI_MEDIA_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:-lanmei}
+      LANMEI_MEDIA_SECRET_KEY: ${RUSTFS_SECRET_KEY:-lanmei-secret}
+      LANMEI_MEDIA_BUCKET: ${LANMEI_MEDIA_BUCKET:-lanmei-media}
     volumes:
       # 配置文件（只读）
       - ./config/config.toml:/app/config/config.toml:ro
@@ -88,5 +107,6 @@ services:
 
 volumes:
   pgdata:
+  rustfsdata:
   onebots:
   napcat:

@@ -9,20 +9,20 @@ import (
 
 // ─── L0: 原始对话 ───
 
-// CountConversations 统计用户的原始对话条数
-func (db *DB) CountConversations(ctx context.Context, userID int64) (int, error) {
+// CountConversations 统计用户在某维度（私聊 groupID="" 或指定群）的原始对话条数
+func (db *DB) CountConversations(ctx context.Context, userID int64, groupID string) (int, error) {
 	var count int64
 	err := db.Orm.WithContext(ctx).Model(&model.Conversation{}).
-		Where("user_id = ?", userID).
+		Where("user_id = ? AND group_id = ?", userID, groupID).
 		Count(&count).Error
 	return int(count), err
 }
 
-// GetOldestConversations 获取用户最老的 N 条对话（用于压缩）
-func (db *DB) GetOldestConversations(ctx context.Context, userID int64, limit int) ([]*model.Conversation, error) {
+// GetOldestConversations 获取用户在某维度最老的 N 条对话（用于压缩）
+func (db *DB) GetOldestConversations(ctx context.Context, userID int64, groupID string, limit int) ([]*model.Conversation, error) {
 	var convs []*model.Conversation
 	err := db.Orm.WithContext(ctx).
-		Where("user_id = ?", userID).
+		Where("user_id = ? AND group_id = ?", userID, groupID).
 		Order("created_at ASC").
 		Limit(limit).
 		Find(&convs).Error
@@ -32,11 +32,11 @@ func (db *DB) GetOldestConversations(ctx context.Context, userID int64, limit in
 	return convs, nil
 }
 
-// DeleteConversationsInRange 删除指定 ID 范围内的对话（压缩后清理）
+// DeleteConversationsInRange 删除指定 ID 范围内的对话（压缩后清理），限定 group 维度。
 // 使用参数化查询防止 SQL 注入
-func (db *DB) DeleteConversationsInRange(ctx context.Context, userID int64, firstID, lastID int64) error {
+func (db *DB) DeleteConversationsInRange(ctx context.Context, userID int64, groupID string, firstID, lastID int64) error {
 	err := db.Orm.WithContext(ctx).
-		Where("user_id = ? AND id BETWEEN ? AND ?", userID, firstID, lastID).
+		Where("user_id = ? AND group_id = ? AND id BETWEEN ? AND ?", userID, groupID, firstID, lastID).
 		Delete(&model.Conversation{}).Error
 	if err != nil {
 		return fmt.Errorf("delete_conversations_in_range: %w", err)
@@ -142,15 +142,16 @@ func (db *DB) GetRecentTopics(ctx context.Context, userID int64, limit int) ([]*
 
 // LODContext 是多级上下文组装的结果
 type LODContext struct {
-	TopicBriefs      []string               // L2 主题一句话
-	EpisodeBriefs    []string               // L1 摘要一句话
-	EpisodeDetails   []string               // L1 摘要详细版
-	RawConversations []*model.Conversation   // L0 原始对话
+	TopicBriefs      []string              // L2 主题一句话
+	EpisodeBriefs    []string              // L1 摘要一句话
+	EpisodeDetails   []string              // L1 摘要详细版
+	RawConversations []*model.Conversation // L0 原始对话
 }
 
-// GetLODContext 按 Token 预算组装多级上下文
+// GetLODContext 按 Token 预算组装多级上下文。
+// groupID 标识对话维度：私聊传 ""，群聊传群 ID —— 保证群聊上下文只引用本群历史，互不污染。
 // budget 是大致的 token 预算，函数按 L2→L1→L0 优先级填充
-func (db *DB) GetLODContext(ctx context.Context, userID int64, budget int) (*LODContext, error) {
+func (db *DB) GetLODContext(ctx context.Context, userID int64, groupID string, budget int) (*LODContext, error) {
 	result := &LODContext{}
 	used := 0
 	// 粗估：1 个中文字 ≈ 1.5 token，这里用字符数粗算
@@ -198,7 +199,7 @@ func (db *DB) GetLODContext(ctx context.Context, userID int64, budget int) (*LOD
 		if rawLimit > 40 {
 			rawLimit = 40
 		}
-		convs, err := db.GetRecentConversations(ctx, userID, rawLimit)
+		convs, err := db.GetRecentConversations(ctx, userID, groupID, rawLimit)
 		if err != nil {
 			return nil, fmt.Errorf("lod l0: %w", err)
 		}

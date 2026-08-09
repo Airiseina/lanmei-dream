@@ -49,7 +49,8 @@ func (c *Compressor) compressL0ToL1(ctx context.Context, userID int64) error {
 		batchSize = 20 // 每次压缩的条数
 	)
 
-	count, err := c.db.CountConversations(ctx, userID)
+	// 个人记忆压缩仅针对私聊维度（group_id=''）；群聊对话由 topic 归档链路沉淀，不在此压缩。
+	count, err := c.db.CountConversations(ctx, userID, "")
 	if err != nil {
 		return fmt.Errorf("count conversations: %w", err)
 	}
@@ -58,7 +59,7 @@ func (c *Compressor) compressL0ToL1(ctx context.Context, userID int64) error {
 	}
 
 	// 取最老的 N 条对话
-	convs, err := c.db.GetOldestConversations(ctx, userID, batchSize)
+	convs, err := c.db.GetOldestConversations(ctx, userID, "", batchSize)
 	if err != nil {
 		return fmt.Errorf("get oldest conversations: %w", err)
 	}
@@ -109,7 +110,7 @@ func (c *Compressor) compressL0ToL1(ctx context.Context, userID int64) error {
 	}
 
 	// 再删原文
-	if err := c.db.DeleteConversationsInRange(ctx, userID, episode.FirstConvoID, episode.LastConvoID); err != nil {
+	if err := c.db.DeleteConversationsInRange(ctx, userID, "", episode.FirstConvoID, episode.LastConvoID); err != nil {
 		c.logger.Error("compressor: delete compressed conversations", zap.Error(err))
 	}
 

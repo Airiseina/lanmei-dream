@@ -7,11 +7,13 @@ import (
 	"github.com/DaWesen/lanmei-dream/internal/model"
 )
 
-// SaveConversation 存储一条对话记录
+// SaveConversation 存储一条对话记录。
+// groupID 为来源群（空字符串 = 私聊）；群聊对话与私聊对话按 group_id 隔离。
 // source: 来源标记（chat/plugin），pluginTag: 插件标识（source=plugin 时必填）
-func (db *DB) SaveConversation(ctx context.Context, userID int64, role, content string, source model.ConversationSource, pluginTag string) error {
+func (db *DB) SaveConversation(ctx context.Context, userID int64, groupID, role, content string, source model.ConversationSource, pluginTag string) error {
 	c := model.Conversation{
 		UserID:    userID,
+		GroupID:   groupID,
 		Role:      role,
 		Content:   content,
 		Source:    source,
@@ -23,11 +25,11 @@ func (db *DB) SaveConversation(ctx context.Context, userID int64, role, content 
 	return nil
 }
 
-// GetRecentConversations 获取用户最近的 N 条对话（按时间正序）
-func (db *DB) GetRecentConversations(ctx context.Context, userID int64, limit int) ([]*model.Conversation, error) {
+// GetRecentConversations 获取用户在某维度（私聊 groupID="" 或指定群）最近的 N 条对话（按时间正序）
+func (db *DB) GetRecentConversations(ctx context.Context, userID int64, groupID string, limit int) ([]*model.Conversation, error) {
 	var convs []*model.Conversation
 	err := db.Orm.WithContext(ctx).
-		Where("user_id = ?", userID).
+		Where("user_id = ? AND group_id = ?", userID, groupID).
 		Order("created_at DESC").
 		Limit(limit).
 		Find(&convs).Error
@@ -42,12 +44,12 @@ func (db *DB) GetRecentConversations(ctx context.Context, userID int64, limit in
 	return convs, nil
 }
 
-// SearchConversations 按关键词模糊搜索用户对话
+// SearchConversations 按关键词模糊搜索用户对话（仅私聊维度，避免群聊记录污染个人检索）
 // 使用参数化查询防止 SQL 注入
 func (db *DB) SearchConversations(ctx context.Context, userID int64, keyword string, limit int) ([]*model.Conversation, error) {
 	var convs []*model.Conversation
 	err := db.Orm.WithContext(ctx).
-		Where("user_id = ? AND content ILIKE ?", userID, "%"+keyword+"%").
+		Where("user_id = ? AND group_id = '' AND content ILIKE ?", userID, "%"+keyword+"%").
 		Order("created_at DESC").
 		Limit(limit).
 		Find(&convs).Error

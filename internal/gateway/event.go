@@ -31,15 +31,36 @@ type EventV12 struct {
 	Impl       string              `json:"impl"`
 	Platform   string              `json:"platform"`
 	SelfID     string              `json:"self_id"`
+	Self       SelfV12             `json:"self,omitempty"` // OneBot 12 规范的 self 对象（机器人自身标识）
 	Time       float64             `json:"time"`
 	Type       string              `json:"type"`        // meta / message / notice / request
-	DetailType string              `json:"detail_type"` // private / group / ...
+	DetailType string              `json:"detail_type"` // private / group / group_member_increase / ...
 	SubType    string              `json:"sub_type"`
 	UserID     string              `json:"user_id,omitempty"`
 	GroupID    string              `json:"group_id,omitempty"`
-	OperatorID string              `json:"operator_id,omitempty"` // notice 操作者（如拉人入群者）
 	Message    []MessageSegmentV12 `json:"message,omitempty"`
 	AltMessage string              `json:"alt_message,omitempty"` // 纯文本表示
+
+	// ── notice 事件附加字段 ──
+	OperatorID string `json:"operator_id,omitempty"` // 操作者（拉人者/禁言管理员/戳人者）
+	TargetID   string `json:"target_id,omitempty"`   // 被操作者（poke 被戳者）
+	Duration   int64  `json:"duration,omitempty"`    // 禁言时长（秒）
+	MessageID  string `json:"message_id,omitempty"`  // 撤回的消息 ID（group_recall）
+}
+
+// SelfV12 表示 OneBot 12 事件的 self 对象（机器人自身标识）。
+// 规范要求事件携带 self.user_id 标识机器人；部分实现仍发顶层 self_id，两者都兼容。
+type SelfV12 struct {
+	Platform string `json:"platform"`
+	UserID   string `json:"user_id"`
+}
+
+// ResolveSelfID 解析机器人自身 ID：优先顶层 self_id，其次 self.user_id（OneBot 12 规范）。
+func (e *EventV12) ResolveSelfID() string {
+	if e.SelfID != "" {
+		return e.SelfID
+	}
+	return e.Self.UserID
 }
 
 // ── OneBot 11 事件（NapCat 兼容） ──
@@ -52,18 +73,25 @@ type EventV11 struct {
 	Time        int64           `json:"time"`
 	SelfID      int64           `json:"self_id"`
 	PostType    string          `json:"post_type"`              // message / notice / request / meta_event
-	NoticeType  string          `json:"notice_type,omitempty"`  // notice 子类型（group_increase / group_decrease / ...）
 	MessageType string          `json:"message_type,omitempty"` // private / group
 	SubType     string          `json:"sub_type,omitempty"`
 	UserID      int64           `json:"user_id,omitempty"`
 	GroupID     int64           `json:"group_id,omitempty"`
-	OperatorID  int64           `json:"operator_id,omitempty"` // notice 操作者（如拉人入群者）
-	Message     json.RawMessage `json:"message,omitempty"`     // array of MessageSegmentV11 or string
+	Message     json.RawMessage `json:"message,omitempty"` // array of MessageSegmentV11 or string
 	RawMessage  string          `json:"raw_message,omitempty"`
 	Sender      SenderV11       `json:"sender,omitempty"`
 	// 消息 ID（NapCat 扩展）
 	MessageID  int64 `json:"message_id,omitempty"`
 	MessageSeq int64 `json:"message_seq,omitempty"`
+
+	// ── notice 事件附加字段 ──
+	NoticeType string `json:"notice_type,omitempty"` // group_increase / group_decrease / notify / ...
+	OperatorID int64  `json:"operator_id,omitempty"` // 操作者（拉人者/禁言管理员/戳人者）
+	TargetID   int64  `json:"target_id,omitempty"`   // 被操作者（poke 被戳者）
+	Duration   int64  `json:"duration,omitempty"`    // 禁言时长（秒）
+
+	// ── request 事件附加字段 ──
+	RequestType string `json:"request_type,omitempty"` // friend / group（好友请求 / 加群请求）
 }
 
 // ParseMessageSegments 将 Message 字段解析为 OneBot 11 消息段列表。

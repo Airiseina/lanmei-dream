@@ -184,7 +184,7 @@ func (s *ChatService) chatStreamWithToolLoop(
 		}
 
 		// 异步存记忆 + 触发压缩
-		s.asyncStoreAndCompress(ctx, req.UserID, lastMsgContent, queryVec)
+		s.asyncStoreAndCompress(ctx, req.UserID, req.GroupID, lastMsgContent, queryVec)
 
 		return &llm.ChatResponse{
 			Content:       segmenter.FullText(),
@@ -194,7 +194,7 @@ func (s *ChatService) chatStreamWithToolLoop(
 	}
 
 	// 达到最大工具调用轮次，返回已有内容
-	s.asyncStoreAndCompress(ctx, req.UserID, lastMsgContent, queryVec)
+	s.asyncStoreAndCompress(ctx, req.UserID, req.GroupID, lastMsgContent, queryVec)
 
 	return &llm.ChatResponse{
 		Content:       segmenter.FullText(),
@@ -244,7 +244,7 @@ func (s *ChatService) chatStreamFallback(
 		}
 	}
 
-	s.asyncStoreAndCompress(ctx, req.UserID, lastMsgContent, queryVec)
+	s.asyncStoreAndCompress(ctx, req.UserID, req.GroupID, lastMsgContent, queryVec)
 
 	return resp, nil
 }

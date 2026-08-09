@@ -134,15 +134,18 @@ func (pass *welcomePass) Execute(ctx *conduit.MessageContext) error {
 
 ### 4. 注册（cmd/lanmei/main.go）
 
-仿 signin 的 wasm 兜底模式：内置插件注册前先查 Registry 是否已被同名 wasm 插件占用。
+内置业务插件由 `BusinessRegistry`（见 `internal/bizplugin/registry.go`）按配置开关统一注册，替代逐插件硬编码 if 块：
 
 ```go
-if _, wasmWelcomeLoaded := pluginReg.Get("welcome"); !wasmWelcomeLoaded {
-    if err := pluginReg.Register(bizplugin.NewWelcomePlugin(logger)); err != nil {
-        logger.Fatal("注册入群欢迎插件失败", zap.Error(err))
-    }
+bizReg := bizplugin.NewBusinessRegistry(&cfg.Plugin.Builtins, pluginReg, inf.DB, logger)
+if err := bizReg.RegisterBuiltins(); err != nil {
+    logger.Fatal("内置业务插件注册失败", zap.Error(err))
 }
 ```
+
+`[plugin.builtins]` 配置节控制各插件启停（`signin` / `welcome`），改配置即可生效、无需改代码。注册表在注册前先查 Registry 是否已被同名 wasm 插件占用（wasm 优先，避免 ID 冲突）；插件生命周期（Init/Start/Stop）统一由 Registry 管理。
+
+新增内置插件步骤：实现 `Plugin` 接口 → 在 `registry.go` 的 `RegisterBuiltins` 追加注册分支（含配置开关）→ 在 `config.go` 的 `PluginBuiltinsConfig` 加开关字段。
 
 ### 5. 本地验证方法
 
@@ -159,9 +162,9 @@ go run ./cmd/lanmei
 3. 用 WebSocket 客户端（Node ≥22 原生 `WebSocket` 即可）连接 `ws://127.0.0.1:8080/onebot/v12`（或 `/onebot/v11`），模拟 OneBot 实现推送事件，观察回发动作：
 
 ```json
-// v12 入群事件
+// v12 入群事件（detail_type 按 OneBot 12 规范）
 {"id":"evt-1","impl":"test","platform":"qq","self_id":"11111","time":1754700000,
- "type":"notice","detail_type":"group.increase","sub_type":"approve",
+ "type":"notice","detail_type":"group_member_increase","sub_type":"invite",
  "user_id":"22222","group_id":"33333","operator_id":"44444"}
 ```
 

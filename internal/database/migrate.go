@@ -36,6 +36,7 @@ func (db *DB) Migrate(ctx context.Context, vectorDim int) error {
 		&model.EpisodeSummary{},
 		&model.TopicCluster{},
 		&model.MemoryVector{},
+		&model.MediaFile{},
 		&model.PluginInstallation{},
 		&model.KnowledgeChunk{},
 	); err != nil {

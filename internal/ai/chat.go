@@ -115,7 +115,7 @@ func (s *ChatService) Chat(ctx context.Context, req *llm.ChatRequest) (*llm.Chat
 	}
 
 	// ── 异步：存记忆 + 触发压缩 ──
-	s.asyncStoreAndCompress(ctx, req.UserID, lastMsgContent, queryVec)
+	s.asyncStoreAndCompress(ctx, req.UserID, req.GroupID, lastMsgContent, queryVec)
 
 	return resp, nil
 }
@@ -135,9 +135,10 @@ func (s *ChatService) assembleContext(ctx context.Context, req *llm.ChatRequest)
 	lastMsgContent = lastMsg.Content
 
 	// ── LOD 多级上下文（必须在 System Prompt 组装之前加载，用于构建 Conversation 文本）──
+	// 按 req.GroupID 隔离：群聊只加载本群历史，私聊加载个人历史，互不污染。
 	var lod *database.LODContext
 	if s.db != nil {
-		lod, err = s.db.GetLODContext(ctx, req.UserID, 3000)
+		lod, err = s.db.GetLODContext(ctx, req.UserID, req.GroupID, 3000)
 		if err != nil {
 			s.logger.Error("ai: lod context", zap.Error(err))
 			err = nil // LOD 失败不中断流程
@@ -187,7 +188,9 @@ func (s *ChatService) assembleContext(ctx context.Context, req *llm.ChatRequest)
 	msgs = append(msgs, llm.Message{Role: llm.RoleSystem, Content: systemContent})
 
 	// ── L0 原始对话保持独立 role 消息（user/assistant），不混入 system prompt ──
-	if lod != nil {
+	// 群聊话题场景下由话题近期消息（TopicContext.Recent）替代 L0 原文（更贴近当前话题），
+	// L2/L1 摘要仍保留在 system prompt 中作为补充。
+	if lod != nil && req.TopicContext == nil {
 		for _, c := range lod.RawConversations {
 			msgs = append(msgs, llm.Message{Role: llm.Role(c.Role), Content: c.Content})
 		}
@@ -197,6 +200,31 @@ func (s *ChatService) assembleContext(ctx context.Context, req *llm.ChatRequest)
 		msgs = append(msgs, llm.Message{
 			Role:    llm.RoleSystem,
 			Content: "注意：以上是历史对话记录，其中 assistant 的回复风格可能不完全符合当前规范。请严格遵守本 prompt 开头的「关键行为规则」，特别是 Emoji 使用规范和长回复分段规则，不要被历史中的回复模式带偏。",
+		})
+	}
+
+	// ── 群聊话题上下文注入（TopicGatePass 命中话题时写入）──
+	// 话题近期消息作为主历史（user/assistant 交替），并附加话题约束，防止 Bot 越界回复无关内容。
+	if req.TopicContext != nil {
+		for _, tm := range req.TopicContext.Recent {
+			role := llm.RoleUser
+			if tm.IsBot {
+				role = llm.RoleAssistant
+			}
+			msgs = append(msgs, llm.Message{Role: role, Content: tm.Content})
+		}
+		label := req.TopicContext.Label
+		if label == "" {
+			label = "群聊话题"
+		}
+		members := strings.Join(req.TopicContext.Members, "、")
+		if members == "" {
+			members = "群内成员"
+		}
+		msgs = append(msgs, llm.Message{
+			Role: llm.RoleSystem,
+			Content: "当前正处于群聊话题「" + label + "」中，参与成员：" + members +
+				"。请围绕该话题与成员们对话；只回应与话题相关的消息，如果用户在谈论其他事情，可以简短回应或不必回复。",
 		})
 	}
 
@@ -210,16 +238,16 @@ func (s *ChatService) assembleContext(ctx context.Context, req *llm.ChatRequest)
 	}
 	var memories []*memory.Memory
 	if s.retriever != nil {
-		// 多路召回：向量 + 关键词 + 时间
+		// 多路召回：向量 + 关键词 + 时间（按 req.GroupID 隔离群级/个人记忆）
 		var retrieveErr error
-		memories, retrieveErr = s.retriever.Retrieve(ctx, queryVec, lastMsg.Content, req.UserID, 5)
+		memories, retrieveErr = s.retriever.Retrieve(ctx, queryVec, lastMsg.Content, req.UserID, req.GroupID, 5)
 		if retrieveErr != nil {
 			s.logger.Error("ai: multi-retrieve memory failed", zap.Error(retrieveErr))
 		}
 	} else if queryVec != nil && s.memory != nil {
 		// 降级：仅向量召回
 		var retrieveErr error
-		memories, retrieveErr = s.memory.Retrieve(ctx, queryVec, req.UserID, 5)
+		memories, retrieveErr = s.memory.Retrieve(ctx, queryVec, req.UserID, req.GroupID, 5)
 		if retrieveErr != nil {
 			s.logger.Error("ai: retrieve memory failed", zap.Error(retrieveErr))
 		}
@@ -287,7 +315,7 @@ func (s *ChatService) chatWithToolLoop(ctx context.Context, req *llm.ChatRequest
 		if err != nil {
 			return nil, fmt.Errorf("chat: llm call: %w", err)
 		}
-		s.asyncStoreAndCompress(ctx, req.UserID, req.Messages[len(req.Messages)-1].Content, nil)
+		s.asyncStoreAndCompress(ctx, req.UserID, req.GroupID, req.Messages[len(req.Messages)-1].Content, nil)
 		return resp, nil
 	}
 
@@ -329,7 +357,7 @@ func (s *ChatService) chatWithToolLoop(ctx context.Context, req *llm.ChatRequest
 	}
 
 	// ── 异步：存记忆 + 触发压缩 ──
-	s.asyncStoreAndCompress(ctx, req.UserID, req.Messages[len(req.Messages)-1].Content, nil)
+	s.asyncStoreAndCompress(ctx, req.UserID, req.GroupID, req.Messages[len(req.Messages)-1].Content, nil)
 
 	return &llm.ChatResponse{
 		Content:       finalContent,
@@ -412,13 +440,16 @@ func (s *ChatService) processToolCalls(ctx context.Context, chatModel model.Base
 	return msgs, totalTokens, invokedTools, nil
 }
 
-// asyncStoreAndCompress 异步存记忆 + 触发压缩
-func (s *ChatService) asyncStoreAndCompress(ctx context.Context, userID int64, content string, queryVec []float32) {
+// asyncStoreAndCompress 异步存记忆 + 触发压缩。
+// groupID 标识来源群：群聊消息写入带群标签的记忆（避免污染个人记忆），
+// 个人记忆压缩（Compressor）仍仅针对私聊维度。
+func (s *ChatService) asyncStoreAndCompress(ctx context.Context, userID int64, groupID, content string, queryVec []float32) {
 	if s.memory != nil && queryVec != nil {
 		go func() {
 			bgCtx := context.Background()
 			_ = s.memory.Store(bgCtx, &memory.Memory{
 				UserID:  userID,
+				GroupID: groupID,
 				Content: content,
 				Vector:  queryVec,
 			})

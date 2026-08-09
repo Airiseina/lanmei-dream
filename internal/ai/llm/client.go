@@ -2,6 +2,7 @@ package llm
 
 import (
 	"context"
+	"time"
 
 	"github.com/cloudwego/eino/schema"
 )
@@ -18,26 +19,47 @@ const (
 
 // Message 表示一条对话消息
 type Message struct {
-	Role         Role   `json:"role"`
-	Content      string `json:"content"`
-	ToolCallID   string `json:"tool_call_id,omitempty"`   // tool 角色消息必须携带
-	ToolCallName string `json:"tool_call_name,omitempty"` // 工具名称
+	Role         Role     `json:"role"`
+	Content      string   `json:"content"`
+	ImageURLs    []string `json:"image_urls,omitempty"`     // 多模态：图片 URL 列表（OpenAI 兼容 image_url），仅 user 角色使用
+	ToolCallID   string   `json:"tool_call_id,omitempty"`   // tool 角色消息必须携带
+	ToolCallName string   `json:"tool_call_name,omitempty"` // 工具名称
+}
+
+// TopicMsg 群聊话题内的一条消息（供上下文注入与归档）
+type TopicMsg struct {
+	UserID  string    `json:"user_id"` // 发送者平台 user_id（Bot 回复时为 bot 自身 ID）
+	IsBot   bool      `json:"is_bot"`  // 是否 Bot 回复
+	Content string    `json:"content"`
+	At      bool      `json:"at"` // 是否提及了 bot
+	SentAt  time.Time `json:"sent_at"`
+}
+
+// TopicContext 群聊话题上下文（nil = 私聊/无话题）。
+// 定义在本包以避免 topic 包与 llm 包循环依赖；topic 包负责填充。
+type TopicContext struct {
+	TopicID string     `json:"topic_id"`
+	Label   string     `json:"label"`   // 话题名（如"关于周末爬山计划"）
+	Members []string   `json:"members"` // 话题成员昵称
+	Recent  []TopicMsg `json:"recent"`  // 话题内近期消息（替代 LOD 的部分片段）
 }
 
 // ChatRequest 是一次对话请求的入参
 type ChatRequest struct {
-	Messages  []Message `json:"messages"`
-	UserID    int64     `json:"user_id"`
-	UserName  string    `json:"user_name"`  // 用户昵称，供 prompt 组装使用
-	GroupName string    `json:"group_name"` // 群组名称，供 prompt 组装使用
+	Messages     []Message     `json:"messages"`
+	UserID       int64         `json:"user_id"`
+	UserName     string        `json:"user_name"`               // 用户昵称，供 prompt 组装使用
+	GroupName    string        `json:"group_name"`              // 群组名称，供 prompt 组装使用
+	GroupID      string        `json:"group_id"`                // 来源群（空=私聊），供 LOD 上下文按群隔离
+	TopicContext *TopicContext `json:"topic_context,omitempty"` // 群聊话题上下文（nil = 私聊/无话题）
 }
 
 // ChatResponse 是对话服务的返回
 type ChatResponse struct {
 	Content       string             `json:"content"`
 	TokensUsed    int                `json:"tokens_used"`
-	ToolCalls     []*schema.ToolCall `json:"tool_calls,omitempty"`      // LLM 返回的工具调用
-	InvolvedTools []string           `json:"involved_tools,omitempty"`  // 本次对话中实际调用的工具名列表
+	ToolCalls     []*schema.ToolCall `json:"tool_calls,omitempty"`     // LLM 返回的工具调用
+	InvolvedTools []string           `json:"involved_tools,omitempty"` // 本次对话中实际调用的工具名列表
 }
 
 // LLMClient 抽象大语言模型的对话能力。
