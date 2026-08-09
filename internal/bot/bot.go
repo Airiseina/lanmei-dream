@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"math/rand/v2"
+	"strings"
 	"time"
 	"unicode/utf8"
 
@@ -452,6 +453,7 @@ func (b *Bot) calcSegmentInterval(text string) time.Duration {
 
 // reply 通过网关回复消息。
 // 发送前执行回复限流（群配额 + 全局配额），超限时静默丢弃，防止 Bot 刷屏。
+// 回复内容为纯 http(s) URL 时按图片消息发送（富媒体段），供 cat/balogo/github_card 等图片类插件使用。
 func (b *Bot) reply(msg *gateway.NormalizedMessage, text string) {
 	ctx := context.Background()
 	if b.limiter != nil {
@@ -461,7 +463,27 @@ func (b *Bot) reply(msg *gateway.NormalizedMessage, text string) {
 			return
 		}
 	}
+	if isImageURL(text) {
+		// 纯 URL → 图片消息（走上游富媒体发送体系）
+		if err := b.gw.Hub().SendSegments(msg.ConnID, msg, []gateway.NormalizedSegment{{
+			Type: "image",
+			Data: map[string]string{"url": strings.TrimSpace(text)},
+		}}); err != nil {
+			b.logger.Error("bot: 图片回复失败", zap.String("conn", msg.ConnID), zap.Error(err))
+		}
+		return
+	}
 	if err := b.gw.Hub().SendMessageTo(msg.ConnID, msg, text); err != nil {
 		b.logger.Error("bot: 回复失败", zap.String("conn", msg.ConnID), zap.Error(err))
 	}
+}
+
+// isImageURL 判断文本是否为纯图片 URL。
+// 规则：去除首尾空白后是完整的 http(s) URL（不含内部空格/换行）。
+func isImageURL(text string) bool {
+	t := strings.TrimSpace(text)
+	if !strings.HasPrefix(t, "http://") && !strings.HasPrefix(t, "https://") {
+		return false
+	}
+	return !strings.ContainsAny(t, " \t\n\r")
 }

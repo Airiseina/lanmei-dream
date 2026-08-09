@@ -21,6 +21,11 @@ type Config struct {
 type PluginConfig struct {
 	// RootDir Wasm 插件根目录
 	RootDir string `mapstructure:"root_dir"`
+
+	// NCMURL 网易云音乐 API 服务地址（网易云点歌插件使用）。
+	// 为空时点歌插件不可用；格式如 http://ncm-api:3000
+	NCMURL string `mapstructure:"ncm_url"`
+
 	// Builtins 内置业务插件开关（配置驱动注册，替代 main.go 硬编码注册）
 	Builtins PluginBuiltinsConfig `mapstructure:"builtins"`
 }
@@ -33,6 +38,18 @@ type PluginBuiltinsConfig struct {
 	Signin bool `mapstructure:"signin"`
 	// Welcome 入群欢迎插件
 	Welcome bool `mapstructure:"welcome"`
+	// Rank 签到积分排行榜插件
+	Rank bool `mapstructure:"rank"`
+	// Cat 猫猫图片插件
+	Cat bool `mapstructure:"cat"`
+	// BaLogo 蔚蓝档案 LOGO 插件
+	BaLogo bool `mapstructure:"balogo"`
+	// Ping 连通性测试插件
+	Ping bool `mapstructure:"ping"`
+	// GitHubCard GitHub 链接卡片插件
+	GitHubCard bool `mapstructure:"github_card"`
+	// Music 网易云点歌插件
+	Music bool `mapstructure:"music"`
 }
 
 // DatabaseConfig 数据库配置
