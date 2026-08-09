@@ -20,6 +20,11 @@ const (
 	KeySelfID         = "self_id"          // string 机器人自身 ID
 	KeyIsSegment      = "bot.is_segment"   // bool 标记流式段落重入消息
 	KeyStreamChannel  = "bot.stream.ch"    // chan string 流式段落通道
+
+	// 通知事件键：普通消息下 EventType 为空串、EventData 为 nil
+	KeyEventType    = "bot.event.type"     // string 规范化事件类型（空=普通消息）
+	KeyEventSubType = "bot.event.sub_type" // string 事件子类型
+	KeyEventData    = "bot.event.data"     // map[string]any 事件全字段
 )
 
 // ── CommandPass：处理斜杠命令 ──

@@ -90,12 +90,18 @@ type NormalizedMessage struct {
 	SenderName string   // 发送者昵称
 	MessageID  string   // 消息 ID
 	ConnID     string   // 来源连接 ID（用于回复路由）
+
+	// 通知事件字段：空 EventType = 普通消息；非空 = 通知事件（此时 Content 为空）
+	EventType    string         // 规范化事件类型（见 notice.go）
+	EventSubType string         // 事件子类型（透传原始 sub_type，可为空）
+	EventData    map[string]any // 事件全字段（普通消息为 nil）
 }
 
 // NormalizeV12 将 OneBot 12 事件标准化为 NormalizedMessage
 func NormalizeV12(connID string, evt *EventV12, platform Platform) *NormalizedMessage {
 	if evt.Type != "message" {
-		return nil
+		// 通知事件：仅接收白名单内的事件类型（见 notice.go）
+		return normalizeNoticeV12(connID, evt, platform)
 	}
 
 	userID := evt.UserID
@@ -130,12 +136,15 @@ func NormalizeV12(connID string, evt *EventV12, platform Platform) *NormalizedMe
 // NormalizeV11 将 OneBot 11 事件标准化为 NormalizedMessage
 func NormalizeV11(connID string, evt *EventV11, platform Platform) *NormalizedMessage {
 	if evt.PostType != "message" {
-		return nil
+		// 通知事件：仅接收白名单内的事件类型（见 notice.go）
+		return normalizeNoticeV11(connID, evt, platform)
 	}
 
 	userID := strconv.FormatInt(evt.UserID, 10)
 	groupID := ""
-	isGroup := evt.MessageType == "group"
+	// 群聊判定：正常报文以 message_type 为准；group_id 非 0 时兜底判为群聊
+	//（防御 message_type 缺失的异常报文，notice 事件不经过此分支）
+	isGroup := evt.MessageType == "group" || evt.GroupID != 0
 	if isGroup {
 		groupID = strconv.FormatInt(evt.GroupID, 10)
 	}
