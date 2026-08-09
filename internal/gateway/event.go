@@ -37,6 +37,7 @@ type EventV12 struct {
 	SubType    string              `json:"sub_type"`
 	UserID     string              `json:"user_id,omitempty"`
 	GroupID    string              `json:"group_id,omitempty"`
+	OperatorID string              `json:"operator_id,omitempty"` // notice 操作者（如拉人入群者）
 	Message    []MessageSegmentV12 `json:"message,omitempty"`
 	AltMessage string              `json:"alt_message,omitempty"` // 纯文本表示
 }
@@ -51,11 +52,13 @@ type EventV11 struct {
 	Time        int64           `json:"time"`
 	SelfID      int64           `json:"self_id"`
 	PostType    string          `json:"post_type"`              // message / notice / request / meta_event
+	NoticeType  string          `json:"notice_type,omitempty"`  // notice 子类型（group_increase / group_decrease / ...）
 	MessageType string          `json:"message_type,omitempty"` // private / group
 	SubType     string          `json:"sub_type,omitempty"`
 	UserID      int64           `json:"user_id,omitempty"`
 	GroupID     int64           `json:"group_id,omitempty"`
-	Message     json.RawMessage `json:"message,omitempty"` // array of MessageSegmentV11 or string
+	OperatorID  int64           `json:"operator_id,omitempty"` // notice 操作者（如拉人入群者）
+	Message     json.RawMessage `json:"message,omitempty"`     // array of MessageSegmentV11 or string
 	RawMessage  string          `json:"raw_message,omitempty"`
 	Sender      SenderV11       `json:"sender,omitempty"`
 	// 消息 ID（NapCat 扩展）

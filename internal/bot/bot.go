@@ -206,8 +206,11 @@ func (b *Bot) Run() {
 
 // OnMessage 实现 gateway.EventHandler 接口，将网关消息转为 Conduit 输入。
 // 使用异步 Submit + ResponseCallback，避免阻塞网关事件处理。
+//
+// 通知事件（EventType 非空）无文本内容，与普通消息分流：
+// 事件信息经 Extra 写入黑板供插件消费；事件不产生回复，出错也保持静默。
 func (b *Bot) OnMessage(msg *gateway.NormalizedMessage) {
-	if msg.Content == "" {
+	if msg.EventType == "" && msg.Content == "" {
 		return
 	}
 
@@ -223,13 +226,41 @@ func (b *Bot) OnMessage(msg *gateway.NormalizedMessage) {
 			KeyMessageID:      msg.MessageID,
 			KeyConnID:         msg.ConnID,
 			KeySelfID:         msg.SelfID,
+			KeyEventType:      msg.EventType,
+			KeyEventSubType:   msg.EventSubType,
+			KeyEventData:      msg.EventData,
 		},
 	}
-	input.ResponseCallback = b.makeResponseCallback(msg)
+	if msg.EventType != "" {
+		// 事件消息：出错也绝不向群里发消息（事件落空发"迷糊话术"是 bug）
+		input.ResponseCallback = b.makeEventCallback(msg)
+	} else {
+		input.ResponseCallback = b.makeResponseCallback(msg)
+	}
 
 	if err := b.engine.Submit(input); err != nil {
 		b.logger.Error("conduit: submit failed", zap.Error(err))
-		b.reply(msg, "蓝妹现在有点迷糊，稍后再试~")
+		if msg.EventType == "" {
+			b.reply(msg, "蓝妹现在有点迷糊，稍后再试~")
+		}
+	}
+}
+
+// makeEventCallback 构造通知事件专用回调：事件处理出错时只记日志、绝不回复；
+// 正常完成时遍历 Output 发送（供未来事件消费插件写入输出，如入群欢迎）。
+func (b *Bot) makeEventCallback(msg *gateway.NormalizedMessage) func(*conduit.MessageContext, error) {
+	return func(ctx *conduit.MessageContext, err error) {
+		if err != nil {
+			b.logger.Error("bot: event process failed",
+				zap.String("event", msg.EventType),
+				zap.String("group", msg.GroupID),
+				zap.Error(err),
+			)
+			return
+		}
+		for _, out := range ctx.Output {
+			b.reply(msg, out.Content)
+		}
 	}
 }
 
