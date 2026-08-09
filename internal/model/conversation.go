@@ -14,6 +14,7 @@ const (
 type Conversation struct {
 	ID        int64              `json:"id"         gorm:"primaryKey;autoIncrement;comment:对话ID"`
 	UserID    int64              `json:"user_id"    gorm:"index;not null;comment:用户ID"`
+	GroupID   string             `json:"group_id"   gorm:"size:64;index:idx_conv_group_created;default:'';comment:来源群(空=私聊)"`
 	Role      string             `json:"role"       gorm:"size:20;not null;comment:角色(user/assistant)"`
 	Content   string             `json:"content"    gorm:"type:text;not null;comment:对话内容"`
 	Source    ConversationSource `json:"source"     gorm:"size:20;not null;default:'chat';comment:来源(chat/plugin)"`

@@ -130,7 +130,8 @@ func (c *EinoClient) ChatWithModel(ctx context.Context, req *ChatRequest, chatMo
 }
 
 // ToSchemaMessages 将内部 llm.Message 列表转为 eino schema.Message 列表。
-// 保留 ToolCallID 以支持多轮工具调用场景。
+// 保留 ToolCallID 以支持多轮工具调用场景；
+// 带 ImageURLs 的 user 消息转为多模态（text + image_url 分段），纯文本消息保持原 Content 路径。
 func ToSchemaMessages(msgs []Message) []*schema.Message {
 	result := make([]*schema.Message, len(msgs))
 	for i, m := range msgs {
@@ -141,9 +142,36 @@ func ToSchemaMessages(msgs []Message) []*schema.Message {
 		if m.ToolCallID != "" {
 			schemaMsg.ToolCallID = m.ToolCallID
 		}
+		if len(m.ImageURLs) > 0 {
+			schemaMsg.UserInputMultiContent = buildMultiContent(m.Content, m.ImageURLs)
+		}
 		result[i] = schemaMsg
 	}
 	return result
+}
+
+// buildMultiContent 构造多模态分段：text 在前，随后按序追加 image_url 分段。
+func buildMultiContent(text string, imageURLs []string) []schema.MessageInputPart {
+	parts := make([]schema.MessageInputPart, 0, len(imageURLs)+1)
+	if text != "" {
+		parts = append(parts, schema.MessageInputPart{
+			Type: schema.ChatMessagePartTypeText,
+			Text: text,
+		})
+	}
+	for _, u := range imageURLs {
+		if u == "" {
+			continue
+		}
+		url := u
+		parts = append(parts, schema.MessageInputPart{
+			Type: schema.ChatMessagePartTypeImageURL,
+			Image: &schema.MessageInputImage{
+				MessagePartCommon: schema.MessagePartCommon{URL: &url},
+			},
+		})
+	}
+	return parts
 }
 
 // ToSchemaRole 将内部 Role 转为 eino schema.RoleType

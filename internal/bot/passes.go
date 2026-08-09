@@ -6,7 +6,10 @@ import (
 
 	"github.com/zrurf/conduit"
 
+	"github.com/DaWesen/lanmei-dream/internal/ai/llm"
 	"github.com/DaWesen/lanmei-dream/internal/command"
+	"github.com/DaWesen/lanmei-dream/internal/gateway"
+	"github.com/DaWesen/lanmei-dream/internal/topic"
 )
 
 // ── 上下文键 ──
@@ -20,6 +23,24 @@ const (
 	KeySelfID         = "self_id"          // string 机器人自身 ID
 	KeyIsSegment      = "bot.is_segment"   // bool 标记流式段落重入消息
 	KeyStreamChannel  = "bot.stream.ch"    // chan string 流式段落通道
+
+	// ── 多模态事件输入（Extra，由 OnMessage 注入，只读）──
+	KeyMessageType  = "bot.message_type"  // gateway.MessageType：message/notice/request
+	KeySegments     = "bot.segments"      // []gateway.NormalizedSegment 完整消息段
+	KeyMimeTypes    = "bot.mime_types"    // []string 去重后的 MIME 类型
+	KeyAtTargets    = "bot.at_targets"    // []string at 目标 user_id 列表
+	KeyNoticeType   = "bot.notice_type"   // gateway.NoticeType notice 子类型
+	KeyNoticeDetail = "bot.notice_detail" // *gateway.NoticeDetail notice 附加信息
+
+	// ── 媒体处理中间结果（data，由 MediaPass 写入）──
+	KeyImageDesc    = "bot.image_desc"    // string 图片理解描述
+	KeyMediaHandled = "bot.media_handled" // bool 媒体已处理（RouterPass 路由依据）
+
+	// ── 群聊话题（TopicGatePass 写入，供对话管线消费）──
+	KeyTopicID      = "bot.topic.id"      // string 命中话题 ID（data）
+	KeyTopicLabel   = "bot.topic.label"   // string 话题描述（data）
+	KeyTopicContext = "bot.topic.ctx"     // *llm.TopicContext 话题上下文（data）
+	KeyMentionMode  = "bot.topic.mention" // topic.MentionMode 提及模式（data）
 )
 
 // ── CommandPass：处理斜杠命令 ──
@@ -173,6 +194,93 @@ func IsSegment(ctx *conduit.MessageContext) bool {
 		}
 	}
 	return false
+}
+
+// IsNotice 判断消息是否为互动事件（notice/request 类）。
+// 行为树据此将事件路由到 pipeline.notice（预留节点）或插件子树。
+func IsNotice(ctx *conduit.MessageContext) bool {
+	mt, _ := ctx.Extra[KeyMessageType].(gateway.MessageType)
+	return mt == gateway.MessageTypeNotice || mt == gateway.MessageTypeRequest
+}
+
+// IsMedia 判断消息是否含多媒体段（image/audio/video/file/record）。
+// 行为树据此将消息路由到 pipeline.media 进行下载/缓存/理解。
+func IsMedia(ctx *conduit.MessageContext) bool {
+	segs, _ := ctx.Extra[KeySegments].([]gateway.NormalizedSegment)
+	for _, s := range segs {
+		switch s.Type {
+		case "image", "audio", "video", "file", "record":
+			return true
+		}
+	}
+	return false
+}
+
+// ── 多模态上下文读取辅助函数（供 Pass 与插件子树使用）──
+
+// SegmentsFromCtx 从 ctx.Extra 读取完整消息段列表。
+func SegmentsFromCtx(ctx *conduit.MessageContext) []gateway.NormalizedSegment {
+	segs, _ := ctx.Extra[KeySegments].([]gateway.NormalizedSegment)
+	return segs
+}
+
+// MimeTypesFromCtx 从 ctx.Extra 读取去重后的 MIME 类型列表。
+func MimeTypesFromCtx(ctx *conduit.MessageContext) []string {
+	mimes, _ := ctx.Extra[KeyMimeTypes].([]string)
+	return mimes
+}
+
+// AtTargetsFromCtx 从 ctx.Extra 读取 at 目标 user_id 列表。
+func AtTargetsFromCtx(ctx *conduit.MessageContext) []string {
+	ats, _ := ctx.Extra[KeyAtTargets].([]string)
+	return ats
+}
+
+// MessageTypeFromCtx 从 ctx.Extra 读取事件类型（message/notice/request）。
+func MessageTypeFromCtx(ctx *conduit.MessageContext) gateway.MessageType {
+	mt, _ := ctx.Extra[KeyMessageType].(gateway.MessageType)
+	return mt
+}
+
+// NoticeTypeFromCtx 从 ctx.Extra 读取 notice 子类型。
+func NoticeTypeFromCtx(ctx *conduit.MessageContext) gateway.NoticeType {
+	nt, _ := ctx.Extra[KeyNoticeType].(gateway.NoticeType)
+	return nt
+}
+
+// NoticeDetailFromCtx 从 ctx.Extra 读取 notice 附加信息。
+func NoticeDetailFromCtx(ctx *conduit.MessageContext) *gateway.NoticeDetail {
+	nd, _ := ctx.Extra[KeyNoticeDetail].(*gateway.NoticeDetail)
+	return nd
+}
+
+// ImageDescFromCtx 从 ctx.data 读取图片理解描述（由 MediaPass 写入）。
+func ImageDescFromCtx(ctx *conduit.MessageContext) string {
+	desc, _ := conduit.Get[string](ctx, KeyImageDesc)
+	return desc
+}
+
+// TopicContextFromCtx 从 ctx.data 读取群聊话题上下文（由 TopicGatePass 写入）。
+// 返回 nil 表示未命中话题（私聊或群聊 SKIP）。
+func TopicContextFromCtx(ctx *conduit.MessageContext) *llm.TopicContext {
+	tc, _ := conduit.Get[*llm.TopicContext](ctx, KeyTopicContext)
+	return tc
+}
+
+// TopicMentionModeFromCtx 从 ctx.data 读取提及模式（MentionNone 表示未提及）。
+func TopicMentionModeFromCtx(ctx *conduit.MessageContext) topic.MentionMode {
+	mode, _ := conduit.Get[topic.MentionMode](ctx, KeyMentionMode)
+	return mode
+}
+
+// SelfIDFromCtx 从 ctx.Extra 读取机器人自身 ID。
+func SelfIDFromCtx(ctx *conduit.MessageContext) string {
+	if raw, ok := ctx.Extra[KeySelfID]; ok {
+		if s, ok := raw.(string); ok {
+			return s
+		}
+	}
+	return ""
 }
 
 // ── 辅助函数 ──

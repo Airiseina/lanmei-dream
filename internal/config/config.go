@@ -50,10 +50,71 @@ type AIConfig struct {
 
 // BotConfig 机器人配置
 type BotConfig struct {
-	NickName   string        `mapstructure:"nickname"`
-	SuperUsers string        `mapstructure:"super_users"` // 格式：platform:userID,... 如 qq:123456,wechat:wxid_xxx
-	Gateway    GatewayConfig `mapstructure:"gateway"`
-	Stream     StreamConfig  `mapstructure:"stream"`
+	NickName   string          `mapstructure:"nickname"`
+	SuperUsers string          `mapstructure:"super_users"` // 格式：platform:userID,... 如 qq:123456,wechat:wxid_xxx
+	Gateway    GatewayConfig   `mapstructure:"gateway"`
+	Stream     StreamConfig    `mapstructure:"stream"`
+	Media      MediaConfig     `mapstructure:"media"`
+	Notice     NoticeConfig    `mapstructure:"notice"`
+	RateLimit  RateLimitConfig `mapstructure:"ratelimit"`
+	Topic      TopicConfig     `mapstructure:"topic"`
+}
+
+// MediaConfig 多媒体处理配置（RustFS 对象存储 + 视觉理解）
+type MediaConfig struct {
+	// Endpoint RustFS 服务端点（S3 兼容），如 http://localhost:9000
+	Endpoint string `mapstructure:"endpoint"`
+	// AccessKey / SecretKey S3 凭据（敏感值建议用环境变量注入）
+	AccessKey string `mapstructure:"access_key"`
+	SecretKey string `mapstructure:"secret_key"`
+	// Bucket 媒体对象存储桶名
+	Bucket string `mapstructure:"bucket"`
+	// Region S3 区域标识（RustFS 通常任意值即可）
+	Region string `mapstructure:"region"`
+	// MaxDownloadBytes 单张多媒体下载大小上限
+	MaxDownloadBytes int64 `mapstructure:"max_download_bytes"`
+	// VisionEnabled 视觉理解开关（需配置支持多模态的模型）
+	VisionEnabled bool `mapstructure:"vision_enabled"`
+	// VisionModel 视觉模型名（空则复用主对话模型）
+	VisionModel string `mapstructure:"vision_model"`
+}
+
+// NoticeConfig 互动事件配置（本轮为预留：具体业务由插件子树实现）
+type NoticeConfig struct {
+	// Enabled 事件标准化总开关
+	Enabled bool `mapstructure:"enabled"`
+}
+
+// RateLimitConfig 消息去重与回复限流配置
+type RateLimitConfig struct {
+	// ReplyPerGroupPerMin 每群每分钟回复上限
+	ReplyPerGroupPerMin int `mapstructure:"reply_per_group_per_min"`
+	// LLMPerUserPerMin 每用户每分钟 LLM 对话上限
+	LLMPerUserPerMin int `mapstructure:"llm_per_user_per_min"`
+	// ReplyTotalPerMin 全局每分钟回复上限
+	ReplyTotalPerMin int `mapstructure:"reply_total_per_min"`
+}
+
+// TopicConfig 群聊话题（Topic）系统配置
+type TopicConfig struct {
+	// Enabled topic 系统总开关（false 时回退为现行为：群聊全回复）
+	Enabled bool `mapstructure:"enabled"`
+	// Nicknames Bot 名字与别名（为空时使用 bot.nickname，内置"蓝莓"外号）
+	Nicknames []string `mapstructure:"nicknames"`
+	// TopicWindowMsgs 活跃窗口：最近 N 条群消息内提及/回复即保持 Active
+	TopicWindowMsgs int `mapstructure:"topic_window_msgs"`
+	// CoolingTimeoutMinutes 冷却超时（分钟）后归档
+	CoolingTimeoutMinutes int `mapstructure:"cooling_timeout_minutes"`
+	// SemanticThreshold 语义相关阈值（0~1），0 表示关闭语义判定（纯成员制）
+	SemanticThreshold float64 `mapstructure:"semantic_threshold"`
+	// CreditEnabled 回复配额（防刷屏）
+	CreditEnabled bool `mapstructure:"credit_enabled"`
+	// LLMRecheck 弱信号 LLM 复核开关（成本敏感，默认关闭）
+	LLMRecheck bool `mapstructure:"llm_recheck"`
+	// LLMRecheckIntervalMsgs 每 N 条群消息最多复核 1 条弱信号
+	LLMRecheckIntervalMsgs int `mapstructure:"llm_recheck_interval_msgs"`
+	// ArchiveIntervalSeconds 归档扫描间隔（秒）
+	ArchiveIntervalSeconds int `mapstructure:"archive_interval_seconds"`
 }
 
 // StreamConfig 流式回复配置

@@ -33,12 +33,18 @@ type EventV12 struct {
 	SelfID     string              `json:"self_id"`
 	Time       float64             `json:"time"`
 	Type       string              `json:"type"`        // meta / message / notice / request
-	DetailType string              `json:"detail_type"` // private / group / ...
+	DetailType string              `json:"detail_type"` // private / group / group_member_increase / ...
 	SubType    string              `json:"sub_type"`
 	UserID     string              `json:"user_id,omitempty"`
 	GroupID    string              `json:"group_id,omitempty"`
 	Message    []MessageSegmentV12 `json:"message,omitempty"`
 	AltMessage string              `json:"alt_message,omitempty"` // 纯文本表示
+
+	// ── notice 事件附加字段 ──
+	OperatorID string `json:"operator_id,omitempty"` // 操作者（拉人者/禁言管理员）
+	TargetID   string `json:"target_id,omitempty"`   // 被操作者（poke 被戳者）
+	Duration   int64  `json:"duration,omitempty"`    // 禁言时长（秒）
+	MessageID  string `json:"message_id,omitempty"`  // 撤回的消息 ID（group_recall）
 }
 
 // ── OneBot 11 事件（NapCat 兼容） ──
@@ -61,6 +67,12 @@ type EventV11 struct {
 	// 消息 ID（NapCat 扩展）
 	MessageID  int64 `json:"message_id,omitempty"`
 	MessageSeq int64 `json:"message_seq,omitempty"`
+
+	// ── notice 事件附加字段 ──
+	NoticeType string `json:"notice_type,omitempty"` // group_increase / group_decrease / notify / ...
+	OperatorID int64  `json:"operator_id,omitempty"` // 操作者（拉人者/禁言管理员）
+	TargetID   int64  `json:"target_id,omitempty"`   // 被操作者（poke 被戳者）
+	Duration   int64  `json:"duration,omitempty"`    // 禁言时长（秒）
 }
 
 // ParseMessageSegments 将 Message 字段解析为 OneBot 11 消息段列表。

@@ -1,6 +1,7 @@
 package bot
 
 import (
+	"context"
 	"errors"
 	"math/rand/v2"
 	"time"
@@ -17,7 +18,9 @@ import (
 	"github.com/DaWesen/lanmei-dream/internal/config"
 	"github.com/DaWesen/lanmei-dream/internal/database"
 	"github.com/DaWesen/lanmei-dream/internal/gateway"
+	"github.com/DaWesen/lanmei-dream/internal/media"
 	pluginpkg "github.com/DaWesen/lanmei-dream/internal/plugin"
+	"github.com/DaWesen/lanmei-dream/internal/topic"
 )
 
 // Bot 封装 Conduit 引擎 + 网关服务 + 意图分析器引用（用于动态更新命令/工具列表）
@@ -28,6 +31,8 @@ type Bot struct {
 	analyzer      *intent.Analyzer // 意图分析器引用，供插件加载后刷新命令/工具列表
 	cmdSys        *command.System  // 命令系统引用
 	toolReg       *tool.Registry   // 工具注册表引用
+	dedup         *Deduper         // 消息去重（message_id SETNX）
+	limiter       *ReplyLimiter    // 回复限流（群/用户/全局）
 	typingSpeedMS int              // 打字速度（毫秒/字），0 禁用间隔
 	minIntervalMS int              // 最小发送间隔（毫秒）
 	maxIntervalMS int              // 最大发送间隔（毫秒），0 不限
@@ -48,13 +53,21 @@ func (b *Bot) RefreshIntentAnalyzer() {
 	)
 }
 
+// MediaDeps 多媒体处理依赖（可选注入，nil 时媒体管线降级工作）。
+type MediaDeps struct {
+	Store  *media.ObjectStore // RustFS 对象存储（nil 时跳过媒体缓存）
+	Vision *ai.VisionService  // 视觉理解（nil 时图片仅缓存不描述）
+}
+
 // New 创建 Bot 实例，初始化 Conduit 引擎、行为树和插件系统。
 //
 // store 为 Conduit 状态存储（由 infra 包提供，RedisStore 用于生产，MemoryStore 用于测试）
 // llmClient 为 LLM 客户端，用于意图分析（nil 时降级为纯聊天路由）
 // pluginReg 为插件注册表（nil 时跳过插件初始化）
 // gwServer 为网关服务端（反向 WS，由 gateway 包提供）
-func New(cfg *config.BotConfig, cmdSys *command.System, chatSvc *ai.ChatService, db *database.DB, store conduit.StateStore, llmClient llm.LLMClient, pluginReg *pluginpkg.Registry, gwServer *gateway.Server, toolReg *tool.Registry, logger *zap.Logger) *Bot {
+// mediaDeps 为多媒体处理依赖（nil 时媒体管线降级，仅记录）
+// topicMgr 为群聊话题管理器（nil 时 topic 系统未启用，群聊退化为全量意图分析）
+func New(cfg *config.BotConfig, cmdSys *command.System, chatSvc *ai.ChatService, db *database.DB, store conduit.StateStore, llmClient llm.LLMClient, pluginReg *pluginpkg.Registry, gwServer *gateway.Server, toolReg *tool.Registry, logger *zap.Logger, mediaDeps *MediaDeps, topicMgr *topic.Manager) *Bot {
 	nick := cfg.NickName
 	if nick == "" {
 		nick = "蓝妹"
@@ -94,7 +107,7 @@ func New(cfg *config.BotConfig, cmdSys *command.System, chatSvc *ai.ChatService,
 	// 当 chatSvc 为 nil（LLM 未配置）时不注册对话管线
 	if chatSvc != nil {
 		engine.MustRegisterPipeline(conduit.NewPipeline("pipeline.roleplay",
-			&RoleplayStreamPass{Chat: chatSvc, DB: db, Logger: logger},
+			&RoleplayStreamPass{Chat: chatSvc, DB: db, Logger: logger, TopicMgr: topicMgr},
 		))
 	}
 
@@ -111,8 +124,33 @@ func New(cfg *config.BotConfig, cmdSys *command.System, chatSvc *ai.ChatService,
 		&IntentCommandExecPass{CmdSys: cmdSys},
 	))
 
+	// ── 互动事件预留节点（具体逻辑由插件子树实现）──
+	engine.MustRegisterPipeline(conduit.NewPipeline("pipeline.notice",
+		&NoticeGatePass{Logger: logger},
+	))
+
+	// ── 多媒体处理管线（下载/缓存/理解 → RouterPass 路由）──
+	var mediaStore *media.ObjectStore
+	var visionSvc *ai.VisionService
+	if mediaDeps != nil {
+		mediaStore = mediaDeps.Store
+		visionSvc = mediaDeps.Vision
+	}
+	engine.MustRegisterPipeline(conduit.NewPipeline("pipeline.media",
+		&MediaPass{Store: mediaStore, Vision: visionSvc, DB: db, Cfg: &cfg.Media, Logger: logger},
+		&MediaRouterPass{},
+	))
+
 	engine.MustRegisterPipeline(conduit.NewPipeline("pipeline.fallback",
 		&FallbackPass{},
+	))
+
+	// ── 群聊话题管线（选择性放行；topicMgr 为 nil 时 TopicGatePass 全放行）──
+	engine.MustRegisterPipeline(conduit.NewPipeline("pipeline.topic_gate",
+		&TopicGatePass{Manager: topicMgr, Logger: logger},
+	))
+	engine.MustRegisterPipeline(conduit.NewPipeline("pipeline.topic_ignore",
+		&TopicIgnorePass{DB: db},
 	))
 
 	// ── 行为树核心分支 ──
@@ -120,6 +158,11 @@ func New(cfg *config.BotConfig, cmdSys *command.System, chatSvc *ai.ChatService,
 	coreSegment := conduit.NewSequence(
 		conduit.NewCondition(IsSegment),
 		conduit.NewAction("pipeline.roleplay_segment"),
+	)
+	// 互动事件分支：notice/request 事件路由到预留节点（插件子树可先行消费）
+	coreNotice := conduit.NewSequence(
+		conduit.NewCondition(IsNotice),
+		conduit.NewAction("pipeline.notice"),
 	)
 	coreAdmin := conduit.NewSequence(
 		conduit.NewCondition(IsAdminCommand),
@@ -129,22 +172,30 @@ func New(cfg *config.BotConfig, cmdSys *command.System, chatSvc *ai.ChatService,
 		conduit.NewCondition(IsCommand),
 		conduit.NewAction("pipeline.command"),
 	)
+	// 多媒体分支：含图片/音频/视频/文件段的消息先经 pipeline.media 处理
+	// （MediaRouterPass 内部再路由到 intent_analysis / intent_ignore）
+	coreMedia := conduit.NewSequence(
+		conduit.NewCondition(IsMedia),
+		conduit.NewAction("pipeline.media"),
+	)
 
 	// 意图感知路由核心（非命令消息）：
+	// 群聊先经 pipeline.topic_gate 做话题决策（RouterPass 路由到 intent_analysis / topic_ignore），
+	// 私聊由 TopicGatePass 直接放行到 intent_analysis。
 	// 使用 RouterPass 简化行为树 —— Execute 执行分析，Route 动态路由到对应管线，
 	// 不再需要 Condition 节点（避免 BT Tick 时分析结果尚未写入的时序问题）。
-	coreIntent := conduit.NewAction("pipeline.intent_analysis")
+	coreIntent := conduit.NewAction("pipeline.topic_gate")
 
 	// ── 插件系统 ──
 	if pluginReg != nil {
 		pluginReg.SetEngine(engine)
 		pluginReg.SetRebuildBT(func() {
-			bt := buildBehaviorTree(pluginReg, coreAdmin, coreCommand, coreIntent, coreSegment)
+			bt := buildBehaviorTree(pluginReg, coreAdmin, coreCommand, coreIntent, coreSegment, coreNotice, coreMedia)
 			engine.SetBehaviorTree(bt)
 		})
 	}
 
-	bt := buildBehaviorTree(pluginReg, coreAdmin, coreCommand, coreIntent, coreSegment)
+	bt := buildBehaviorTree(pluginReg, coreAdmin, coreCommand, coreIntent, coreSegment, coreNotice, coreMedia)
 	engine.SetBehaviorTree(bt)
 
 	return &Bot{
@@ -154,6 +205,8 @@ func New(cfg *config.BotConfig, cmdSys *command.System, chatSvc *ai.ChatService,
 		analyzer:      analyzer,
 		cmdSys:        cmdSys,
 		toolReg:       toolReg,
+		dedup:         NewDeduper(store, 0),
+		limiter:       NewReplyLimiter(store, &cfg.RateLimit, logger),
 		typingSpeedMS: cfg.Stream.TypingSpeedMS,
 		minIntervalMS: cfg.Stream.MinIntervalMS,
 		maxIntervalMS: cfg.Stream.MaxIntervalMS,
@@ -170,12 +223,14 @@ func New(cfg *config.BotConfig, cmdSys *command.System, chatSvc *ai.ChatService,
 //	  SubtreeRef("plugin.signin.subtree")    // 插件子树（优先级最高）
 //	  SubtreeRef("plugin.festival.subtree")  // ...
 //	  SubtreeRef("plugin.minigame.subtree")  // ...
-//	  Sequence [IsSegment, Action(segment)]     // 流式段落重入（优先于命令/意图）
+//	  Sequence [IsSegment, Action(segment)]  // 流式段落重入（优先于命令/意图）
+//	  Sequence [IsNotice, Action(notice)]    // 互动事件（预留节点）
 //	  Sequence [IsAdminCommand, Action(admin)]  // 管理员命令
-//	  Sequence [IsCommand, Action(command)]     // 斜杠命令
-//	  Action(intent)                            // 意图分析（兜底）
+//	  Sequence [IsCommand, Action(command)]  // 斜杠命令
+//	  Sequence [IsMedia, Action(media)]      // 多媒体（内部路由到意图分析/忽略）
+//	  Action(intent)                         // 意图分析（兜底）
 //	]
-func buildBehaviorTree(pluginReg *pluginpkg.Registry, coreAdmin, coreCommand, coreIntent, coreSegment conduit.BTNode) conduit.BTNode {
+func buildBehaviorTree(pluginReg *pluginpkg.Registry, coreAdmin, coreCommand, coreIntent, coreSegment, coreNotice, coreMedia conduit.BTNode) conduit.BTNode {
 	var branches []conduit.BTNode
 
 	// 插件子树优先（最先匹配，最高优先级）
@@ -188,8 +243,8 @@ func buildBehaviorTree(pluginReg *pluginpkg.Registry, coreAdmin, coreCommand, co
 	// 段落分支优先于命令/意图（流式段落直接交付，不走分析）
 	branches = append(branches, coreSegment)
 
-	// 核心分支
-	branches = append(branches, coreAdmin, coreCommand, coreIntent)
+	// 核心分支：事件 → 管理员命令 → 斜杠命令 → 媒体 → 意图分析（兜底）
+	branches = append(branches, coreNotice, coreAdmin, coreCommand, coreMedia, coreIntent)
 
 	return conduit.NewBehaviorTree(branches...)
 }
@@ -206,8 +261,23 @@ func (b *Bot) Run() {
 
 // OnMessage 实现 gateway.EventHandler 接口，将网关消息转为 Conduit 输入。
 // 使用异步 Submit + ResponseCallback，避免阻塞网关事件处理。
+//
+// 入口职责：
+//  1. 空文本消息过滤（但含媒体段或为事件的消息放行）
+//  2. message_id 去重（Deduper）
+//  3. 将完整事件上下文（含多模态段 / notice 信息）注入 InputMessage.Extra
 func (b *Bot) OnMessage(msg *gateway.NormalizedMessage) {
-	if msg.Content == "" {
+	if msg == nil {
+		return
+	}
+	// 普通消息必须非空（纯图片/事件消息无文本时放行，交给媒体/事件管线处理）
+	if msg.MessageType == gateway.MessageTypeMessage && msg.Content == "" && len(msg.Segments) == 0 {
+		return
+	}
+	// ── 消息去重：重复 message_id 直接丢弃（存储故障时放行）──
+	if b.dedup != nil && !b.dedup.Accept(msg) {
+		b.logger.Debug("bot: 重复消息已丢弃",
+			zap.String("conn", msg.ConnID), zap.String("message_id", msg.MessageID))
 		return
 	}
 
@@ -223,6 +293,13 @@ func (b *Bot) OnMessage(msg *gateway.NormalizedMessage) {
 			KeyMessageID:      msg.MessageID,
 			KeyConnID:         msg.ConnID,
 			KeySelfID:         msg.SelfID,
+			// ── 多模态 / 互动事件输入（只读 Extra）──
+			KeyMessageType:  msg.MessageType,
+			KeySegments:     msg.Segments,
+			KeyMimeTypes:    msg.MimeTypes,
+			KeyAtTargets:    msg.AtTargets,
+			KeyNoticeType:   msg.NoticeType,
+			KeyNoticeDetail: msg.NoticeDetail,
 		},
 	}
 	input.ResponseCallback = b.makeResponseCallback(msg)
@@ -343,8 +420,17 @@ func (b *Bot) calcSegmentInterval(text string) time.Duration {
 	return time.Duration(baseMS) * time.Millisecond
 }
 
-// reply 通过网关回复消息
+// reply 通过网关回复消息。
+// 发送前执行回复限流（群配额 + 全局配额），超限时静默丢弃，防止 Bot 刷屏。
 func (b *Bot) reply(msg *gateway.NormalizedMessage, text string) {
+	ctx := context.Background()
+	if b.limiter != nil {
+		if !b.limiter.AllowGroupReply(ctx, msg.GroupID) || !b.limiter.AllowTotalReply(ctx) {
+			b.logger.Debug("bot: 回复限流，静默丢弃",
+				zap.String("group", msg.GroupID), zap.String("conn", msg.ConnID))
+			return
+		}
+	}
 	if err := b.gw.Hub().SendMessageTo(msg.ConnID, msg, text); err != nil {
 		b.logger.Error("bot: 回复失败", zap.String("conn", msg.ConnID), zap.Error(err))
 	}

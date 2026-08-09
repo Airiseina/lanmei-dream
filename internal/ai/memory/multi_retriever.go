@@ -37,14 +37,15 @@ func NewMultiRetriever(store MemoryStore, weights RecallWeight) *MultiRetriever 
 	return &MultiRetriever{store: store, weights: weights}
 }
 
-// Retrieve 执行多路召回并合并结果
-// queryVec: 查询向量（向量召回），query: 查询文本（关键词召回），userID: 用户ID，limit: 最终返回数量
-func (r *MultiRetriever) Retrieve(ctx context.Context, queryVec []float32, query string, userID int64, limit int) ([]*Memory, error) {
+// Retrieve 执行多路召回并合并结果。
+// queryVec: 查询向量（向量召回），query: 查询文本（关键词召回），
+// userID: 用户ID，groupID: 来源群（空=私聊，按群级过滤），limit: 最终返回数量
+func (r *MultiRetriever) Retrieve(ctx context.Context, queryVec []float32, query string, userID int64, groupID string, limit int) ([]*Memory, error) {
 	scored := make(map[string]*ScoredMemory) // 按 ID 去重
 
 	// 通路1：向量召回
 	if queryVec != nil {
-		memories, err := r.store.Retrieve(ctx, queryVec, userID, limit)
+		memories, err := r.store.Retrieve(ctx, queryVec, userID, groupID, limit)
 		if err == nil {
 			for i, m := range memories {
 				addScore(scored, m, r.weights.Vector*rankScore(i, len(memories)))
@@ -54,7 +55,7 @@ func (r *MultiRetriever) Retrieve(ctx context.Context, queryVec []float32, query
 
 	// 通路2：关键词召回
 	if query != "" {
-		memories, err := r.store.RetrieveByKeyword(ctx, query, userID, limit)
+		memories, err := r.store.RetrieveByKeyword(ctx, query, userID, groupID, limit)
 		if err == nil {
 			for i, m := range memories {
 				addScore(scored, m, r.weights.Keyword*rankScore(i, len(memories)))
@@ -63,7 +64,7 @@ func (r *MultiRetriever) Retrieve(ctx context.Context, queryVec []float32, query
 	}
 
 	// 通路3：时间召回
-	memories, err := r.store.RetrieveByTime(ctx, userID, limit)
+	memories, err := r.store.RetrieveByTime(ctx, userID, groupID, limit)
 	if err == nil {
 		for i, m := range memories {
 			addScore(scored, m, r.weights.Time*rankScore(i, len(memories)))

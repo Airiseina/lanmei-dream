@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"github.com/DaWesen/lanmei-dream/internal/ai"
@@ -22,6 +23,7 @@ import (
 	"github.com/DaWesen/lanmei-dream/internal/kb/provider/feishu"
 	"github.com/DaWesen/lanmei-dream/internal/kb/provider/local"
 	pluginpkg "github.com/DaWesen/lanmei-dream/internal/plugin"
+	"github.com/DaWesen/lanmei-dream/internal/topic"
 	"go.uber.org/zap"
 )
 
@@ -39,9 +41,9 @@ func main() {
 	logger := infra.InitLogger(&cfg.Log)
 	defer logger.Sync()
 
-	// ── 基础设施（PostgreSQL+pgvector + Redis）──
+	// ── 基础设施（PostgreSQL+pgvector + Redis + RustFS 对象存储）──
 	// embeddingDim 透传给数据库迁移，保证 knowledge_chunks 向量列维度与模型一致
-	inf, err := infra.Setup(ctx, &cfg.Database, &cfg.Redis, cfg.AI.EmbeddingDim, logger)
+	inf, err := infra.Setup(ctx, &cfg.Database, &cfg.Redis, &cfg.Bot.Media, cfg.AI.EmbeddingDim, logger)
 	if err != nil {
 		logger.Fatal("基础设施初始化失败", zap.Error(err))
 	}
@@ -148,6 +150,20 @@ func main() {
 		logger.Warn("LLM 未配置，角色扮演不可用")
 	}
 
+	// ── 群聊话题（Topic）系统：决策管理器 + 冷却归档器 ──
+	// 启用时替换群聊全量回复为"提及/话题制"选择性回复；未启用时传入 nil 退化为原行为。
+	var topicMgr *topic.Manager
+	if cfg.Bot.Topic.Enabled {
+		archiver := topic.NewArchiver(llmClient, embedder, inf.MemStore, inf.DB, logger)
+		topicMgr = topic.NewManager(&cfg.Bot.Topic, inf.StateStore, embedder, llmClient, archiver, botNicknames(&cfg.Bot), logger)
+		topicMgr.Start(ctx)
+		logger.Info("群聊话题系统就绪",
+			zap.Bool("semantic", cfg.Bot.Topic.SemanticThreshold > 0 && embedder != nil),
+			zap.Bool("llm_recheck", cfg.Bot.Topic.LLMRecheck))
+	} else {
+		logger.Info("群聊话题系统未启用（群聊退化为全量回复）")
+	}
+
 	// ── 命令系统 ──
 	cmdSys := command.New()
 	if err := cmdSys.Register(command.Command{
@@ -156,6 +172,29 @@ func main() {
 		Handler:     cmdSys.HelpHandler,
 	}); err != nil {
 		logger.Fatal("注册帮助命令失败", zap.Error(err))
+	}
+
+	// ── 视觉理解服务（多模态图片描述，可选）──
+	var visionSvc *ai.VisionService
+	if cfg.Bot.Media.VisionEnabled && llmClient != nil {
+		visionModel := cfg.Bot.Media.VisionModel
+		if visionModel == "" {
+			visionModel = cfg.AI.LLMModel
+		}
+		visionLLM, err := llm.NewEinoClient(ctx, &llm.EinoOptions{
+			BaseURL:     cfg.AI.LLMBaseURL,
+			APIKey:      cfg.AI.LLMAPIKey,
+			Model:       visionModel,
+			MaxTokens:   min(cfg.AI.LLMMaxTokens, 1024),
+			Temperature: 0.2, // 描述任务用低温，更客观
+		})
+		if err != nil {
+			logger.Fatal("视觉理解模型初始化失败", zap.Error(err))
+		}
+		visionSvc = ai.NewVisionService(visionLLM.BaseModel(), logger)
+		logger.Info("视觉理解服务就绪", zap.String("model", visionModel))
+	} else {
+		logger.Info("视觉理解未启用（图片仅缓存或占位）")
 	}
 
 	// ── 插件系统 ──
@@ -167,7 +206,10 @@ func main() {
 		AccessToken: cfg.Bot.Gateway.AccessToken,
 	}, logger, nil)
 
-	b := bot.New(&cfg.Bot, cmdSys, chatSvc, inf.DB, inf.StateStore, llmClient, pluginReg, gwServer, toolReg, logger)
+	b := bot.New(&cfg.Bot, cmdSys, chatSvc, inf.DB, inf.StateStore, llmClient, pluginReg, gwServer, toolReg, logger, &bot.MediaDeps{
+		Store:  inf.ObjectStore,
+		Vision: visionSvc,
+	}, topicMgr)
 
 	gwServer.SetHandler(b)
 
@@ -185,6 +227,13 @@ func main() {
 	if _, wasmSigninLoaded := pluginReg.Get("signin"); !wasmSigninLoaded {
 		if err := pluginReg.Register(bizplugin.NewSigninPlugin(inf.DB, logger)); err != nil {
 			logger.Fatal("注册签到插件失败", zap.Error(err))
+		}
+	}
+
+	// 互动事件演示插件（占位实现，展示插件消费 notice 事件的范式）
+	if cfg.Bot.Notice.Enabled {
+		if err := pluginReg.Register(bizplugin.NewWelcomeDemoPlugin(logger)); err != nil {
+			logger.Fatal("注册欢迎演示插件失败", zap.Error(err))
 		}
 	}
 
@@ -213,4 +262,33 @@ func main() {
 
 	logger.Info("蓝妹启动", zap.String("listen_addr", cfg.Bot.Gateway.ListenAddr))
 	b.Run()
+}
+
+// botNicknames 汇总 Bot 的名字与别名（提及检测用）。
+// 优先级：bot.topic.nicknames 配置 > bot.nickname（默认"蓝妹"）> 内置外号"蓝莓"，并去重。
+func botNicknames(cfg *config.BotConfig) []string {
+	seen := make(map[string]struct{}, 8)
+	nicknames := make([]string, 0, 8)
+	add := func(n string) {
+		n = strings.TrimSpace(n)
+		if n == "" {
+			return
+		}
+		if _, ok := seen[n]; ok {
+			return
+		}
+		seen[n] = struct{}{}
+		nicknames = append(nicknames, n)
+	}
+	for _, n := range cfg.Topic.Nicknames {
+		add(n)
+	}
+	if cfg.NickName != "" {
+		add(cfg.NickName)
+	}
+	add("蓝莓") // 内置外号
+	if len(nicknames) == 0 {
+		nicknames = append(nicknames, "蓝妹")
+	}
+	return nicknames
 }

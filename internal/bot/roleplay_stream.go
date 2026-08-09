@@ -12,6 +12,7 @@ import (
 	"github.com/DaWesen/lanmei-dream/internal/ai/llm"
 	"github.com/DaWesen/lanmei-dream/internal/database"
 	"github.com/DaWesen/lanmei-dream/internal/model"
+	"github.com/DaWesen/lanmei-dream/internal/topic"
 )
 
 // streamTimeout 流式回复的最大持续时间。
@@ -31,10 +32,14 @@ const segmentChannelBufferSize = 32
 //
 // 流式 goroutine 使用独立 context（不复用 ctx.Ctx），
 // 因为 yield 后引擎会调用 ctx.Cancel() 取消消息上下文。
+//
+// TopicMgr 非 nil 时，群聊话题命中（黑板块 KeyTopicContext）的回复完成后
+// 会调用 TopicManager.RecordBotReply 记录 Bot 回复（追加窗口、授回复配额）。
 type RoleplayStreamPass struct {
-	Chat   *ai.ChatService
-	DB     *database.DB
-	Logger *zap.Logger
+	Chat     *ai.ChatService
+	DB       *database.DB
+	Logger   *zap.Logger
+	TopicMgr *topic.Manager // 可 nil：topic 系统未启用
 }
 
 // Execute 启动流式生成并挂起管线。
@@ -59,6 +64,17 @@ func (p *RoleplayStreamPass) Execute(ctx *conduit.MessageContext) error {
 		return fmt.Errorf("roleplay: get_or_create_user: %w", err)
 	}
 
+	// 群聊话题上下文（TopicGatePass 命中话题时写入黑板；nil = 私聊/无话题）
+	var topicCtx *llm.TopicContext
+	var topicID, selfID string
+	if p.TopicMgr != nil {
+		if tc, ok := conduit.Get[*llm.TopicContext](ctx, KeyTopicContext); ok && tc != nil {
+			topicCtx = tc
+			topicID = tc.TopicID
+		}
+		selfID = SelfIDFromCtx(ctx)
+	}
+
 	// 段落通道：流式 goroutine 写入，Bot.streamSegments 读取
 	segCh := make(chan string, segmentChannelBufferSize)
 
@@ -66,7 +82,7 @@ func (p *RoleplayStreamPass) Execute(ctx *conduit.MessageContext) error {
 	streamCtx, streamCancel := context.WithTimeout(context.Background(), streamTimeout)
 
 	// 启动流式生成 goroutine
-	go p.runStream(streamCtx, streamCancel, segCh, userMsg, user.ID, nickname, ctx.GroupID)
+	go p.runStream(streamCtx, streamCancel, segCh, userMsg, user.ID, nickname, ctx.GroupID, ctx.UserID, platform, topicID, selfID, topicCtx)
 
 	// 将段落通道存入上下文，供回调消费
 	conduit.Set(ctx, KeyStreamChannel, segCh)
@@ -79,8 +95,9 @@ func (p *RoleplayStreamPass) Execute(ctx *conduit.MessageContext) error {
 // 职责：
 //  1. 调用 ChatService.ChatStream，将段落增量写入 segCh
 //  2. 流结束后保存对话记录（L0 原始记录）
-//  3. 发生错误时发送错误提示段
-//  4. defer close(segCh) 确保消费方能正常退出
+//  3. 群聊话题命中时记录 Bot 回复到话题（RecordBotReply）
+//  4. 发生错误时发送错误提示段
+//  5. defer close(segCh) 确保消费方能正常退出
 func (p *RoleplayStreamPass) runStream(
 	streamCtx context.Context,
 	streamCancel context.CancelFunc,
@@ -89,15 +106,22 @@ func (p *RoleplayStreamPass) runStream(
 	userID int64,
 	nickname string,
 	groupID string,
+	senderID string,
+	platform string,
+	topicID string,
+	selfID string,
+	topicCtx *llm.TopicContext,
 ) {
 	defer streamCancel()
 	defer close(segCh)
 
 	resp, err := p.Chat.ChatStream(streamCtx, &llm.ChatRequest{
-		Messages:  []llm.Message{{Role: llm.RoleUser, Content: userMsg}},
-		UserID:    userID,
-		UserName:  nickname,
-		GroupName: groupID,
+		Messages:     []llm.Message{{Role: llm.RoleUser, Content: userMsg}},
+		UserID:       userID,
+		UserName:     nickname,
+		GroupName:    groupID,
+		GroupID:      groupID,
+		TopicContext: topicCtx,
 	}, segCh)
 
 	if err != nil {
@@ -118,7 +142,7 @@ func (p *RoleplayStreamPass) runStream(
 	// 保存对话记录（L0 原始记录，后续由 Compressor 自动压缩）
 	// 使用 context.Background() 因为 streamCtx 可能已接近超时
 	bgCtx := context.Background()
-	if saveErr := p.DB.SaveConversation(bgCtx, userID, "user", userMsg, model.SourceChat, ""); saveErr != nil {
+	if saveErr := p.DB.SaveConversation(bgCtx, userID, groupID, "user", userMsg, model.SourceChat, ""); saveErr != nil {
 		p.Logger.Error("roleplay stream: save user conversation", zap.Error(saveErr))
 	}
 	// 根据是否调用了工具决定 assistant 消息的来源标记
@@ -128,8 +152,13 @@ func (p *RoleplayStreamPass) runStream(
 		source = model.SourcePlugin
 		pluginTag = resp.InvolvedTools[0] // 取首个工具名作为标签
 	}
-	if saveErr := p.DB.SaveConversation(bgCtx, userID, "assistant", resp.Content, source, pluginTag); saveErr != nil {
+	if saveErr := p.DB.SaveConversation(bgCtx, userID, groupID, "assistant", resp.Content, source, pluginTag); saveErr != nil {
 		p.Logger.Error("roleplay stream: save assistant conversation", zap.Error(saveErr))
+	}
+
+	// 群聊话题命中：记录 Bot 回复（追加窗口、授回复配额，保持话题活跃）
+	if p.TopicMgr != nil && topicID != "" && resp.Content != "" {
+		p.TopicMgr.RecordBotReply(bgCtx, platform, groupID, topicID, selfID, senderID, resp.Content)
 	}
 }
 

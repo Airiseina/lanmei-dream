@@ -67,6 +67,14 @@ func Init() (*Config, error) {
 		"LANMEI_PLUGIN_ROOT_DIR":             "plugin.root_dir",
 		"LANMEI_KNOWLEDGE_ENABLED":           "knowledge.enabled",
 		"LANMEI_KNOWLEDGE_AUTO_RECALL_LIMIT": "knowledge.auto_recall_limit",
+		// 多媒体（RustFS）与机器人行为配置
+		"LANMEI_MEDIA_ENDPOINT":                 "bot.media.endpoint",
+		"LANMEI_MEDIA_ACCESS_KEY":               "bot.media.access_key",
+		"LANMEI_MEDIA_SECRET_KEY":               "bot.media.secret_key",
+		"LANMEI_MEDIA_BUCKET":                   "bot.media.bucket",
+		"LANMEI_MEDIA_REGION":                   "bot.media.region",
+		"LANMEI_TOPIC_ENABLED":                  "bot.topic.enabled",
+		"LANMEI_RATELIMIT_LLM_PER_USER_PER_MIN": "bot.ratelimit.llm_per_user_per_min",
 	}
 	for envKey, cfgKey := range envToCfg {
 		if val := os.Getenv(envKey); val != "" {
@@ -119,6 +127,33 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("bot.stream.min_interval_ms", 1000)  // 最小 1 秒
 	v.SetDefault("bot.stream.max_interval_ms", 10000) // 最大 10 秒
 	v.SetDefault("bot.stream.jitter_pct", 0.25)       // ±25% 抖动
+
+	// 多媒体（RustFS）默认值
+	v.SetDefault("bot.media.endpoint", "http://localhost:9000")
+	v.SetDefault("bot.media.bucket", "lanmei-media")
+	v.SetDefault("bot.media.region", "us-east-1")
+	v.SetDefault("bot.media.max_download_bytes", 10485760) // 10MB
+	v.SetDefault("bot.media.vision_enabled", false)
+	v.SetDefault("bot.media.vision_model", "")
+
+	// 互动事件预留默认值
+	v.SetDefault("bot.notice.enabled", true)
+
+	// 限流默认值
+	v.SetDefault("bot.ratelimit.reply_per_group_per_min", 15)
+	v.SetDefault("bot.ratelimit.llm_per_user_per_min", 5)
+	v.SetDefault("bot.ratelimit.reply_total_per_min", 30)
+
+	// 群聊 topic 系统默认值
+	v.SetDefault("bot.topic.enabled", true)
+	v.SetDefault("bot.topic.nicknames", []string{})
+	v.SetDefault("bot.topic.topic_window_msgs", 20)
+	v.SetDefault("bot.topic.cooling_timeout_minutes", 30)
+	v.SetDefault("bot.topic.semantic_threshold", 0.5)
+	v.SetDefault("bot.topic.credit_enabled", true)
+	v.SetDefault("bot.topic.llm_recheck", false)
+	v.SetDefault("bot.topic.llm_recheck_interval_msgs", 10)
+	v.SetDefault("bot.topic.archive_interval_seconds", 60)
 
 	// Log 默认值
 	v.SetDefault("log.level", "info")

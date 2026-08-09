@@ -83,6 +83,11 @@ func (h *Hub) SendTo(connID string, req *ActionRequest) error {
 
 // SendMessageTo 向指定连接发送文本消息（自动选择协议动作）
 func (h *Hub) SendMessageTo(connID string, msg *NormalizedMessage, text string) error {
+	return h.SendSegments(connID, msg, []NormalizedSegment{{Type: "text", Text: text}})
+}
+
+// SendSegments 向指定连接发送结构化消息段（text/image/at 组合，自动选择协议动作）。
+func (h *Hub) SendSegments(connID string, msg *NormalizedMessage, segs []NormalizedSegment) error {
 	h.mu.RLock()
 	conn, ok := h.conns[connID]
 	h.mu.RUnlock()
@@ -92,15 +97,34 @@ func (h *Hub) SendMessageTo(connID string, msg *NormalizedMessage, text string) 
 
 	var req *ActionRequest
 	if conn.Protocol == ProtocolV11 {
-		req = BuildSendMessageV11(msg.IsGroup, msg.UserID, msg.GroupID, text)
+		req = BuildSendMessageSegmentsV11(msg.IsGroup, msg.UserID, msg.GroupID, segs)
 	} else {
 		detailType := "private"
 		if msg.IsGroup {
 			detailType = "group"
 		}
-		req = BuildSendMessageV12(detailType, msg.UserID, msg.GroupID, text)
+		req = BuildSendMessageSegmentsV12(detailType, msg.UserID, msg.GroupID, segs)
 	}
 	return writeJSON(conn.Socket, req)
+}
+
+// SendImage 向指定连接发送图片（file 支持 url / base64(data:image/...) / RustFS presign URL / 本地路径）。
+func (h *Hub) SendImage(connID string, msg *NormalizedMessage, file string) error {
+	return h.SendSegments(connID, msg, []NormalizedSegment{{
+		Type: "image",
+		Data: map[string]string{"file": file},
+	}})
+}
+
+// SendAtText 向指定连接发送 "@用户 + 文本" 组合消息。
+// atUserID 为空时退化为纯文本发送。
+func (h *Hub) SendAtText(connID string, msg *NormalizedMessage, atUserID, text string) error {
+	segs := make([]NormalizedSegment, 0, 2)
+	if atUserID != "" {
+		segs = append(segs, NormalizedSegment{Type: "at", Data: map[string]string{"user_id": atUserID}})
+	}
+	segs = append(segs, NormalizedSegment{Type: "text", Text: text})
+	return h.SendSegments(connID, msg, segs)
 }
 
 // All 返回所有活跃连接的快照
