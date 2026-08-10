@@ -2,7 +2,6 @@ package bizplugin
 
 import (
 	"fmt"
-	"math/rand/v2"
 
 	pluginpkg "github.com/DaWesen/lanmei-dream/internal/plugin"
 	"github.com/zrurf/conduit"
@@ -17,7 +16,7 @@ import (
 //
 // 功能：
 //   - 新人入群（group_increase）时发送欢迎消息
-//   - 多条内置文案随机挑选（纯文本，不 @ 新人）
+//   - 一条消息内 @ 新人 + 固定欢迎文案 + 固定图片（经出站段通道发送）
 //   - 所有群都欢迎，不做按群配置、不做防刷限流
 //
 // 行为树：
@@ -102,6 +101,13 @@ const (
 	eventKeyData = "bot.event.data" // map[string]any 事件全字段
 )
 
+// 出站段键（由 bot 层回调读取后按段发送，键定义见 internal/bot/passes.go）。
+// 插件按"不导包"约定直接使用字符串字面量。
+const sendSegmentsKey = "bot.send.segments" // []map[string]any OneBot 原生段列表（at/text/image 组合）
+
+// welcomeImageURL 欢迎配图（蓝山招新群固定图）。
+const welcomeImageURL = "http://blog-manmu.top/images/lanshan_welcome.png"
+
 // groupIncreaseEventType 规范化入群事件类型（对应 gateway 包的 EventTypeGroupIncrease）。
 const groupIncreaseEventType = "group_increase"
 
@@ -115,16 +121,12 @@ func isGroupIncreaseEvent(ctx *conduit.MessageContext) bool {
 // Pass 实现
 // ============================================================
 
-// welcomeMessages 内置欢迎文案（随机挑选，纯文本、不带新人信息）
-var welcomeMessages = []string{
-	"欢迎新同学加入！ヽ(✿ﾟ▽ﾟ)ノ",
-	"新人驾到，撒花欢迎~",
-	"欢迎欢迎~ 新朋友来啦！",
-	"欢迎加入本群，一起愉快玩耍吧~",
-	"有新同学来了，掌声欢迎！",
-}
+// welcomeMessage 固定欢迎文案（作为 @ 新人后的文本段）
+const welcomeMessage = "欢迎来到蓝山招新群！ヾ(≧▽≦*)o，有什么想问的都可以问我呦，发送/help试试呀 (´,,•ω•,,)♡"
 
-// welcomePass 发送欢迎消息：随机挑选文案并输出
+// welcomePass 发送欢迎消息：[@新人 + 固定文案 + 固定图片] 一条消息。
+// 经出站段通道（conduit.Set "bot.send.segments"）交给 bot 回调按段发送；
+// 事件缺 user_id（异常事件）时降级为纯文本欢迎语。
 type welcomePass struct {
 	logger *zap.Logger
 }
@@ -139,10 +141,24 @@ func (pass *welcomePass) Execute(ctx *conduit.MessageContext) error {
 		zap.String("group_id", ctx.GroupID),
 	)
 
-	content := welcomeMessages[rand.IntN(len(welcomeMessages))]
-	conduit.AppendOutput(ctx, &conduit.Message{
-		UserID: ctx.UserID, GroupID: ctx.GroupID, IsGroup: ctx.IsGroup,
-		Content: content,
+	content := welcomeMessage
+	newUserID, _ := eventData["user_id"].(string)
+
+	// 缺 user_id（异常事件）：降级纯文本欢迎语，不 @ 任何人
+	if newUserID == "" {
+		conduit.AppendOutput(ctx, &conduit.Message{
+			UserID: ctx.UserID, GroupID: ctx.GroupID, IsGroup: ctx.IsGroup,
+			Content: content,
+		})
+		return nil
+	}
+
+	// 出站段：[@新人 + 固定文案 + 固定图片]，永远按 OneBot 12 语义组装（at 段用 user_id），
+	// 协议差异（v11 的 at→qq、动作选择）由 bot 回调经 hub.SendSegments 收敛
+	conduit.Set(ctx, sendSegmentsKey, []map[string]any{
+		{"type": "at", "data": map[string]any{"user_id": newUserID}},
+		{"type": "text", "data": map[string]any{"text": content}},
+		{"type": "image", "data": map[string]any{"file": welcomeImageURL}},
 	})
 	return nil
 }

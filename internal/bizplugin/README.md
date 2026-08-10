@@ -9,7 +9,9 @@
 | 插件 | 文件 | 类型 | 说明 |
 |------|------|------|------|
 | `signin` | signin.go | 命令类 | 每日签到，通过斜杠命令触发 |
-| `welcome` | welcome.go | **事件类（模范示例）** | 新人入群欢迎，消费 QQ 通知事件 |
+| `welcome` | welcome.go | **事件类（模范示例）** | 新人入群欢迎（@新人 + 文案 + 图片，走出站段通道） |
+| `poke` | poke.go | **事件类** | 戳一戳回复（@戳人者 + 随机文案，走出站段通道） |
+| `three_g` | three_g.go | **关键词触发类** | 消息含 3G/3g 时科普重邮 3G（@对方 + 固定文本，走出站段通道） |
 
 `welcome` 是**消费 QQ 事件的模范示例**——事件类插件均参照其结构开发。下文完整说明从上游事件接入到下游插件消费的链路。
 
@@ -28,7 +30,8 @@ NormalizedMessage（+ EventType / EventSubType / EventData）
   │  ③ 插件子树（第一层，优先）← 事件类插件在这里消费
   │     （未被插件接住的事件会继续滑向后继分支直至意图分析——因此事件插件必须存在）
   ▼
-插件管线 → AppendOutput → makeEventCallback → 网关发回群
+插件管线 → conduit.Set 出站段键（或 AppendOutput 纯文本）
+  → makeEventCallback → hub.SendSegments → 网关发回群
 ```
 
 ### 1. 上游：事件接收通道（gateway 层，一般无需改动）
@@ -49,7 +52,7 @@ NormalizedMessage（+ EventType / EventSubType / EventData）
 | `bot.event.sub_type` | string | 事件子类型，如 `approve` / `invite` |
 | `bot.event.data` | map[string]any | 事件全字段（user_id / group_id / operator_id / sub_type 等）|
 
-事件消息由事件专用回调 `makeEventCallback` 处理：处理出错只记日志不回复；正常完成时遍历输出发送（插件的欢迎文案由此发出）。
+事件消息由事件专用回调 `makeEventCallback` 处理：处理出错只记日志不回复；正常完成时发送管线输出（出站段优先，纯文本兜底，插件的欢迎消息由此发出）。
 
 ### 3. 下游：插件消费（本包，以 welcome 为模范示例）
 
@@ -121,14 +124,34 @@ func (pass *welcomePass) Execute(ctx *conduit.MessageContext) error {
         zap.String("group_id", ctx.GroupID),
     )
 
-    // 回复统一写入 AppendOutput，由引擎回调统一发送
-    conduit.AppendOutput(ctx, &conduit.Message{
-        UserID: ctx.UserID, GroupID: ctx.GroupID, IsGroup: ctx.IsGroup,
-        Content: welcomeMessages[rand.IntN(len(welcomeMessages))],
+    content := welcomeMessage
+    newUserID, _ := eventData["user_id"].(string)
+
+    // 缺 user_id（异常事件）：降级纯文本欢迎语，不 @ 任何人
+    if newUserID == "" {
+        conduit.AppendOutput(ctx, &conduit.Message{
+            UserID: ctx.UserID, GroupID: ctx.GroupID, IsGroup: ctx.IsGroup,
+            Content: content,
+        })
+        return nil
+    }
+
+    // 出站段通道：[@新人 + 固定文案 + 固定图片] 一条消息
+    conduit.Set(ctx, "bot.send.segments", []map[string]any{
+        {"type": "at",    "data": map[string]any{"user_id": newUserID}},
+        {"type": "text",  "data": map[string]any{"text": content}},
+        {"type": "image", "data": map[string]any{"file": welcomeImageURL}},
     })
     return nil
 }
 ```
+
+**出站段通道（富文本发送）**：普通文本用 `AppendOutput`；需要富媒体（at / image 组合）时用 `conduit.Set(ctx, "bot.send.segments", []map[string]any{...})` 写入 OneBot 原生段列表，由 bot 回调读取后按段发送（v11/v12 协议差异自动收敛，见 spec `lanmei-rich-send-spec.md` 方案 C）。规则：
+
+- 键 `"bot.send.segments"`，值 `[]map[string]any`，每段 `{"type": "...", "data": {...}}`，**顺序即发送顺序**
+- 永远按 OneBot 12 语义组装（at 段用 `user_id`），插件不感知协议
+- 段键存在（且非空）时回调只发段、忽略 Output；无键 / 类型不符 / 空列表时自动降级纯文本
+- 纯文本场景继续用 `AppendOutput`，两种方式互不冲突
 
 **为什么事件必须在插件子树消费**：插件子树挂在行为树 Selector 最前（优先级最高）。事件被插件接住后不会滑向后继分支——否则会落入意图分析，用空文本调 LLM 产生无关回复。
 
@@ -173,7 +196,7 @@ go run ./cmd/lanmei
 ## 硬性约定
 
 - 插件结构、注册顺序、Track 清理等规范详见 [PLUGIN_DEVELOPMENT.md](../../PLUGIN_DEVELOPMENT.md)（Go 内置插件章节）
-- 回复统一 `conduit.AppendOutput`，Pass 内禁止直接发送
+- 回复统一 `conduit.AppendOutput`（纯文本）或 `conduit.Set("bot.send.segments", 段列表)`（富文本），Pass 内禁止直接发送
 - 跨 Pass 传数据用 `conduit.Set/Get`，key 带插件前缀（如 `plugin.welcome.xxx`）
 - 事件键直接使用字符串字面量（键定义见 `internal/bot/passes.go`），**不 import bot / gateway 包**
 

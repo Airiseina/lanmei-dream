@@ -140,6 +140,8 @@ func setDefaults(v *viper.Viper) {
 	// 内置业务插件默认开启（配置驱动注册）
 	v.SetDefault("plugin.builtins.signin", true)
 	v.SetDefault("plugin.builtins.welcome", true)
+	v.SetDefault("plugin.builtins.poke", true)
+	v.SetDefault("plugin.builtins.three_g", true)
 
 	// 群聊 topic 系统默认值
 	v.SetDefault("bot.topic.enabled", true)

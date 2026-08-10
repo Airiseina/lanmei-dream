@@ -38,6 +38,10 @@ type PluginBuiltinsConfig struct {
 	Signin bool `mapstructure:"signin"`
 	// Welcome 入群欢迎插件
 	Welcome bool `mapstructure:"welcome"`
+	// Poke 戳一戳回复插件
+	Poke bool `mapstructure:"poke"`
+	// ThreeG 3G 关键词科普插件
+	ThreeG bool `mapstructure:"three_g"`
 	// Rank 签到积分排行榜插件
 	Rank bool `mapstructure:"rank"`
 	// Cat 猫猫图片插件

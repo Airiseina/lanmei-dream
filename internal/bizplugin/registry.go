@@ -92,6 +92,16 @@ func (r *BusinessRegistry) RegisterBuiltins() error {
 		return err
 	}
 
+	// ── 戳一戳回复插件 ──
+	if err := register(builtins.Poke, "poke", NewPokePlugin(logger)); err != nil {
+		return err
+	}
+
+	// ── 3G 关键词科普插件 ──
+	if err := register(builtins.ThreeG, "three_g", NewThreeGPlugin(logger)); err != nil {
+		return err
+	}
+
 	// ── 签到积分排行榜插件 ──
 	if err := register(builtins.Rank, "signin_rank", NewRankPlugin(logger)); err != nil {
 		return err
