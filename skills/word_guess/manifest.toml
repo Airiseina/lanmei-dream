@@ -1,0 +1,6 @@
+id = "word_guess"
+name = "猜单词破解"
+description = "破解猜单词游戏：根据字母数与部分位置的字母，猜出可能的英文单词（最多 3 个候选）"
+version = "1.0.0"
+author = "lanmei-dream"
+tags = ["猜单词", "游戏", "破解"]

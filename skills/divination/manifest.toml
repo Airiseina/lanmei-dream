@@ -1,0 +1,6 @@
+id = "divination"
+name = "梅花易数占卜"
+description = "梅花易数起卦断卦，分析求卦者的现状、过程、结果及可能发生的状况"
+version = "1.0.0"
+author = "lanmei-dream"
+tags = ["占卜", "玄学", "梅花易数"]

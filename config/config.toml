@@ -39,6 +39,8 @@ ncm_url = ""
 [plugin.builtins]
 signin = true      # 签到插件
 welcome = true     # 入群欢迎插件
+poke = true        # 戳一戳回复插件
+three_g = true     # 3G 关键词科普插件
 rank = true        # 签到积分排行榜插件
 cat = true         # 猫猫图片插件
 balogo = true      # 蔚蓝档案 LOGO 插件

@@ -24,6 +24,9 @@ const (
 	KeyIsSegment      = "bot.is_segment"   // bool 标记流式段落重入消息
 	KeyStreamChannel  = "bot.stream.ch"    // chan string 流式段落通道
 
+	// ── 出站段输出（data，插件经 conduit.Set 写入，回调读取后按段发送）──
+	KeySendSegments = "bot.send.segments" // []map[string]any OneBot 原生段列表（at/text/image 组合）
+
 	// ── 事件输入（Extra，由 OnMessage 注入，只读）──
 	KeyMessageType  = "bot.message_type"   // gateway.MessageType：message/notice/request
 	KeySegments     = "bot.segments"       // []gateway.NormalizedSegment 完整消息段

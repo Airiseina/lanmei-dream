@@ -6,3 +6,9 @@ enabled = true
 
 [skill.game_master]
 enabled = false
+
+[skill.divination]
+enabled = true
+
+[skill.word_guess]
+enabled = true

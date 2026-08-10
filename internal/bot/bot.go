@@ -1,6 +1,7 @@
 package bot
 
 import (
+	"encoding/json"
 	"errors"
 	"math/rand/v2"
 	"regexp"
@@ -324,7 +325,7 @@ func (b *Bot) OnMessage(msg *gateway.NormalizedMessage) {
 }
 
 // makeEventCallback 构造通知事件专用回调：事件处理出错时只记日志、绝不回复；
-// 正常完成时遍历 Output 发送（供未来事件消费插件写入输出，如入群欢迎）。
+// 正常完成时发送管线输出（出站段优先，纯文本兜底，供事件消费插件使用）。
 func (b *Bot) makeEventCallback(msg *gateway.NormalizedMessage) func(*conduit.MessageContext, error) {
 	return func(ctx *conduit.MessageContext, err error) {
 		if err != nil {
@@ -335,14 +336,12 @@ func (b *Bot) makeEventCallback(msg *gateway.NormalizedMessage) func(*conduit.Me
 			)
 			return
 		}
-		for _, out := range ctx.Output {
-			b.reply(msg, out.Content)
-		}
+		b.flushOutput(ctx, msg)
 	}
 }
 
 // makeResponseCallback 构造消息级回调，处理两种情况：
-//   - 正常完成（未 yield）：遍历 ctx.Output 逐条发送
+//   - 正常完成（未 yield）：发送管线输出（出站段优先，纯文本兜底）
 //   - 流式挂起（yield）：启动 goroutine 消费段落通道，逐条重入引擎投递
 func (b *Bot) makeResponseCallback(msg *gateway.NormalizedMessage) func(*conduit.MessageContext, error) {
 	return func(ctx *conduit.MessageContext, err error) {
@@ -357,10 +356,50 @@ func (b *Bot) makeResponseCallback(msg *gateway.NormalizedMessage) func(*conduit
 			return
 		}
 		// 正常回复：发送所有输出消息
-		for _, out := range ctx.Output {
-			b.reply(msg, out.Content)
-		}
+		b.flushOutput(ctx, msg)
 	}
+}
+
+// flushOutput 发送管线产生的输出：出站段优先、纯文本兜底。
+//
+//   - 插件经 conduit.Set 写入出站段键（KeySendSegments）→ 按段列表发送（at/text/image 组合）
+//   - 否则遍历 ctx.Output 逐条纯文本回复（历史行为，老插件零影响）
+func (b *Bot) flushOutput(ctx *conduit.MessageContext, msg *gateway.NormalizedMessage) {
+	if b.trySendSegments(ctx, msg) {
+		return
+	}
+	for _, out := range ctx.Output {
+		b.reply(msg, out.Content)
+	}
+}
+
+// trySendSegments 尝试按插件写入的出站段列表发送。
+//
+// 插件永远按 OneBot 12 语义组装段（at 段用 user_id），段形状与 MessageSegmentV12 等价，
+// 经 JSON 转换后复用 gateway.ParseSegmentsV12 转标准段，再经 hub.SendSegments 发出
+// （v11 连接由 ToMessageSegmentV11 自动处理 at 段 user_id→qq 与协议动作）。
+//
+// 返回 true 表示段路径已接管输出（发送失败也只记日志，与 reply 一致）；
+// 段键缺失 / 类型不符 / 段列表为空时返回 false，由调用方走纯文本兜底。
+func (b *Bot) trySendSegments(ctx *conduit.MessageContext, msg *gateway.NormalizedMessage) bool {
+	raw, ok := conduit.Get[[]map[string]any](ctx, KeySendSegments)
+	if !ok || len(raw) == 0 {
+		return false
+	}
+	buf, err := json.Marshal(raw)
+	if err != nil {
+		b.logger.Warn("bot: 出站段序列化失败，降级纯文本", zap.Error(err))
+		return false
+	}
+	var segs []gateway.MessageSegmentV12
+	if err := json.Unmarshal(buf, &segs); err != nil {
+		b.logger.Warn("bot: 出站段形状非法，降级纯文本", zap.Error(err))
+		return false
+	}
+	if err := b.gw.Hub().SendSegments(msg.ConnID, msg, gateway.ParseSegmentsV12(segs)); err != nil {
+		b.logger.Error("bot: 段消息发送失败", zap.String("conn", msg.ConnID), zap.Error(err))
+	}
+	return true
 }
 
 // streamSegments 消费段落通道，逐条创建子消息重入引擎。
