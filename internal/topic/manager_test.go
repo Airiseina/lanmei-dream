@@ -50,12 +50,21 @@ func groupMsg(groupID, userID, content string, at ...string) *IncomingMsg {
 	}
 }
 
+// judgeStrong / judgeWeak 构造 LLM 提及判定（强/弱）。
+func judgeStrong(conf float64) *LinguisticJudge {
+	return &LinguisticJudge{IsTalkingToBot: true, Role: RoleVocative, Confidence: conf}
+}
+
+func judgeWeak(conf float64) *LinguisticJudge {
+	return &LinguisticJudge{IsTalkingToBot: true, Role: RoleAffection, Confidence: conf}
+}
+
 func groupTopics(m *Manager) []*Topic { return m.groups[m.groupKey("qq", testGroup)] }
 
 // TestManagerStrongMentionCreatesTopic 强提及（at+请求）→ 创建话题并回复。
 func TestManagerStrongMentionCreatesTopic(t *testing.T) {
 	m := testManager(nil, nil, nil)
-	d := m.HandleGroupMessage(context.Background(), groupMsg(testGroup, "u1", "@蓝妹 帮我查一下天气", "bot_self"))
+	d := m.HandleGroupMessage(context.Background(), groupMsg(testGroup, "u1", "@蓝妹 帮我查一下天气", "bot_self"), nil)
 	if !d.Reply {
 		t.Fatal("strong mention should reply")
 	}
@@ -73,11 +82,27 @@ func TestManagerStrongMentionCreatesTopic(t *testing.T) {
 	}
 }
 
+// TestManagerJudgeStrongMentionCreatesTopic LLM 提及判定（高置信度）→ 强提及 → 创建话题并回复。
+// 验证"在吗蓝妹"这类硬编码规则无法识别的自然语言提及可被 LLM 判为强提及。
+func TestManagerJudgeStrongMentionCreatesTopic(t *testing.T) {
+	m := testManager(nil, nil, nil)
+	d := m.HandleGroupMessage(context.Background(), groupMsg(testGroup, "u1", "在吗蓝妹"), judgeStrong(0.93))
+	if !d.Reply {
+		t.Fatal("linguistic strong mention should reply")
+	}
+	if d.Mention != MentionLinguistic {
+		t.Fatalf("mention mode = %v, want linguistic", d.Mention)
+	}
+	if d.Topic == nil || !d.Topic.IsActive() {
+		t.Fatalf("topic state = %v, want active", d.Topic)
+	}
+}
+
 // TestManagerReenterExistingTopic 再次强提及 → 重入同一话题，不新建。
 func TestManagerReenterExistingTopic(t *testing.T) {
 	m := testManager(nil, nil, nil)
-	d1 := m.HandleGroupMessage(context.Background(), groupMsg(testGroup, "u1", "@蓝妹 帮我查天气", "bot_self"))
-	d2 := m.HandleGroupMessage(context.Background(), groupMsg(testGroup, "u2", "蓝妹，也帮我看看"))
+	d1 := m.HandleGroupMessage(context.Background(), groupMsg(testGroup, "u1", "@蓝妹 帮我查天气", "bot_self"), nil)
+	d2 := m.HandleGroupMessage(context.Background(), groupMsg(testGroup, "u2", "蓝妹，也帮我看看"), judgeStrong(0.95))
 	if !d2.Reply || d2.Topic == nil || d2.Topic.ID != d1.Topic.ID {
 		t.Fatalf("reenter should hit same topic: got %v, first %v", d2.Topic, d1.Topic)
 	}
@@ -92,12 +117,12 @@ func TestManagerReenterExistingTopic(t *testing.T) {
 // TestManagerTopicSwitchDetachesMember 成员话题切换 → 脱离原话题，成员清空立即冷却。
 func TestManagerTopicSwitchDetachesMember(t *testing.T) {
 	m := testManager(&config.TopicConfig{TopicWindowMsgs: 20, CoolingTimeoutMinutes: 1, SemanticThreshold: 0.5}, nil, &mockEmbedder{dim: 64})
-	d := m.HandleGroupMessage(context.Background(), groupMsg(testGroup, "u1", "@蓝妹 帮我看看周末爬山装备怎么准备", "bot_self"))
+	d := m.HandleGroupMessage(context.Background(), groupMsg(testGroup, "u1", "@蓝妹 帮我看看周末爬山装备怎么准备", "bot_self"), nil)
 	if !d.Reply {
 		t.Fatal("strong mention should reply")
 	}
-	// 语义不相关消息 → 切换话题：脱离原话题、成员清空 → 立即冷却
-	m.HandleGroupMessage(context.Background(), groupMsg(testGroup, "u1", "今晚足球比赛谁赢了"))
+	// 语义不相关消息（未提及）→ 成员话题切换：脱离原话题、成员清空 → 立即冷却
+	m.HandleGroupMessage(context.Background(), groupMsg(testGroup, "u1", "今晚足球比赛谁赢了"), nil)
 	topics := groupTopics(m)
 	if len(topics) != 1 || topics[0].State != TopicCooling {
 		t.Fatalf("switch should cool topic: topics=%d state=%v", len(topics), topics[0].State)
@@ -110,19 +135,19 @@ func TestManagerTopicSwitchDetachesMember(t *testing.T) {
 // TestManagerCoolingAfterWindow 窗口内无触碰 → 转冷却（消息序列窗口判定）。
 func TestManagerCoolingAfterWindow(t *testing.T) {
 	m := testManager(nil, nil, nil)
-	d := m.HandleGroupMessage(context.Background(), groupMsg(testGroup, "u1", "@蓝妹 在吗", "bot_self"))
+	d := m.HandleGroupMessage(context.Background(), groupMsg(testGroup, "u1", "@蓝妹 在吗", "bot_self"), nil)
 	if !d.Reply {
 		t.Fatal("strong mention should reply")
 	}
 	// 窗口内（20 条无触碰）→ 保持活跃
 	for i := 0; i < 20; i++ {
-		m.HandleGroupMessage(context.Background(), groupMsg(testGroup, "other", "闲聊"+strconv.Itoa(i)))
+		m.HandleGroupMessage(context.Background(), groupMsg(testGroup, "other", "闲聊"+strconv.Itoa(i)), nil)
 	}
 	if topics := groupTopics(m); topics[0].State != TopicActive {
 		t.Fatalf("within window: state=%v, want active", topics[0].State)
 	}
 	// 超出窗口（第 21 条）→ 冷却
-	m.HandleGroupMessage(context.Background(), groupMsg(testGroup, "other", "闲聊21"))
+	m.HandleGroupMessage(context.Background(), groupMsg(testGroup, "other", "闲聊21"), nil)
 	if topics := groupTopics(m); topics[0].State != TopicCooling {
 		t.Fatalf("after window: state=%v, want cooling", topics[0].State)
 	}
@@ -131,17 +156,17 @@ func TestManagerCoolingAfterWindow(t *testing.T) {
 // TestManagerReenterRecoversCoolingTopic 冷却话题被强提及 → 恢复活跃。
 func TestManagerReenterRecoversCoolingTopic(t *testing.T) {
 	m := testManager(nil, nil, nil)
-	d1 := m.HandleGroupMessage(context.Background(), groupMsg(testGroup, "u1", "@蓝妹 在吗", "bot_self"))
+	d1 := m.HandleGroupMessage(context.Background(), groupMsg(testGroup, "u1", "@蓝妹 在吗", "bot_self"), nil)
 	if !d1.Reply {
 		t.Fatal("strong mention should reply")
 	}
 	for i := 0; i < 21; i++ {
-		m.HandleGroupMessage(context.Background(), groupMsg(testGroup, "other", "闲聊"+strconv.Itoa(i)))
+		m.HandleGroupMessage(context.Background(), groupMsg(testGroup, "other", "闲聊"+strconv.Itoa(i)), nil)
 	}
 	if topics := groupTopics(m); topics[0].State != TopicCooling {
 		t.Fatalf("precondition: state=%v, want cooling", topics[0].State)
 	}
-	d2 := m.HandleGroupMessage(context.Background(), groupMsg(testGroup, "u1", "@蓝妹 接着聊刚才的可以吗", "bot_self"))
+	d2 := m.HandleGroupMessage(context.Background(), groupMsg(testGroup, "u1", "接着聊刚才的可以吗"), judgeStrong(0.95))
 	if !d2.Reply || d2.Topic == nil || d2.Topic.ID != d1.Topic.ID {
 		t.Fatalf("reenter should hit same topic, got %v", d2.Topic)
 	}
@@ -150,31 +175,63 @@ func TestManagerReenterRecoversCoolingTopic(t *testing.T) {
 	}
 }
 
-// TestManagerPassiveMentionPullsInAndCreditReplies 被动提及 → 拉入但不回复；
-// 授配额后下一条相关消息自动回复；配额消耗后静默。
-func TestManagerPassiveMentionPullsInAndCreditReplies(t *testing.T) {
+// TestManagerWeakMentionPullsInAndCreditReplies 弱提及（LLM 判定低置信度）：
+// 非成员 → 拉入但不回复、授配额；成员续聊有配额 → 回复；
+// 核心回归：配额只在 Bot 实际回复（RecordBotReply）时消耗，
+// "决策回复但未实际回复"不吞配额 → 下一条相关消息仍回复。
+func TestManagerWeakMentionPullsInAndCreditReplies(t *testing.T) {
 	m := testManager(&config.TopicConfig{TopicWindowMsgs: 20, CoolingTimeoutMinutes: 1, CreditEnabled: true}, nil, nil)
-	d := m.HandleGroupMessage(context.Background(), groupMsg(testGroup, "u1", "你们知道蓝妹吗"))
-	if d.Reply {
-		t.Fatal("passive mention should not reply immediately")
+
+	// 非成员弱提及 → 拉入话题（静默）、授配额
+	d1 := m.HandleGroupMessage(context.Background(), groupMsg(testGroup, "u1", "你们知道蓝妹吗"), judgeWeak(0.5))
+	if d1.Reply {
+		t.Fatal("weak mention (non-member) should not reply immediately")
 	}
-	if d.Topic == nil || !d.Topic.isMember("u1") {
-		t.Fatal("passive mention should pull user into topic")
+	if d1.Topic == nil || !d1.Topic.isMember("u1") {
+		t.Fatal("weak mention should pull user into topic")
 	}
-	d2 := m.HandleGroupMessage(context.Background(), groupMsg(testGroup, "u1", "嗯 那她一般什么时候在线"))
+
+	// 成员续聊：有配额（弱提及拉入授 1）→ 应回复
+	d2 := m.HandleGroupMessage(context.Background(), groupMsg(testGroup, "u1", "嗯 那她一般什么时候在线"), judgeWeak(0.5))
 	if !d2.Reply {
 		t.Fatal("member continue with credit should reply")
 	}
-	d3 := m.HandleGroupMessage(context.Background(), groupMsg(testGroup, "u1", "好吧"))
-	if d3.Reply {
-		t.Fatal("member continue without credit should stay silent")
+
+	// 模拟"决策回复但未实际回复"（未走 RecordBotReply）：配额不得被误扣，
+	// 下一条相关消息仍应回复（修复"运行一段时间后不再响应"）
+	d3 := m.HandleGroupMessage(context.Background(), groupMsg(testGroup, "u1", "好吧 那谢谢啦"), judgeWeak(0.5))
+	if !d3.Reply {
+		t.Fatal("credit should not be consumed unless actually replied")
+	}
+
+	// 真实回复成功后：配额保持可用，下一条相关消息继续回复
+	m.RecordBotReply(context.Background(), "qq", testGroup, d1.Topic.ID, "bot_self", "u1", "她一般晚上在线")
+	d4 := m.HandleGroupMessage(context.Background(), groupMsg(testGroup, "u1", "好的 谢谢"), judgeWeak(0.5))
+	if !d4.Reply {
+		t.Fatal("member continue after bot reply (credit) should reply")
+	}
+}
+
+// TestManagerJudgeNoneSilent LLM 判定未在跟 bot 说话（如第三人称转述）→ 静默，不回复。
+func TestManagerJudgeNoneSilent(t *testing.T) {
+	m := testManager(&config.TopicConfig{TopicWindowMsgs: 20, CoolingTimeoutMinutes: 1, CreditEnabled: true}, nil, nil)
+	d := m.HandleGroupMessage(context.Background(), groupMsg(testGroup, "u1", "你们知道蓝妹吗"),
+		&LinguisticJudge{IsTalkingToBot: false, Role: RoleRelay, Confidence: 0.9})
+	if d.Reply {
+		t.Fatal("relay mention (not talking to bot) should be silent")
+	}
+	if d.Mention != MentionNone {
+		t.Fatalf("mention mode = %v, want none", d.Mention)
+	}
+	if len(groupTopics(m)) != 0 {
+		t.Fatal("no topic should be created for non-mention message")
 	}
 }
 
 // TestManagerRecordBotReplyGrantsCredit Bot 回复记录 → 消息入窗 + 授配额。
 func TestManagerRecordBotReplyGrantsCredit(t *testing.T) {
 	m := testManager(&config.TopicConfig{TopicWindowMsgs: 20, CoolingTimeoutMinutes: 1, CreditEnabled: true}, nil, nil)
-	d := m.HandleGroupMessage(context.Background(), groupMsg(testGroup, "u1", "@蓝妹 帮我看看今天天气怎么样", "bot_self"))
+	d := m.HandleGroupMessage(context.Background(), groupMsg(testGroup, "u1", "@蓝妹 帮我看看今天天气怎么样", "bot_self"), nil)
 	if !d.Reply {
 		t.Fatal("strong mention should reply")
 	}
@@ -189,7 +246,7 @@ func TestManagerRecordBotReplyGrantsCredit(t *testing.T) {
 	if !foundBot {
 		t.Fatal("bot reply should be recorded in topic window")
 	}
-	d2 := m.HandleGroupMessage(context.Background(), groupMsg(testGroup, "u1", "那明天呢"))
+	d2 := m.HandleGroupMessage(context.Background(), groupMsg(testGroup, "u1", "那明天呢"), judgeWeak(0.5))
 	if !d2.Reply {
 		t.Fatal("member continue after bot reply (credit) should reply")
 	}
@@ -200,7 +257,7 @@ func TestManagerArchiveCoolingTopic(t *testing.T) {
 	store := memory.New()
 	arch := NewArchiver(nil, nil, nil, nil, zap.NewNop())
 	m := NewManager(&config.TopicConfig{TopicWindowMsgs: 20, CoolingTimeoutMinutes: 1}, store, nil, nil, arch, nil, zap.NewNop())
-	d := m.HandleGroupMessage(context.Background(), groupMsg(testGroup, "u1", "@蓝妹 在吗", "bot_self"))
+	d := m.HandleGroupMessage(context.Background(), groupMsg(testGroup, "u1", "@蓝妹 在吗", "bot_self"), nil)
 	if !d.Reply {
 		t.Fatal("strong mention should reply")
 	}
@@ -224,7 +281,7 @@ func TestManagerArchiveCoolingTopic(t *testing.T) {
 func TestManagerRestoreFromStore(t *testing.T) {
 	store := memory.New()
 	m1 := testManager(nil, store, nil)
-	d := m1.HandleGroupMessage(context.Background(), groupMsg(testGroup, "u1", "@蓝妹 你好吗", "bot_self"))
+	d := m1.HandleGroupMessage(context.Background(), groupMsg(testGroup, "u1", "@蓝妹 你好吗", "bot_self"), nil)
 	if !d.Reply {
 		t.Fatal("strong mention should reply")
 	}
@@ -271,7 +328,7 @@ func TestManagerConcurrentHandling(t *testing.T) {
 					content = "@蓝妹 帮我看看" + strconv.Itoa(i)
 					at = []string{"bot_self"}
 				}
-				m.HandleGroupMessage(context.Background(), groupMsg(testGroup, uid, content, at...))
+				m.HandleGroupMessage(context.Background(), groupMsg(testGroup, uid, content, at...), nil)
 			}
 		}(w)
 	}

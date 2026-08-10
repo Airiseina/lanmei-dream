@@ -44,11 +44,34 @@ const (
 //   - CommandName：当 Intent=command 时，命中的命令名；否则为空
 //   - ToolName：当 Intent=tool 时，命中的工具名；否则为空
 //   - Confidence：LLM 对此次分类的置信度（0~1），低于阈值时可触发二次确认
+//
+// 群聊提及判断字段（同一 LLM 调用返回，用于话题系统"是否应回复"决策）：
+//   - IsTalkingToBot：用户是否在"跟机器人说话"（期望机器人回应）
+//   - MentionRole：提及的语言学方式（见 topic 包 MentionRole，字符串表示）
+//   - MentionConfidence：提及判断的置信度（0~1）
 type Result struct {
 	Intent      Intent  `json:"intent"`     // 意图类型
 	CommandName string  `json:"command"`    // 当 Intent=command 时，命中的命令名
 	ToolName    string  `json:"tool"`       // 当 Intent=tool 时，命中的工具名
-	Confidence  float64 `json:"confidence"` // 置信度 0~1
+	Confidence  float64 `json:"confidence"` // 意图置信度 0~1
+
+	IsTalkingToBot    bool    `json:"is_talking_to_bot,omitempty"`  // 群聊：是否在跟机器人说话
+	MentionRole       string  `json:"mention_role,omitempty"`       // 群聊：提及角色（topic.MentionRole）
+	MentionConfidence float64 `json:"mention_confidence,omitempty"` // 群聊：提及置信度 0~1
+}
+
+// JudgeMessage 群聊提及判断上下文中的一条历史消息。
+// 仅用于辅助 LLM 做指代消解（如"那你呢"中的"你"是否指机器人）。
+type JudgeMessage struct {
+	Speaker string // 说话者标识："user"/"bot"（或用户昵称）
+	Content string
+}
+
+// JudgeContext 群聊提及判断的注入上下文。
+// 仅在群聊消息中传入；私聊传 nil（此时不进行提及判断）。
+type JudgeContext struct {
+	BotNames []string       // 机器人名字与别名（如 ["蓝妹","蓝莓"]）
+	Recent   []JudgeMessage // 最近对话（不含当前消息），用于指代消解
 }
 
 // Analyzer 通过 LLM 分析用户消息的意图。
@@ -106,11 +129,12 @@ func (a *Analyzer) UpdateTools(tools []ToolDef) {
 	a.tools = tools
 }
 
-// Analyze 分析用户消息的意图。
+// Analyze 分析用户消息的意图；群聊消息传入 judgeCtx 时，
+// 同一 LLM 调用同时完成"是否在跟机器人说话"的提及判断。
 //
 // 处理流程：
 //  1. LLM 未配置 → 降级返回 IntentChat（所有消息走聊天）
-//  2. 构建意图分析 system prompt（包含可用命令和工具列表）
+//  2. 构建意图分析 system prompt（包含可用命令和工具列表，群聊时含提及判断规则）
 //  3. 调用 LLM 进行意图分类
 //  4. 解析 LLM 返回的 JSON 结果
 //
@@ -120,23 +144,29 @@ func (a *Analyzer) UpdateTools(tools []ToolDef) {
 // 参数：
 //   - ctx: 上下文
 //   - userMsg: 用户消息文本
+//   - judgeCtx: 群聊提及判断上下文（私聊传 nil）
 //
 // 返回：
 //   - *Result: 意图分析结果
 //   - error: LLM 调用失败时返回错误
-func (a *Analyzer) Analyze(ctx context.Context, userMsg string) (*Result, error) {
+func (a *Analyzer) Analyze(ctx context.Context, userMsg string, judgeCtx *JudgeContext) (*Result, error) {
 	if a.llmClient == nil {
 		// LLM 未配置，降级：所有消息都当聊天处理
 		return &Result{Intent: IntentChat, Confidence: 1.0}, nil
 	}
 
-	// 构建包含命令和工具信息的 system prompt
-	prompt := a.buildPrompt()
+	// 构建包含命令、工具（群聊时含提及判断规则）的 system prompt
+	prompt := a.buildPrompt(judgeCtx)
+	user := userMsg
+	if judgeCtx != nil && len(judgeCtx.Recent) > 0 {
+		// 注入最近对话供 LLM 做指代消解（"那你呢"中的"你"等）
+		user = formatJudgeUser(userMsg, judgeCtx.Recent)
+	}
 
 	resp, err := a.llmClient.Chat(ctx, &llm.ChatRequest{
 		Messages: []llm.Message{
 			{Role: llm.RoleSystem, Content: prompt},
-			{Role: llm.RoleUser, Content: userMsg},
+			{Role: llm.RoleUser, Content: user},
 		},
 	})
 	if err != nil {
@@ -146,20 +176,38 @@ func (a *Analyzer) Analyze(ctx context.Context, userMsg string) (*Result, error)
 	return parseResult(resp.Content)
 }
 
+// formatJudgeUser 组装含群聊上下文的用户消息（当前消息在前，上下文在后）。
+func formatJudgeUser(userMsg string, recent []JudgeMessage) string {
+	var sb strings.Builder
+	sb.WriteString("当前消息（需要判断）：\n")
+	sb.WriteString(userMsg)
+	sb.WriteString("\n\n## 群聊上下文（最近对话，用于指代消解）\n")
+	for _, m := range recent {
+		sb.WriteString(m.Speaker)
+		sb.WriteString(": ")
+		sb.WriteString(m.Content)
+		sb.WriteString("\n")
+	}
+	sb.WriteString("\n请对「当前消息」进行意图与提及判断。")
+	return sb.String()
+}
+
 // buildPrompt 构建意图分析的 system prompt。
 //
-// prompt 包含四个部分：
-//  1. 角色定义：告知 LLM 它是一个意图分类器
+// prompt 包含五个部分：
+//  1. 角色定义：告知 LLM 它是一个意图分类器（群聊时同时是提及判断器）
 //  2. 可用意图：列出 chat/command/tool/ignore 四种意图及含义
 //  3. 可用命令/工具：从 Analyzer 的 commands 和 tools 列表动态注入
-//  4. 输出格式：要求 LLM 仅输出 JSON，并提供示例
+//  4. 群聊提及判断规则：仅 judgeCtx 非 nil 时注入（覆盖呼格/主语/祈使宾语/
+//     关系从句/条件句/话题标记/情感对象/转述等句式 + 指代消解说明）
+//  5. 输出格式：要求 LLM 仅输出 JSON，并提供示例
 //
 // 这种 prompt 设计使 LLM 能基于命令/工具的语义描述进行匹配，
 // 而非简单的关键词匹配，从而提高意图识别的准确率。
-func (a *Analyzer) buildPrompt() string {
+func (a *Analyzer) buildPrompt(judgeCtx *JudgeContext) string {
 	var sb strings.Builder
 
-	sb.WriteString(`你是一个意图分类器。根据用户消息判断其意图，返回 JSON 格式结果。
+	sb.WriteString(`你是一个意图分类器，群聊消息同时判断"是否在跟机器人说话"。根据用户消息判断其意图，返回 JSON 格式结果。
 
 ## 可用意图
 - "chat": 闲聊、提问、角色扮演对话
@@ -189,16 +237,45 @@ func (a *Analyzer) buildPrompt() string {
 		}
 	}
 
+	// 群聊提及判断规则（judgeCtx 非 nil 时注入）
+	if judgeCtx != nil && len(judgeCtx.BotNames) > 0 {
+		sb.WriteString("\n## 群聊提及判断\n")
+		sb.WriteString("机器人名称为：")
+		sb.WriteString(strings.Join(judgeCtx.BotNames, " / "))
+		sb.WriteString("。\n")
+		sb.WriteString(`判断用户是否"在跟机器人说话"（即期望机器人回应），并给出提及方式（mention_role）：
+- "at": 直接 @ 机器人
+- "vocative": 呼格，直接叫名字（"蓝妹，在吗"）
+- "subject": 机器人是句子主语（"蓝妹去不去爬山"）
+- "imperative_object": 让机器人做事的祈使/请求宾语（"帮我签到"）
+- "relative_clause": 关系从句提及（"说蓝妹好的那个人是谁"）
+- "conditional": 条件句/假设句提及（"如果蓝妹在就好了"）
+- "topic_marker": 话题标记式提及（"说到蓝妹…"）
+- "affection": 情感/评价对象（"蓝莓我喜欢你"、"蓝妹真可爱"）
+- "relay": 传话/第三人称提及，不期望机器人回应（"帮我告诉蓝妹"、"你们知道蓝妹吗"）
+- "none": 未提及机器人
+
+判定 is_talking_to_bot 的规则：
+- 直接称呼、让机器人做事、向机器人提问、表达对机器人的情感 → true
+- 仅向他人提及/转述机器人 → false
+- 完全不涉及机器人 → false
+- 指代消解：结合用户消息中的"群聊上下文"判断"你/您/咱"等是否指代机器人（如"那你呢"、"你刚刚说的"）；上下文中的 bot 发言即机器人的话
+`)
+	}
+
 	sb.WriteString(`
 ## 输出格式
 仅输出 JSON，不要其他内容：
-{"intent":"chat|command|tool|ignore","command":"命令名（仅 intent=command 时填写）","tool":"工具名（仅 intent=tool 时填写）","confidence":0.95}
+{"intent":"chat|command|tool|ignore","command":"命令名（仅 intent=command 时填写）","tool":"工具名（仅 intent=tool 时填写）","confidence":0.95,"is_talking_to_bot":true,"mention_role":"at|vocative|subject|imperative_object|relative_clause|conditional|topic_marker|affection|relay|none","mention_confidence":0.9}
+（私聊无群聊上下文时，is_talking_to_bot / mention_role / mention_confidence 字段省略即可）
 
 ## 示例
 用户: "你好呀" → {"intent":"chat","command":"","tool":"","confidence":0.98}
 用户: "帮我签到" → {"intent":"command","command":"签到","tool":"","confidence":0.95}
 用户: "今天天气怎么样" → {"intent":"tool","command":"","tool":"weather","confidence":0.9}
 用户: "[动画表情]" → {"intent":"ignore","command":"","tool":"","confidence":0.9}
+群聊 用户: "蓝妹在吗" → {"intent":"chat","command":"","tool":"","confidence":0.95,"is_talking_to_bot":true,"mention_role":"vocative","mention_confidence":0.98}
+群聊 用户: "你们知道蓝妹吗" → {"intent":"chat","command":"","tool":"","confidence":0.8,"is_talking_to_bot":false,"mention_role":"relay","mention_confidence":0.9}
 `)
 
 	return sb.String()
@@ -237,5 +314,20 @@ func parseResult(raw string) (*Result, error) {
 		result.Intent = IntentChat
 	}
 
+	// 置信度字段 clamp 到 [0,1]，防止 LLM 返回越界值
+	result.Confidence = clamp01(result.Confidence)
+	result.MentionConfidence = clamp01(result.MentionConfidence)
+
 	return &result, nil
+}
+
+// clamp01 将浮点数约束到 [0,1]。
+func clamp01(v float64) float64 {
+	if v < 0 {
+		return 0
+	}
+	if v > 1 {
+		return 1
+	}
+	return v
 }

@@ -52,7 +52,10 @@ func Setup(ctx context.Context, dbCfg *config.DatabaseConfig, redisCfg *config.R
 	}
 	inf.Redis = rdb
 	inf.StateStore = NewRedisStore(rdb, "conduit")
-	logger.Info("Redis 已连接")
+	// 用户映射缓存：高频消息场景下每条消息都会 GetOrCreateUser（角色扮演/话题/命令），
+	// 命中缓存免查 users 表，缓解数据库压力（防击穿）
+	db.SetUserCache(&userCacheRedis{client: rdb, ttl: userCacheTTL})
+	logger.Info("Redis 已连接", zap.Bool("user_cache", true))
 
 	// ── RustFS 对象存储（多媒体缓存）──
 	if mediaCfg != nil && mediaCfg.Endpoint != "" {

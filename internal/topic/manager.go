@@ -15,6 +15,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/DaWesen/lanmei-dream/internal/ai/embedding"
+	"github.com/DaWesen/lanmei-dream/internal/ai/intent"
 	"github.com/DaWesen/lanmei-dream/internal/ai/llm"
 	"github.com/DaWesen/lanmei-dream/internal/config"
 )
@@ -30,8 +31,8 @@ const maxArchiveAttempts = 2
 // maxLabelRunes 话题标签最大长度（rune）。
 const maxLabelRunes = 24
 
-// recheckSampleDefault llm_recheck_interval_msgs 未配置时的默认抽样间隔。
-const recheckSampleDefault = 10
+// judgeContextMsgs 供提及判断（指代消解）注入的最近对话条数。
+const judgeContextMsgs = 6
 
 // topicIndexKey 持久化索引键：记录所有存在活跃/冷却话题的群，供启动恢复。
 const topicIndexKey = "topic:index"
@@ -39,13 +40,14 @@ const topicIndexKey = "topic:index"
 // Manager 群聊话题（Topic）状态管理器。
 //
 // 职责：
-//   - HandleGroupMessage：对每条群消息做"是否应回复"的确定性决策（提及规则 → 语义 → 成员制）；
+//   - HandleGroupMessage：对每条群消息做"是否应回复"的决策
+//     （at 精确命中恒为强提及；其余由 LLM 提及判断 LinguisticJudge 划分强/弱）；
 //   - 维护每个群的话题状态机（Active → Cooling → Archived）与成员、消息窗口、语义中心；
 //   - 持久化到 conduit.StateStore（Redis）：话题状态 JSON + 群索引，支持重启恢复；
 //   - 后台扫描：冷却超时话题异步归档到记忆层。
 //
 // 并发模型：单 Manager 实例；HandleGroupMessage / RecordBotReply / 后台协程之间
-// 通过内部读写锁互斥。网络调用（embedding / LLM 复核）在加锁前完成，避免长阻塞。
+// 通过内部读写锁互斥。网络调用（embedding）在加锁前完成，避免长阻塞。
 type Manager struct {
 	mu        sync.RWMutex
 	groups    map[string][]*Topic // groupKey(platform:groupID) → 话题列表
@@ -53,13 +55,11 @@ type Manager struct {
 	indexed   map[string]bool     // groupKey → 是否已登记到持久化索引（避免重复读 Redis）
 	store     conduit.StateStore  // 状态存储（Redis），nil 时仅内存运行
 	emb       embedding.Embedder  // 语义判定（可 nil，nil 时降级为成员制）
-	llm       llm.LLMClient       // 弱信号复核 + 话题标签懒生成（可 nil）
-	detector  *Detector
-	archive   *Archiver // 冷却归档器（可 nil，nil 时超时直接丢弃）
+	llm       llm.LLMClient       // 话题标签懒生成（可 nil）
+	archive   *Archiver           // 冷却归档器（可 nil，nil 时超时直接丢弃）
 	cfg       *config.TopicConfig
-	nicknames []string // Bot 名字与别名（提及检测用）
+	nicknames []string // Bot 名字与别名（注入提及判断 LLM 的上下文，如 ["蓝妹","蓝莓"]）
 	logger    *zap.Logger
-	recheckN  atomic.Int64   // LLM 复核抽样计数器
 	started   atomic.Bool    // Start 只执行一次
 	wg        sync.WaitGroup // 后台协程（标签生成/归档扫描）
 }
@@ -84,7 +84,6 @@ func NewManager(cfg *config.TopicConfig, store conduit.StateStore, emb embedding
 		store:     store,
 		emb:       emb,
 		llm:       llmClient,
-		detector:  NewDetector(),
 		archive:   arch,
 		cfg:       cfg,
 		nicknames: nicknames,
@@ -96,15 +95,16 @@ func NewManager(cfg *config.TopicConfig, store conduit.StateStore, emb embedding
 
 // HandleGroupMessage 对一条群消息做决策：是否应回复、命中/创建的话题、提及模式。
 //
-// 决策顺序（成本从低到高）：
-//  1. 强提及（at/呼格/祈使）或 LLM 复核通过的弱提及 → 创建/重入话题并回复；
-//  2. 被动提及（名字作主语/宾语）且非成员 → 拉入话题（不立即回复，授回复配额）；
-//  3. 成员续聊（语义相关）→ 按回复配额决定是否回复；
-//  4. 成员话题切换 → 脱离原话题，成员清空则冷却；
+// judge 为意图分析 LLM 调用返回的提及判定（nil 表示未提供/LLM 不可用）：
+//  1. at（平台 ID 精确命中）→ 恒强提及，创建/重入话题并回复（不依赖 judge）；
+//  2. judge.IsTalkingToBot 且置信度达强阈值 → 强提及，同上；
+//  3. judge.IsTalkingToBot 且置信度达弱阈值 → 弱提及：非成员拉入话题（静默，授配额），
+//     成员按回复配额续聊（配额在 Bot 实际回复成功时消耗/授予）；
+//  4. 未提及但为成员 → 语义相关性判定：不相关则脱离话题（话题切换），相关则仅入窗；
 //  5. 冷却检查：窗口内无触碰的话题转冷却。
 //
-// 注意：向量化与 LLM 复核为网络调用，在加锁前完成（只依赖消息本身）。
-func (m *Manager) HandleGroupMessage(ctx context.Context, msg *IncomingMsg) *Decision {
+// 注意：向量化为网络调用，在加锁前完成（只依赖消息本身）。
+func (m *Manager) HandleGroupMessage(ctx context.Context, msg *IncomingMsg, judge *LinguisticJudge) *Decision {
 	if m == nil || msg == nil || msg.GroupID == "" {
 		return &Decision{}
 	}
@@ -114,12 +114,10 @@ func (m *Manager) HandleGroupMessage(ctx context.Context, msg *IncomingMsg) *Dec
 	}
 	gk := m.groupKey(msg.Platform, msg.GroupID)
 
-	// 提及检测（rune 规则，无网络）
-	mention := m.detector.Detect(msg.Content, msg.AtTargets, &BotIdentity{SelfID: msg.SelfID, Nicknames: m.nicknames})
+	// 提及分类：at 恒强；其余按 LLM 提及判断（LinguisticJudge）划分强/弱（无网络）
+	mention := m.classifyMention(msg, judge)
 	// 语义向量（每条消息最多一次 embedding，所有判定路径复用）
 	vec, vecOK := m.embedMessage(ctx, msg)
-	// LLM 弱信号复核（默认关闭；开启时按抽样限流）
-	recheckOK := m.shouldRecheck(ctx, msg, mention)
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -127,8 +125,8 @@ func (m *Manager) HandleGroupMessage(ctx context.Context, msg *IncomingMsg) *Dec
 	seq := m.bumpSeq(gk)
 	topics := m.groups[gk]
 
-	// ── 1. 强提及 / 复核通过：创建或重入话题，回复 ──
-	if mention.Strong || recheckOK {
+	// ── 1. 强提及：创建或重入话题，回复 ──
+	if mention.Strong {
 		t := semanticMatch(m, topics, msg, vec, vecOK)
 		if t == nil {
 			t = m.createTopicLocked(gk, msg, seq, now)
@@ -148,10 +146,12 @@ func (m *Manager) HandleGroupMessage(ctx context.Context, msg *IncomingMsg) *Dec
 		return &Decision{Reply: true, Topic: t, Mention: mention.Mode}
 	}
 
-	// ── 2. 被动提及且非成员：拉入话题但不立即回复（授回复配额，下一条相关消息回复）──
-	if mention.Mentioned && mention.Mode == MentionPassive {
-		if memberTopicOf(topics, msg.UserID) == nil {
-			t := semanticMatch(m, activeOnly(topics), msg, vec, vecOK)
+	// ── 2. 弱提及：非成员拉入话题（静默、授配额）；成员按配额续聊回复 ──
+	if mention.Mentioned && !mention.Strong {
+		t := memberTopicOf(topics, msg.UserID)
+		if t == nil {
+			// 非成员：拉入最近活跃话题（或创建新话题），授回复配额
+			t = semanticMatch(m, activeOnly(topics), msg, vec, vecOK)
 			if t == nil {
 				t = m.createTopicLocked(gk, msg, seq, now)
 				if vecOK {
@@ -165,19 +165,14 @@ func (m *Manager) HandleGroupMessage(ctx context.Context, msg *IncomingMsg) *Dec
 			sortTopics(topics)
 			m.groups[gk] = topics
 			m.persistLocked(ctx, gk, topics)
-			m.logger.Debug("topic: 被动提及 → 拉入话题（静默）",
-				zap.String("group", gk), zap.String("user", msg.UserID), zap.String("topic", t.ID))
+			m.logger.Info("topic: 弱提及 → 拉入话题（静默）",
+				zap.String("group", gk), zap.String("user", msg.UserID), zap.String("mode", mention.Mode.String()), zap.String("topic", t.ID))
 			return &Decision{Reply: false, Topic: t, Mention: mention.Mode}
 		}
-		// 已是成员：落入成员续聊分支
-	}
-
-	// ── 3. 成员续聊 / 话题切换 ──
-	t := memberTopicOf(topics, msg.UserID)
-	if t != nil {
-		if semanticRelevant(m, t, msg, vec, vecOK) {
+		// 已是成员：续聊回复（纯媒体消息无文本不参与，配额由实际回复时消耗/授予）
+		if msg.Content != "" {
 			m.continueChatLocked(t, msg, seq, now, vec, vecOK)
-			if m.replyByCredit(t, msg.UserID) {
+			if m.hasCredit(t, msg.UserID) {
 				m.persistLocked(ctx, gk, topics)
 				m.logger.Info("topic: 成员续聊（配额）→ 回复",
 					zap.String("group", gk), zap.String("user", msg.UserID), zap.String("topic", t.ID))
@@ -188,13 +183,22 @@ func (m *Manager) HandleGroupMessage(ctx context.Context, msg *IncomingMsg) *Dec
 				zap.String("group", gk), zap.String("user", msg.UserID), zap.String("topic", t.ID))
 			return &Decision{Reply: false, Topic: t, Mention: mention.Mode}
 		}
-		// 用户切换了话题：脱离原话题，成员清空则冷却
-		t.detachMember(msg.UserID)
-		if t.MemberCount() == 0 {
-			t.markCooling()
+	}
+
+	// ── 3. 未提及但为成员：话题切换检测（语义不相关 → 脱离原话题）──
+	t := memberTopicOf(topics, msg.UserID)
+	if t != nil && msg.Content != "" {
+		if semanticRelevant(m, t, msg, vec, vecOK) {
+			m.continueChatLocked(t, msg, seq, now, vec, vecOK) // 仅入窗，不回复
+		} else {
+			// 用户切换了话题：脱离原话题，成员清空则冷却
+			t.detachMember(msg.UserID)
+			if t.MemberCount() == 0 {
+				t.markCooling()
+			}
+			m.logger.Debug("topic: 成员话题切换 → 脱离",
+				zap.String("group", gk), zap.String("user", msg.UserID), zap.String("topic", t.ID))
 		}
-		m.logger.Debug("topic: 成员话题切换 → 脱离",
-			zap.String("group", gk), zap.String("user", msg.UserID), zap.String("topic", t.ID))
 	}
 
 	// ── 4. 冷却检查：窗口内无触碰的话题转冷却 ──
@@ -204,6 +208,73 @@ func (m *Manager) HandleGroupMessage(ctx context.Context, msg *IncomingMsg) *Dec
 	}
 
 	return &Decision{Reply: false, Mention: mention.Mode}
+}
+
+// classifyMention 将 at 与 LLM 提及判定合并为强/弱/无三档提及。
+// at（平台 ID 精确命中）恒为强提及；其余按 judge.IsTalkingToBot 与置信度阈值划分。
+func (m *Manager) classifyMention(msg *IncomingMsg, judge *LinguisticJudge) MentionResult {
+	if msg != nil && containsString(msg.AtTargets, msg.SelfID) {
+		return MentionResult{Mentioned: true, Mode: MentionAt, Strong: true}
+	}
+	if judge != nil && judge.IsTalkingToBot {
+		switch {
+		case judge.Confidence >= m.linguisticStrongThreshold():
+			return MentionResult{Mentioned: true, Mode: MentionLinguistic, Strong: true}
+		case judge.Confidence >= m.linguisticWeakThreshold():
+			return MentionResult{Mentioned: true, Mode: MentionLinguistic, Strong: false}
+		}
+	}
+	return MentionResult{}
+}
+
+// BuildJudgeContext 构建供意图分析 LLM 做提及判断的群聊上下文
+// （含最近对话，供 LLM 做指代消解：如"那你呢"中的"你"指机器人）。
+//
+// 只读操作：取当前用户所在话题（或最近活跃话题）的最近若干条消息，不含当前消息。
+// 调用时机在 HandleGroupMessage 之前；内部加读锁，与并发消息处理互斥。
+func (m *Manager) BuildJudgeContext(msg *IncomingMsg) *intent.JudgeContext {
+	if m == nil || msg == nil || msg.GroupID == "" {
+		return nil
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	jc := &intent.JudgeContext{BotNames: append([]string(nil), m.nicknames...)}
+	gk := m.groupKey(msg.Platform, msg.GroupID)
+	topics := m.groups[gk]
+
+	var t *Topic
+	for _, x := range topics {
+		if x.isMember(msg.UserID) {
+			t = x
+			break
+		}
+	}
+	if t == nil && len(topics) > 0 {
+		t = topics[0] // 最近活跃话题（列表按 LastActiveAt 降序）
+	}
+	if t == nil {
+		return jc
+	}
+
+	start := len(t.MsgWindow) - judgeContextMsgs
+	if start < 0 {
+		start = 0
+	}
+	for _, tm := range t.MsgWindow[start:] {
+		if tm.Content == "" {
+			continue
+		}
+		speaker := "user"
+		if tm.IsBot {
+			speaker = "bot"
+		}
+		jc.Recent = append(jc.Recent, intent.JudgeMessage{
+			Speaker: speaker,
+			Content: truncateRunes(tm.Content, maxRecordRunes),
+		})
+	}
+	return jc
 }
 
 // RecordBotReply 记录一次 Bot 回复到话题：追加消息窗口、刷新活跃时间、
@@ -226,6 +297,9 @@ func (m *Manager) RecordBotReply(ctx context.Context, platform, groupID, topicID
 		t.pushMsg(TopicMsg{UserID: selfID, IsBot: true, Content: truncateRunes(content, maxRecordRunes), SentAt: now})
 		t.LastActiveAt = now
 		t.LastTouchSeq = m.bumpSeq(gk)
+		// 真实回复成功后才消耗/授配额：消耗本次续聊额度并授新额度，
+		// 若"决策回复但未实际回复"（意图忽略/失败）则不经过此路径，配额得以保留。
+		t.consumeCredit(userID)
 		t.grantCredit(userID)
 		m.persistLocked(ctx, gk, topics)
 		m.logger.Debug("topic: Bot 回复已记录", zap.String("group", gk), zap.String("topic", t.ID))
@@ -467,13 +541,15 @@ func (m *Manager) continueChatLocked(t *Topic, msg *IncomingMsg, seq int64, now 
 	}
 }
 
-// replyByCredit 判断成员续聊是否应回复（回复配额机制）。
-// credit_enabled 关闭时成员续聊一律不回复（仅强提及时回复）。
-func (m *Manager) replyByCredit(t *Topic, userID string) bool {
+// hasCredit 判断成员续聊是否应回复（回复配额检查，只读不消耗）。
+// 配额的实际消耗延迟到 Bot 真实回复成功时（RecordBotReply），
+// 避免"决策回复但未实际回复（意图忽略/调用失败等）"时配额被误扣，
+// 导致用户后续消息被静默丢弃（表现为服务运行一段时间后不再响应）。
+func (m *Manager) hasCredit(t *Topic, userID string) bool {
 	if m.cfg == nil || !m.cfg.CreditEnabled {
 		return false
 	}
-	return t.consumeCredit(userID)
+	return t.hasCredit(userID)
 }
 
 // coolExpired 将窗口内无触碰的话题转冷却。返回是否有状态变化。
@@ -502,52 +578,6 @@ func (m *Manager) msgToTopicMsg(msg *IncomingMsg) TopicMsg {
 		SentAt:  sentAt,
 	}
 }
-
-// ── 弱信号 LLM 复核（成本受限）──
-
-// shouldRecheck 判断弱提及消息是否应做 LLM 复核并是否通过。
-// 仅当配置开启且消息为弱提及时抽样调用；返回 true 表示复核认为用户在跟 Bot 对话。
-func (m *Manager) shouldRecheck(ctx context.Context, msg *IncomingMsg, mention MentionResult) bool {
-	if m.cfg == nil || !m.cfg.LLMRecheck || m.llm == nil || msg == nil {
-		return false
-	}
-	if !mention.Mentioned || mention.Strong {
-		return false
-	}
-	interval := m.cfg.LLMRecheckIntervalMsgs
-	if interval <= 0 {
-		interval = recheckSampleDefault
-	}
-	if m.recheckN.Add(1)%int64(interval) != 0 {
-		return false // 抽样限流：每 interval 条弱信号最多复核 1 条
-	}
-
-	resp, err := m.llm.Chat(ctx, &llm.ChatRequest{
-		Messages: []llm.Message{
-			{Role: llm.RoleSystem, Content: recheckSystemPrompt},
-			{Role: llm.RoleUser, Content: msg.Content},
-		},
-	})
-	if err != nil || resp == nil {
-		m.logger.Debug("topic: LLM 复核失败，按不通过处理", zap.Error(err))
-		return false
-	}
-	var res struct {
-		IsTalkingToBot bool `json:"is_talking_to_bot"`
-	}
-	if json.Unmarshal([]byte(resp.Content), &res) != nil {
-		return false
-	}
-	m.logger.Debug("topic: LLM 复核结果", zap.Bool("talking", res.IsTalkingToBot), zap.String("msg", truncateRunes(msg.Content, 32)))
-	return res.IsTalkingToBot
-}
-
-// recheckSystemPrompt 弱提及复核 prompt：一次性判断，无上下文。
-const recheckSystemPrompt = `你是一个群聊对话判断器。用户发送了一条提到机器人（名为"蓝妹"/"蓝莓"）的消息。判断这条消息是否在"跟机器人说话"（即期望机器人回应）。
-规则：
-- @机器人、以机器人名字呼格开头、请求机器人做事、直接问机器人问题 → true
-- 只是在向其他人提及机器人（如"蓝妹上次说的"、"帮我告诉蓝妹"、"你们知道蓝妹吗"）→ false
-只输出 JSON：{"is_talking_to_bot": true 或 false, "reason": "简短原因"}`
 
 // ── 话题标签懒生成 ──
 

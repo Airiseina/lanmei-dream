@@ -38,6 +38,7 @@ func (db *DB) Migrate(ctx context.Context, vectorDim int) error {
 		&model.MemoryVector{},
 		&model.MediaFile{},
 		&model.PluginInstallation{},
+		&model.PluginKV{},
 		&model.KnowledgeChunk{},
 	); err != nil {
 		return fmt.Errorf("migrate: %w", err)

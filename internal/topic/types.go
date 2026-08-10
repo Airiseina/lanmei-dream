@@ -1,11 +1,13 @@
 // Package topic 实现群聊智能对话的 Topic（话题）系统。
 //
 // 核心思想（详见 docs/group-topic-design.md）：
-// "是否要回复"是一个语言学判定问题 —— 先走确定性规则（at / 呼格 / 祈使宾语），
-// 再考虑语义（embedding 相关性），最后才用 LLM 复核。成本从低到高，信号从强到弱。
+// "是否要回复"是一个语言学判定问题 —— at（平台 ID）为免费精确的强信号，
+// 其余提及（呼格/主语/祈使/条件/情感/指代等）由意图分析 LLM 调用
+// （internal/ai/intent）的提及判断返回，按置信度划分为强/弱提及。
 //
 // 模块划分：
-//   - detector.go：提及检测器（rune 级规则，无 LLM 依赖）
+//   - mention.go：提及分类（MentionMode / MentionResult）
+//   - linguistic.go：提及判断数据类型（LinguisticJudge / MentionRole）
 //   - types.go：话题数据模型与状态机
 //   - manager.go：TopicManager（群消息决策 + 状态管理 + 持久化）
 //   - semantic.go：语义相关性判定（embedding）
@@ -176,29 +178,16 @@ func (t *Topic) consumeCredit(userID string) bool {
 	return false
 }
 
+// hasCredit 判断成员是否有回复配额（只读检查，不消耗）。
+func (t *Topic) hasCredit(userID string) bool {
+	if m, ok := t.Members[userID]; ok {
+		return m.Credit > 0
+	}
+	return false
+}
+
 // botWindowDefault 消息窗口默认上限（topic_window_msgs 未配置时使用）。
 const topicWindowDefault = 20
-
-// BotIdentity 机器人身份信息（提及检测用）。
-type BotIdentity struct {
-	// SelfID 平台内机器人自身 ID（at 目标匹配）
-	SelfID string
-	// Nicknames 名字与别名（如 "蓝妹"、"蓝莓"）
-	Nicknames []string
-}
-
-// AddNickname 追加一个别名（去重）。
-func (b *BotIdentity) AddNickname(n string) {
-	if n == "" {
-		return
-	}
-	for _, exist := range b.Nicknames {
-		if exist == n {
-			return
-		}
-	}
-	b.Nicknames = append(b.Nicknames, n)
-}
 
 // IncomingMsg 群消息输入（由 TopicGatePass 构造）。
 type IncomingMsg struct {

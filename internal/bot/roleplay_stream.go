@@ -3,7 +3,9 @@ package bot
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/zrurf/conduit"
 	"go.uber.org/zap"
@@ -115,14 +117,23 @@ func (p *RoleplayStreamPass) runStream(
 	defer streamCancel()
 	defer close(segCh)
 
-	resp, err := p.Chat.ChatStream(streamCtx, &llm.ChatRequest{
+	req := &llm.ChatRequest{
 		Messages:     []llm.Message{{Role: llm.RoleUser, Content: userMsg}},
 		UserID:       userID,
 		UserName:     nickname,
 		GroupName:    groupID,
 		GroupID:      groupID,
 		TopicContext: topicCtx,
-	}, segCh)
+	}
+
+	// 记录流式生成耗时与内容长度，便于排查"决策回复但无消息"类问题
+	start := time.Now()
+	resp, err := p.Chat.ChatStream(streamCtx, req, segCh)
+	p.Logger.Info("roleplay: 流式生成结束",
+		zap.Duration("elapsed", time.Since(start)),
+		zap.String("user", senderID),
+		zap.Int("content_len", respContentLen(resp)),
+		zap.Error(err))
 
 	if err != nil {
 		p.Logger.Error("roleplay stream: chat stream failed", zap.Error(err))
@@ -137,6 +148,37 @@ func (p *RoleplayStreamPass) runStream(
 		}
 		sendCancel()
 		return
+	}
+
+	// LLM 空响应防护：流式无任何 token 时 segCh 无段落，
+	// 表现为"决策了回复但用户侧静默"。重试一次；仍空则发提示段。
+	// 注意：assembleContext 会原地修改 req.Messages，重试必须用新请求。
+	if strings.TrimSpace(resp.Content) == "" {
+		p.Logger.Warn("roleplay: LLM 返回空响应，重试一次", zap.String("user", senderID))
+		retryReq := &llm.ChatRequest{
+			Messages:     []llm.Message{{Role: llm.RoleUser, Content: userMsg}},
+			UserID:       userID,
+			UserName:     nickname,
+			GroupName:    groupID,
+			GroupID:      groupID,
+			TopicContext: topicCtx,
+		}
+		retryCtx, retryCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		retryResp, retryErr := p.Chat.ChatStream(retryCtx, retryReq, segCh)
+		retryCancel()
+		if retryErr == nil && strings.TrimSpace(retryResp.Content) != "" {
+			resp = retryResp
+			p.Logger.Info("roleplay: 空响应重试成功", zap.String("user", senderID), zap.Int("content_len", respContentLen(resp)))
+		} else {
+			p.Logger.Error("roleplay: LLM 空响应（重试后仍为空）", zap.String("user", senderID), zap.Error(retryErr))
+			sendCtx, sendCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			select {
+			case segCh <- "刚才没听清，能再说一次吗~":
+			case <-sendCtx.Done():
+			}
+			sendCancel()
+			return
+		}
 	}
 
 	// 保存对话记录（L0 原始记录，后续由 Compressor 自动压缩）
@@ -160,6 +202,14 @@ func (p *RoleplayStreamPass) runStream(
 	if p.TopicMgr != nil && topicID != "" && resp.Content != "" {
 		p.TopicMgr.RecordBotReply(bgCtx, platform, groupID, topicID, selfID, senderID, resp.Content)
 	}
+}
+
+// respContentLen 返回 ChatResponse 内容长度（nil 安全），用于流式完成日志。
+func respContentLen(resp *llm.ChatResponse) int {
+	if resp == nil {
+		return 0
+	}
+	return utf8.RuneCountInString(resp.Content)
 }
 
 // ── RoleplaySegmentPass：流式段落交付 ──

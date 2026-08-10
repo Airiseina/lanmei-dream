@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strconv"
+	"strings"
 
 	"github.com/pgvector/pgvector-go"
 	"gorm.io/gorm"
@@ -118,23 +119,23 @@ func (s *PGVectorStore) RetrieveByTime(ctx context.Context, userID int64, groupI
 	return rowsToMemories(rows), nil
 }
 
-// toSimpleTSQuery 将自然语言查询转为 simple 配置的 tsquery
-// 按 Unicode 空白分割，用 & (AND) 连接各词项
+// toSimpleTSQuery 将自然语言查询转为 simple 配置的 tsquery。
+//
+// 按 Unicode 空白分割后用 & (AND) 连接各词项；单词项时直接返回词项本身。
+// 注意：词项必须先收集再用 " & " 连接，不能逐项追加 "&" 后缀——
+// 否则 "你好啊" 会变成 "你好啊&"（& 是 tsquery 前缀操作符，后无操作数时
+// PostgreSQL 报 "no operand in tsquery"）。
 func toSimpleTSQuery(query string) string {
 	var parts []string
 	for _, w := range splitWhitespace(query) {
 		if w != "" {
-			parts = append(parts, w+"&")
+			parts = append(parts, w)
 		}
 	}
 	if len(parts) == 0 {
 		return ""
 	}
-	result := parts[0]
-	for i := 1; i < len(parts); i++ {
-		result += " & " + parts[i]
-	}
-	return result
+	return strings.Join(parts, " & ")
 }
 
 // splitWhitespace 按空白字符分割字符串（模拟 strings.Fields 但返回可遍历切片）

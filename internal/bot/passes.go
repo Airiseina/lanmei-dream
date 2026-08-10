@@ -61,6 +61,12 @@ func (p *CommandPass) Execute(ctx *conduit.MessageContext) error {
 		IsGroup:        ctx.IsGroup,
 		Message:        ctx.RawMsg,
 		Reply:          func(s string) { replies = append(replies, s) },
+		SelfID:         SelfIDFromCtx(ctx),
+		AtTargets:      AtTargetsFromCtx(ctx),
+		Nickname:       nicknameFromCtx(ctx),
+		MessageID:      messageIDFromCtx(ctx),
+		ConnID:         connIDFromCtx(ctx),
+		CommandReentry: commandReentryFromCtx(ctx),
 	})
 
 	// 将回复追加到输出
@@ -88,6 +94,15 @@ const (
 	commandArgsKey    = "bot.command.args"
 	commandHandlerKey = "bot.command.handler"
 )
+
+// commandReentryKey 标记插件命令重入消息（插件包 makeCommandHandler 在重入 Extra 中设置）。
+const commandReentryKey = "bot.command.reentry"
+
+// commandReentryFromCtx 从 ctx.Extra 读取插件命令重入标记。
+func commandReentryFromCtx(ctx *conduit.MessageContext) bool {
+	b, _ := ctx.Extra[commandReentryKey].(bool)
+	return b
+}
 
 func (p *CommandRouterPass) Execute(ctx *conduit.MessageContext) error {
 	name := strings.TrimPrefix(ctx.RawMsg, "/")
@@ -139,6 +154,12 @@ func (p *ExecuteCommandPass) Execute(ctx *conduit.MessageContext) error {
 		CommandArgs:    argsRaw,
 		Message:        ctx.RawMsg,
 		Reply:          func(s string) { replies = append(replies, s) },
+		SelfID:         SelfIDFromCtx(ctx),
+		AtTargets:      AtTargetsFromCtx(ctx),
+		Nickname:       nicknameFromCtx(ctx),
+		MessageID:      messageIDFromCtx(ctx),
+		ConnID:         connIDFromCtx(ctx),
+		CommandReentry: commandReentryFromCtx(ctx),
 	}
 
 	if err := handlerRaw(cmdCtx); err != nil {
@@ -315,6 +336,26 @@ func platformUserIDFromCtx(ctx *conduit.MessageContext) string {
 // 不能用 conduit.Get（从 ctx.data 读取）。
 func nicknameFromCtx(ctx *conduit.MessageContext) string {
 	if raw, ok := ctx.Extra[KeyNickname]; ok {
+		if s, ok := raw.(string); ok {
+			return s
+		}
+	}
+	return ""
+}
+
+// messageIDFromCtx 从 ctx.Extra 读取消息 ID。
+func messageIDFromCtx(ctx *conduit.MessageContext) string {
+	if raw, ok := ctx.Extra[KeyMessageID]; ok {
+		if s, ok := raw.(string); ok {
+			return s
+		}
+	}
+	return ""
+}
+
+// connIDFromCtx 从 ctx.Extra 读取来源连接 ID。
+func connIDFromCtx(ctx *conduit.MessageContext) string {
+	if raw, ok := ctx.Extra[KeyConnID]; ok {
 		if s, ok := raw.(string); ok {
 			return s
 		}

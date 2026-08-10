@@ -96,9 +96,10 @@ type EventV11 struct {
 
 // ParseMessageSegments 将 Message 字段解析为 OneBot 11 消息段列表。
 //
-// 兼容两种格式：
+// 兼容三种格式：
 //   - array:  [{"type":"text","data":{"text":"hi"}}]
-//   - string: ""（API 响应中的空字符串）或 CQ 码（暂不支持）
+//   - string: ""（API 响应中的空字符串）
+//   - string: CQ 码（如 "[CQ:at,qq=123,name=张三]你好"）
 func (e *EventV11) ParseMessageSegments() []MessageSegmentV11 {
 	if len(e.Message) == 0 {
 		return nil
@@ -107,7 +108,12 @@ func (e *EventV11) ParseMessageSegments() []MessageSegmentV11 {
 	if err := json.Unmarshal(e.Message, &segments); err == nil {
 		return segments
 	}
-	// 非数组格式（string/null/其他），返回空
+	// 非数组格式：尝试解析为 CQ 码字符串（NapCat 部分配置下 message 字段直接是 raw_message）
+	var raw string
+	if err := json.Unmarshal(e.Message, &raw); err == nil && raw != "" {
+		return ParseCQSegmentsV11(raw)
+	}
+	// 无法识别（null/数字/空串等），返回空
 	return nil
 }
 

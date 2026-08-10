@@ -10,13 +10,24 @@ import (
 // Context 是命令处理函数的上下文。
 type Context struct {
 	Platform       string   // 平台标识（qq/wechat/telegram/...）
-	PlatformUserID string   // 平台用户 ID
+	PlatformUserID string   // 平台用户 ID（平台唯一标识，如 QQ 号）
 	GroupID        string   // 群组 ID
 	IsGroup        bool     // 是否群消息
 	CommandName    string   // 命令名（不含 / 前缀）
 	CommandArgs    []string // 命令参数
 	Message        string   // 原始消息
 	Reply          func(string)
+
+	// ── 消息上下文（插件命令重入引擎时用于还原完整上下文）──
+	SelfID    string   // 机器人自身平台 ID
+	AtTargets []string // 消息 at 目标（平台 ID 列表）
+	Nickname  string   // 发送者昵称
+	MessageID string   // 消息 ID
+	ConnID    string   // 来源连接 ID
+
+	// CommandReentry 标记本次 handler 调用来自插件命令重入（防止插件子树
+	// 未匹配时"命令分支 → 重入 → 命令分支"的无限递归）。
+	CommandReentry bool
 }
 
 // Command 定义一个斜杠命令。
