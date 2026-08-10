@@ -69,13 +69,12 @@ func Init() (*Config, error) {
 		"LANMEI_KNOWLEDGE_ENABLED":           "knowledge.enabled",
 		"LANMEI_KNOWLEDGE_AUTO_RECALL_LIMIT": "knowledge.auto_recall_limit",
 		// 多媒体（RustFS）与机器人行为配置
-		"LANMEI_MEDIA_ENDPOINT":                 "bot.media.endpoint",
-		"LANMEI_MEDIA_ACCESS_KEY":               "bot.media.access_key",
-		"LANMEI_MEDIA_SECRET_KEY":               "bot.media.secret_key",
-		"LANMEI_MEDIA_BUCKET":                   "bot.media.bucket",
-		"LANMEI_MEDIA_REGION":                   "bot.media.region",
-		"LANMEI_TOPIC_ENABLED":                  "bot.topic.enabled",
-		"LANMEI_RATELIMIT_LLM_PER_USER_PER_MIN": "bot.ratelimit.llm_per_user_per_min",
+		"LANMEI_MEDIA_ENDPOINT":   "bot.media.endpoint",
+		"LANMEI_MEDIA_ACCESS_KEY": "bot.media.access_key",
+		"LANMEI_MEDIA_SECRET_KEY": "bot.media.secret_key",
+		"LANMEI_MEDIA_BUCKET":     "bot.media.bucket",
+		"LANMEI_MEDIA_REGION":     "bot.media.region",
+		"LANMEI_TOPIC_ENABLED":    "bot.topic.enabled",
 	}
 	for envKey, cfgKey := range envToCfg {
 		if val := os.Getenv(envKey); val != "" {
@@ -125,10 +124,10 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("bot.nickname", "蓝妹")
 	v.SetDefault("bot.super_users", "")
 	v.SetDefault("bot.gateway.listen_addr", "0.0.0.0:8080")
-	v.SetDefault("bot.stream.typing_speed_ms", 150)   // 150ms/字，模拟打字速度
-	v.SetDefault("bot.stream.min_interval_ms", 1000)  // 最小 1 秒
-	v.SetDefault("bot.stream.max_interval_ms", 10000) // 最大 10 秒
-	v.SetDefault("bot.stream.jitter_pct", 0.25)       // ±25% 抖动
+	v.SetDefault("bot.stream.typing_speed_ms", 150)  // 150ms/字，模拟打字速度
+	v.SetDefault("bot.stream.min_interval_ms", 1000) // 最小 1 秒
+	v.SetDefault("bot.stream.max_interval_ms", 5000) // 最大 5 秒（长消息段间隔上限，避免过久等待）
+	v.SetDefault("bot.stream.jitter_pct", 0.25)      // ±25% 抖动
 
 	// 多媒体（RustFS）默认值
 	v.SetDefault("bot.media.endpoint", "http://localhost:9000")
@@ -142,11 +141,6 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("plugin.builtins.signin", true)
 	v.SetDefault("plugin.builtins.welcome", true)
 
-	// 限流默认值
-	v.SetDefault("bot.ratelimit.reply_per_group_per_min", 15)
-	v.SetDefault("bot.ratelimit.llm_per_user_per_min", 5)
-	v.SetDefault("bot.ratelimit.reply_total_per_min", 30)
-
 	// 群聊 topic 系统默认值
 	v.SetDefault("bot.topic.enabled", true)
 	v.SetDefault("bot.topic.nicknames", []string{})
@@ -154,8 +148,8 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("bot.topic.cooling_timeout_minutes", 30)
 	v.SetDefault("bot.topic.semantic_threshold", 0.5)
 	v.SetDefault("bot.topic.credit_enabled", true)
-	v.SetDefault("bot.topic.llm_recheck", false)
-	v.SetDefault("bot.topic.llm_recheck_interval_msgs", 10)
+	v.SetDefault("bot.topic.linguistic_strong_threshold", 0.7)
+	v.SetDefault("bot.topic.linguistic_weak_threshold", 0.4)
 	v.SetDefault("bot.topic.archive_interval_seconds", 60)
 
 	// Log 默认值

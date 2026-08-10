@@ -3,8 +3,18 @@ package ai
 import "strings"
 
 // segmentDelimiter 是流式回复的段落边界（双换行，即一个空行）。
-// 与 splitResponse 共享同一边界语义。
 const segmentDelimiter = "\n\n"
+
+// codeFence markdown 代码块围栏（三个反引号）。
+// LLM 输出代码时必须用 ``` 包裹（见 system prompt 规则），
+// 分割器据此识别代码块：块内的 \n\n 是代码内容，不作为段落边界。
+const codeFence = "```"
+
+// inCodeBlock 判断文本中代码围栏是否处于打开状态。
+// 出现奇数个 ``` 视为已进入代码块（开围栏未闭合），偶数个视为在代码块外。
+func inCodeBlock(s string) bool {
+	return strings.Count(s, codeFence)%2 == 1
+}
 
 // StreamSegmenter 流式段落分割器。
 //
@@ -15,6 +25,9 @@ const segmentDelimiter = "\n\n"
 // 设计要点：
 //   - 跨 chunk 边界安全：\n\n 的两个换行可能分散在相邻 chunk 中，
 //     分割后保留最后一段在缓冲区可自然处理此情况。
+//   - 代码块感知：markdown 代码块（``` 包裹）内的 \n\n 是代码内容，
+//     不作为段落边界；整块代码在开围栏后保持完整，直到结尾 ``` 闭合。
+//     未闭合的代码块（LLM 漏写结尾）整体留在缓冲区，Flush 时整块输出。
 //   - 全文追踪：fullText 记录所有接收到的文本原文，供调用方存储对话记录。
 //   - 非线程安全：设计为单 goroutine 内使用（流式消费 goroutine）。
 type StreamSegmenter struct {
@@ -31,9 +44,10 @@ func NewStreamSegmenter() *StreamSegmenter {
 //
 // 算法：
 //  1. 将 chunk 追加到 buffer 和 fullText
-//  2. 按 \n\n 分割 buffer
-//  3. 除最后一段外的所有段都是完整段落（边界已闭合），返回它们
-//  4. 最后一段保留在 buffer（可能后续还有 \n\n）
+//  2. 自前向后扫描 buffer 中的 \n\n 边界：
+//     - 边界之前 ``` 出现次数为奇数（代码块内）→ 该 \n\n 保留为代码内容，不分割
+//     - 边界之前 ``` 出现次数为偶数（代码块外）→ 切出完整段落
+//  3. 剩余文本保留在 buffer（可能后续还有边界）
 //
 // 返回的段落已经过去除首尾空白处理，空段落被过滤。
 func (s *StreamSegmenter) Feed(chunk string) []string {
@@ -44,27 +58,29 @@ func (s *StreamSegmenter) Feed(chunk string) []string {
 	s.buffer.WriteString(chunk)
 	s.fullText.WriteString(chunk)
 
-	// 按段落边界分割
-	parts := strings.Split(s.buffer.String(), segmentDelimiter)
-	if len(parts) <= 1 {
-		// 无边界，全部保留在 buffer
-		return nil
-	}
-
-	// 除最后一段外都是完整段落
-	complete := parts[:len(parts)-1]
-	// 最后一段保留在 buffer（可能后续还有边界）
-	s.buffer.Reset()
-	s.buffer.WriteString(parts[len(parts)-1])
-
-	// 过滤空段落并去除首尾空白
-	segments := make([]string, 0, len(complete))
-	for _, p := range complete {
-		trimmed := strings.TrimSpace(p)
-		if trimmed != "" {
-			segments = append(segments, trimmed)
+	buf := s.buffer.String()
+	var segments []string
+	for scan := 0; ; {
+		idx := strings.Index(buf[scan:], segmentDelimiter)
+		if idx < 0 {
+			break
 		}
+		abs := scan + idx
+		if inCodeBlock(buf[:abs]) {
+			// 代码块内：该 \n\n 是代码内容，不作为段落边界，继续向后找
+			scan = abs + len(segmentDelimiter)
+			continue
+		}
+		// 代码块外：切出完整段落（保留代码块内部的 \n\n）
+		seg := strings.TrimSpace(buf[:abs])
+		if seg != "" {
+			segments = append(segments, seg)
+		}
+		buf = buf[abs+len(segmentDelimiter):]
+		scan = 0
 	}
+	s.buffer.Reset()
+	s.buffer.WriteString(buf)
 
 	return segments
 }

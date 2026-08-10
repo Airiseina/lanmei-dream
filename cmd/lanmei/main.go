@@ -17,6 +17,7 @@ import (
 	"github.com/DaWesen/lanmei-dream/internal/bot"
 	"github.com/DaWesen/lanmei-dream/internal/command"
 	"github.com/DaWesen/lanmei-dream/internal/config"
+	"github.com/DaWesen/lanmei-dream/internal/database"
 	"github.com/DaWesen/lanmei-dream/internal/gateway"
 	"github.com/DaWesen/lanmei-dream/internal/infra"
 	kbpkg "github.com/DaWesen/lanmei-dream/internal/kb"
@@ -159,7 +160,8 @@ func main() {
 		topicMgr.Start(ctx)
 		logger.Info("群聊话题系统就绪",
 			zap.Bool("semantic", cfg.Bot.Topic.SemanticThreshold > 0 && embedder != nil),
-			zap.Bool("llm_recheck", cfg.Bot.Topic.LLMRecheck))
+			zap.Float64("mention_strong_threshold", topicMgr.StrongThreshold()),
+			zap.Float64("mention_weak_threshold", topicMgr.WeakThreshold()))
 	} else {
 		logger.Info("群聊话题系统未启用（群聊退化为全量回复）")
 	}
@@ -199,6 +201,9 @@ func main() {
 
 	// ── 插件系统 ──
 	pluginReg := pluginpkg.NewRegistry(nil, inf.StateStore, inf.DB, cmdSys, toolReg, logger)
+	// 注入插件受限 KV 存储（PostgreSQL 持久化，类似前端 IndexedDB）：
+	// 插件私有业务数据（如签到积分）通过 PluginContext.KV 读写，重启不丢失。
+	pluginReg.SetKVStore(database.NewPluginKVStore(inf.DB.Orm))
 
 	// ── 网关 ──
 	gwServer := gateway.NewServer(&gateway.ListenConfig{
@@ -227,7 +232,7 @@ func main() {
 	// ── 内置业务插件：配置驱动注册（[plugin.builtins]）──
 	// 替代在 main.go 硬编码 if 块逐个注册的写法：启停由配置文件控制；
 	// 内置插件与 Wasm 插件同走一个注册表，同名插件已由 Wasm 加载时自动跳过，避免 ID 冲突。
-	bizReg := bizplugin.NewBusinessRegistry(&cfg.Plugin.Builtins, pluginReg, inf.DB, logger)
+	bizReg := bizplugin.NewBusinessRegistry(&cfg.Plugin.Builtins, pluginReg, logger)
 	bizReg.SetNCMURL(cfg.Plugin.NCMURL)
 	if err := bizReg.RegisterBuiltins(); err != nil {
 		logger.Fatal("内置业务插件注册失败", zap.Error(err))

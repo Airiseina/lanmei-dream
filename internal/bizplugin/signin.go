@@ -25,6 +25,9 @@ import (
 //   - /签到：用户每日签到，固定获得 5 积分，附带随机事件描述
 //   - /试试手气：随机签到，概率获得不同积分（可能为正也可能为负），附带随机事件描述
 //
+// 数据持久化：积分状态与排行榜存放在插件受限 KV 存储（PluginContext.KV，
+// PostgreSQL 后端）而非 Redis StateStore，重启不丢失。
+//
 // 行为树：
 //
 //	subtree.signin → Selector [
@@ -37,14 +40,13 @@ import (
 //	pipeline.signin.normal  → [executePass, replyPass]
 //	pipeline.signin.random  → [executePass, replyPass]
 type SigninPlugin struct {
-	db     *database.DB
-	store  conduit.StateStore
+	kv     *database.PluginKVStore // 受限键值存储（持久化）
 	logger *zap.Logger
 }
 
 // NewSigninPlugin 创建签到插件。
-func NewSigninPlugin(db *database.DB, logger *zap.Logger) *SigninPlugin {
-	return &SigninPlugin{db: db, logger: logger}
+func NewSigninPlugin(logger *zap.Logger) *SigninPlugin {
+	return &SigninPlugin{logger: logger}
 }
 
 // Info 返回签到插件元信息。
@@ -76,15 +78,14 @@ func (p *SigninPlugin) Info() pluginpkg.PluginInfo {
 
 // OnInit 初始化签到插件，注册 Pass、Pipeline 和 Subtree。
 func (p *SigninPlugin) OnInit(ctx *pluginpkg.PluginContext) error {
-	p.db = ctx.DB
-	p.store = ctx.Store
+	p.kv = ctx.KV
 
 	// ── 注册 Pass ──
 
 	// 普通签到
 	normalExecPassID := pluginpkg.PassID("signin", "normal_execute")
 	normalReplyPassID := pluginpkg.PassID("signin", "normal_reply")
-	normalExecPass := &signinNormalExecutePass{db: p.db, store: p.store, logger: p.logger}
+	normalExecPass := &signinNormalExecutePass{kv: p.kv, logger: p.logger}
 	normalReplyPass := &signinNormalReplyPass{}
 
 	if err := ctx.Engine.RegisterPass(normalExecPassID, normalExecPass); err != nil {
@@ -99,7 +100,7 @@ func (p *SigninPlugin) OnInit(ctx *pluginpkg.PluginContext) error {
 	// 随机签到
 	randomExecPassID := pluginpkg.PassID("signin", "random_execute")
 	randomReplyPassID := pluginpkg.PassID("signin", "random_reply")
-	randomExecPass := &signinRandomExecutePass{db: p.db, store: p.store, logger: p.logger}
+	randomExecPass := &signinRandomExecutePass{kv: p.kv, logger: p.logger}
 	randomReplyPass := &signinRandomReplyPass{}
 
 	if err := ctx.Engine.RegisterPass(randomExecPassID, randomExecPass); err != nil {
@@ -176,14 +177,13 @@ func (p *SigninPlugin) OnStop(_ *pluginpkg.PluginContext) error { return nil }
 //
 //	pipeline.signin_rank.main → [executePass, replyPass]
 type RankPlugin struct {
-	db     *database.DB
-	store  conduit.StateStore
+	kv     *database.PluginKVStore // 受限键值存储（持久化）
 	logger *zap.Logger
 }
 
 // NewRankPlugin 创建排名插件。
-func NewRankPlugin(db *database.DB, logger *zap.Logger) *RankPlugin {
-	return &RankPlugin{db: db, logger: logger}
+func NewRankPlugin(logger *zap.Logger) *RankPlugin {
+	return &RankPlugin{logger: logger}
 }
 
 // Info 返回排名插件元信息。
@@ -210,13 +210,12 @@ func (p *RankPlugin) Info() pluginpkg.PluginInfo {
 
 // OnInit 初始化排名插件，注册 Pass、Pipeline 和 Subtree。
 func (p *RankPlugin) OnInit(ctx *pluginpkg.PluginContext) error {
-	p.db = ctx.DB
-	p.store = ctx.Store
+	p.kv = ctx.KV
 
 	// ── 注册 Pass ──
 	rankExecPassID := pluginpkg.PassID("signin_rank", "execute")
 	rankReplyPassID := pluginpkg.PassID("signin_rank", "reply")
-	rankExecPass := &signinRankExecutePass{db: p.db, store: p.store, logger: p.logger}
+	rankExecPass := &signinRankExecutePass{kv: p.kv, logger: p.logger}
 	rankReplyPass := &signinRankReplyPass{}
 
 	if err := ctx.Engine.RegisterPass(rankExecPassID, rankExecPass); err != nil {
@@ -297,8 +296,16 @@ const (
 
 	signinNormalPoints = 5 // 普通签到固定积分（与上游一致）
 
-	leaderboardKey = "plugin:signin:leaderboard" // 排行榜 StateStore 键
-	leaderboardCap = 100                         // 排行榜最大条目数
+	// 受限 KV 存储键（持久化到 PostgreSQL，重启不丢）：
+	//   命名空间 kvPluginID = "signin"
+	//   state:<userID>:date   → 用户最后签到日期（"2006-01-02"）
+	//   state:<userID>:total  → 用户累计积分
+	//   leaderboard           → 积分排行榜 JSON（leaderboardEntry 数组）
+	kvPluginID         = "signin"
+	kvSigninStateDate  = "state:%s:date"
+	kvSigninStateTotal = "state:%s:total"
+	kvLeaderboardKey   = "leaderboard"
+	leaderboardCap     = 100 // 排行榜最大条目数
 )
 
 // ============================================================
@@ -312,9 +319,16 @@ type leaderboardEntry struct {
 	TotalPoints int    `json:"total_points"`
 }
 
-// updateLeaderboard 更新排行榜中的用户条目
-func updateLeaderboard(store conduit.StateStore, ctx context.Context, userID, nickname string, totalPoints int) {
-	data, _ := store.Get(ctx, leaderboardKey)
+// updateLeaderboard 更新排行榜中的用户条目（持久化到受限 KV 存储）。
+// kv 为 nil（未注入受限存储）时静默跳过，保证插件在测试/降级环境下不崩溃。
+func updateLeaderboard(kv *database.PluginKVStore, ctx context.Context, userID, nickname string, totalPoints int) {
+	if kv == nil {
+		return
+	}
+	data, err := kv.Get(ctx, kvPluginID, kvLeaderboardKey)
+	if err != nil {
+		return
+	}
 
 	var entries []leaderboardEntry
 	if data != "" {
@@ -350,13 +364,16 @@ func updateLeaderboard(store conduit.StateStore, ctx context.Context, userID, ni
 	}
 
 	out, _ := json.Marshal(entries)
-	_ = store.Set(ctx, leaderboardKey, string(out), 0)
+	_ = kv.Set(ctx, kvPluginID, kvLeaderboardKey, string(out))
 }
 
 // getLeaderboard 读取排行榜数据
-func getLeaderboard(store conduit.StateStore, ctx context.Context) []leaderboardEntry {
-	data, _ := store.Get(ctx, leaderboardKey)
-	if data == "" {
+func getLeaderboard(kv *database.PluginKVStore, ctx context.Context) []leaderboardEntry {
+	if kv == nil {
+		return nil
+	}
+	data, err := kv.Get(ctx, kvPluginID, kvLeaderboardKey)
+	if err != nil || data == "" {
 		return nil
 	}
 	var entries []leaderboardEntry
@@ -365,8 +382,8 @@ func getLeaderboard(store conduit.StateStore, ctx context.Context) []leaderboard
 }
 
 // getRank 查询用户在当前排行榜中的排名（1 起），不在榜内返回 -1。
-func getRank(store conduit.StateStore, ctx context.Context, userID string) int {
-	entries := getLeaderboard(store, ctx)
+func getRank(kv *database.PluginKVStore, ctx context.Context, userID string) int {
+	entries := getLeaderboard(kv, ctx)
 	for i, e := range entries {
 		if e.UserID == userID {
 			return i + 1
@@ -464,17 +481,8 @@ func getEventByPoint(point int) string {
 // 通用签到逻辑
 // ============================================================
 
-// ensureUser 确保 StateStore 中的用户记录存在
-func ensureUser(db *database.DB, ctx *conduit.MessageContext) {
-	if db == nil {
-		return
-	}
-	platform, _ := conduit.Get[string](ctx, "platform")
-	if platform == "" {
-		platform = "unknown"
-	}
-	_, _ = db.GetOrCreateUser(ctx.Ctx, platform, ctx.UserID, "")
-}
+// ensureUser 不再需要：插件私有数据统一走受限 KV 存储，
+// users 表由消息主流程（角色扮演/话题）按需创建。
 
 // nicknameFromCtx 从 MessageContext.Extra 读取用户昵称
 func nicknameFromCtx(ctx *conduit.MessageContext) string {
@@ -492,8 +500,7 @@ func nicknameFromCtx(ctx *conduit.MessageContext) string {
 
 // signinNormalExecutePass 执行普通签到逻辑：读取状态 → 固定5分 → 事件生成 → 写入状态 → 更新排行榜
 type signinNormalExecutePass struct {
-	db     *database.DB
-	store  conduit.StateStore
+	kv     *database.PluginKVStore
 	logger *zap.Logger
 }
 
@@ -501,15 +508,14 @@ func (pass *signinNormalExecutePass) Execute(ctx *conduit.MessageContext) error 
 	now := time.Now()
 	today := now.Format("2006-01-02")
 
-	ensureUser(pass.db, ctx)
-
-	// 从 StateStore 读取签到记录
-	stateKey := pluginpkg.StoreKey("signin", "state:"+ctx.UserID)
-	lastDate, err := pass.store.Get(ctx.Ctx, stateKey+":date")
+	// 从受限 KV 存储（PostgreSQL 持久化）读取签到记录
+	stateDateKey := fmt.Sprintf(kvSigninStateDate, ctx.UserID)
+	stateTotalKey := fmt.Sprintf(kvSigninStateTotal, ctx.UserID)
+	lastDate, err := kvGet(pass.kv, ctx.Ctx, stateDateKey)
 	if err != nil {
 		pass.logger.Warn("signin: failed to read last sign-in date", zap.String("user", ctx.UserID), zap.Error(err))
 	}
-	totalPoints := storeGetInt(pass.store, ctx.Ctx, stateKey+":total")
+	totalPoints := kvGetInt(pass.kv, ctx.Ctx, stateTotalKey)
 
 	// 检查今日是否已签到
 	todaySigned := lastDate == today
@@ -522,16 +528,16 @@ func (pass *signinNormalExecutePass) Execute(ctx *conduit.MessageContext) error 
 		totalPoints += points
 		event = getEventByPoint(points)
 
-		// 更新 StateStore
-		if err := pass.store.Set(ctx.Ctx, stateKey+":date", today, 0); err != nil {
+		// 更新受限 KV 存储（持久化）
+		if err := kvSet(pass.kv, ctx.Ctx, stateDateKey, today); err != nil {
 			pass.logger.Error("signin: failed to save sign-in date", zap.String("user", ctx.UserID), zap.Error(err))
 		}
-		if err := pass.store.Set(ctx.Ctx, stateKey+":total", fmt.Sprintf("%d", totalPoints), 0); err != nil {
+		if err := kvSet(pass.kv, ctx.Ctx, stateTotalKey, fmt.Sprintf("%d", totalPoints)); err != nil {
 			pass.logger.Error("signin: failed to save total points", zap.String("user", ctx.UserID), zap.Error(err))
 		}
 
 		// 更新排行榜
-		updateLeaderboard(pass.store, ctx.Ctx, ctx.UserID, nicknameFromCtx(ctx), totalPoints)
+		updateLeaderboard(pass.kv, ctx.Ctx, ctx.UserID, nicknameFromCtx(ctx), totalPoints)
 	}
 
 	// 将结果写入 MessageContext
@@ -540,7 +546,7 @@ func (pass *signinNormalExecutePass) Execute(ctx *conduit.MessageContext) error 
 		Points:      points,
 		TotalPoints: totalPoints,
 		Event:       event,
-		Rank:        getRank(pass.store, ctx.Ctx, ctx.UserID),
+		Rank:        getRank(pass.kv, ctx.Ctx, ctx.UserID),
 		Mode:        "normal",
 	})
 
@@ -582,8 +588,7 @@ func (pass *signinNormalReplyPass) Execute(ctx *conduit.MessageContext) error {
 
 // signinRandomExecutePass 执行试试手气签到逻辑：读取状态 → 随机积分 → 事件生成 → 写入状态 → 更新排行榜
 type signinRandomExecutePass struct {
-	db     *database.DB
-	store  conduit.StateStore
+	kv     *database.PluginKVStore
 	logger *zap.Logger
 }
 
@@ -591,15 +596,14 @@ func (pass *signinRandomExecutePass) Execute(ctx *conduit.MessageContext) error 
 	now := time.Now()
 	today := now.Format("2006-01-02")
 
-	ensureUser(pass.db, ctx)
-
-	// 从 StateStore 读取签到记录（与普通签到共享状态）
-	stateKey := pluginpkg.StoreKey("signin", "state:"+ctx.UserID)
-	lastDate, err := pass.store.Get(ctx.Ctx, stateKey+":date")
+	// 从受限 KV 存储（PostgreSQL 持久化）读取签到记录（与普通签到共享状态）
+	stateDateKey := fmt.Sprintf(kvSigninStateDate, ctx.UserID)
+	stateTotalKey := fmt.Sprintf(kvSigninStateTotal, ctx.UserID)
+	lastDate, err := kvGet(pass.kv, ctx.Ctx, stateDateKey)
 	if err != nil {
 		pass.logger.Warn("signin: failed to read last sign-in date", zap.String("user", ctx.UserID), zap.Error(err))
 	}
-	totalPoints := storeGetInt(pass.store, ctx.Ctx, stateKey+":total")
+	totalPoints := kvGetInt(pass.kv, ctx.Ctx, stateTotalKey)
 
 	// 检查今日是否已签到
 	todaySigned := lastDate == today
@@ -619,16 +623,16 @@ func (pass *signinRandomExecutePass) Execute(ctx *conduit.MessageContext) error 
 		// 生成随机事件描述
 		event = getEventByPoint(points)
 
-		// 更新 StateStore
-		if err := pass.store.Set(ctx.Ctx, stateKey+":date", today, 0); err != nil {
+		// 更新受限 KV 存储（持久化）
+		if err := kvSet(pass.kv, ctx.Ctx, stateDateKey, today); err != nil {
 			pass.logger.Error("signin: failed to save sign-in date", zap.String("user", ctx.UserID), zap.Error(err))
 		}
-		if err := pass.store.Set(ctx.Ctx, stateKey+":total", fmt.Sprintf("%d", totalPoints), 0); err != nil {
+		if err := kvSet(pass.kv, ctx.Ctx, stateTotalKey, fmt.Sprintf("%d", totalPoints)); err != nil {
 			pass.logger.Error("signin: failed to save total points", zap.String("user", ctx.UserID), zap.Error(err))
 		}
 
 		// 更新排行榜
-		updateLeaderboard(pass.store, ctx.Ctx, ctx.UserID, nicknameFromCtx(ctx), totalPoints)
+		updateLeaderboard(pass.kv, ctx.Ctx, ctx.UserID, nicknameFromCtx(ctx), totalPoints)
 	}
 
 	// 将结果写入 MessageContext
@@ -637,7 +641,7 @@ func (pass *signinRandomExecutePass) Execute(ctx *conduit.MessageContext) error 
 		Points:      points,
 		TotalPoints: totalPoints,
 		Event:       event,
-		Rank:        getRank(pass.store, ctx.Ctx, ctx.UserID),
+		Rank:        getRank(pass.kv, ctx.Ctx, ctx.UserID),
 		Mode:        "random",
 	})
 
@@ -687,15 +691,14 @@ type rankEntry struct {
 
 const rankResultKey = "plugin.signin.rank_result"
 
-// signinRankExecutePass 执行排名查询：从 StateStore 读取排行榜 → 取 Top 10
+// signinRankExecutePass 执行排名查询：从受限 KV 存储读取排行榜 → 取 Top 10
 type signinRankExecutePass struct {
-	db     *database.DB
-	store  conduit.StateStore
+	kv     *database.PluginKVStore
 	logger *zap.Logger
 }
 
 func (pass *signinRankExecutePass) Execute(ctx *conduit.MessageContext) error {
-	entries := getLeaderboard(pass.store, ctx.Ctx)
+	entries := getLeaderboard(pass.kv, ctx.Ctx)
 
 	// 补充昵称：如果排行榜中昵称为空，尝试从数据库获取
 	top := entries
@@ -738,11 +741,8 @@ func (pass *signinRankReplyPass) Execute(ctx *conduit.MessageContext) error {
 	sb.WriteString("🏆 签到积分排行榜\n")
 	sb.WriteString("──────────────\n")
 	for _, e := range rankEntries {
-		// 显示昵称，截断过长的昵称
-		name := e.Nickname
-		if len(name) > 10 {
-			name = name[:10] + "…"
-		}
+		// 显示昵称，按 rune 截断过长的昵称（避免按字节截断破坏 UTF-8 产生乱码）
+		name := truncateRunes(e.Nickname, 10)
 		sb.WriteString(fmt.Sprintf("%d. %s — %d积分\n", e.Rank, name, e.TotalPoints))
 	}
 	sb.WriteString("──────────────")
@@ -758,15 +758,44 @@ func (pass *signinRankReplyPass) Execute(ctx *conduit.MessageContext) error {
 // 辅助函数
 // ============================================================
 
-// storeGetInt 从 StateStore 读取整数值
-func storeGetInt(store conduit.StateStore, ctx context.Context, key string) int {
-	val, err := store.Get(ctx, key)
+// kvGet 从受限 KV 存储读取字符串值；kv 为 nil 时返回空串。
+func kvGet(kv *database.PluginKVStore, ctx context.Context, key string) (string, error) {
+	if kv == nil {
+		return "", nil
+	}
+	return kv.Get(ctx, kvPluginID, key)
+}
+
+// kvGetInt 从受限 KV 存储读取整数值；缺失或非法时返回 0。
+func kvGetInt(kv *database.PluginKVStore, ctx context.Context, key string) int {
+	val, err := kvGet(kv, ctx, key)
 	if err != nil || val == "" {
 		return 0
 	}
 	var n int
 	fmt.Sscanf(val, "%d", &n)
 	return n
+}
+
+// kvSet 写入受限 KV 存储；kv 为 nil 时静默跳过。
+func kvSet(kv *database.PluginKVStore, ctx context.Context, key, value string) error {
+	if kv == nil {
+		return nil
+	}
+	return kv.Set(ctx, kvPluginID, key, value)
+}
+
+// truncateRunes 按 rune 截断字符串到 n 个字符，超出部分以省略号"…"结尾。
+// 相比按字节截断（s[:n]），按 rune 截断不会切断多字节 UTF-8 字符导致乱码。
+func truncateRunes(s string, n int) string {
+	if n <= 0 {
+		return ""
+	}
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n]) + "…"
 }
 
 // ============================================================
@@ -782,9 +811,8 @@ func (p *SigninPlugin) toolSigninStatus(ctx context.Context, argsJSON string) (s
 		return "", fmt.Errorf("参数解析失败: %w", err)
 	}
 
-	stateKey := pluginpkg.StoreKey("signin", "state:"+args.UserID)
-	lastDate, _ := p.store.Get(ctx, stateKey+":date")
-	totalPoints := storeGetInt(p.store, ctx, stateKey+":total")
+	lastDate, _ := kvGet(p.kv, ctx, fmt.Sprintf(kvSigninStateDate, args.UserID))
+	totalPoints := kvGetInt(p.kv, ctx, fmt.Sprintf(kvSigninStateTotal, args.UserID))
 
 	return fmt.Sprintf("用户 %s: 最后签到日期=%s, 累计积分=%d",
 		args.UserID, lastDate, totalPoints), nil
@@ -802,9 +830,10 @@ func (p *SigninPlugin) toolSigninRandom(ctx context.Context, argsJSON string) (s
 	now := time.Now()
 	today := now.Format("2006-01-02")
 
-	stateKey := pluginpkg.StoreKey("signin", "state:"+args.UserID)
-	lastDate, _ := p.store.Get(ctx, stateKey+":date")
-	totalPoints := storeGetInt(p.store, ctx, stateKey+":total")
+	dateKey := fmt.Sprintf(kvSigninStateDate, args.UserID)
+	totalKey := fmt.Sprintf(kvSigninStateTotal, args.UserID)
+	lastDate, _ := kvGet(p.kv, ctx, dateKey)
+	totalPoints := kvGetInt(p.kv, ctx, totalKey)
 
 	if lastDate == today {
 		return fmt.Sprintf("用户 %s 今日已签到，累计%d积分",
@@ -819,8 +848,9 @@ func (p *SigninPlugin) toolSigninRandom(ctx context.Context, argsJSON string) (s
 
 	event := getEventByPoint(points)
 
-	_ = p.store.Set(ctx, stateKey+":date", today, 0)
-	_ = p.store.Set(ctx, stateKey+":total", fmt.Sprintf("%d", totalPoints), 0)
+	_ = kvSet(p.kv, ctx, dateKey, today)
+	_ = kvSet(p.kv, ctx, totalKey, fmt.Sprintf("%d", totalPoints))
+	updateLeaderboard(p.kv, ctx, args.UserID, "", totalPoints)
 
 	return fmt.Sprintf("用户 %s 试试手气: %s (积分%+d, 累计%d积分)",
 		args.UserID, event, points, totalPoints), nil
@@ -828,7 +858,7 @@ func (p *SigninPlugin) toolSigninRandom(ctx context.Context, argsJSON string) (s
 
 // toolSigninRank 查询签到积分排行榜
 func (p *RankPlugin) toolSigninRank(ctx context.Context, argsJSON string) (string, error) {
-	entries := getLeaderboard(p.store, ctx)
+	entries := getLeaderboard(p.kv, ctx)
 	if len(entries) == 0 {
 		return "暂无签到排行数据", nil
 	}

@@ -72,12 +72,39 @@ func (s *ObjectStore) ensureBucket(ctx context.Context) error {
 		return nil
 	}
 	// 桶已存在（自身或他人持有）视为成功
-	var owned *s3types.BucketAlreadyOwnedByYou
-	var exists *s3types.BucketAlreadyExists
-	if errors.As(err, &owned) || errors.As(err, &exists) {
+	if isBucketAlreadyExists(err) {
 		return nil
 	}
 	return fmt.Errorf("media: 创建桶 %q 失败: %w", s.bucket, err)
+}
+
+// isBucketAlreadyExists 判断错误是否为"桶已存在/已拥有"。
+// 兼容 AWS SDK v2 的强类型错误与 smithy.GenericAPIError 两种形式。
+func isBucketAlreadyExists(err error) bool {
+	var owned *s3types.BucketAlreadyOwnedByYou
+	var exists *s3types.BucketAlreadyExists
+	if errors.As(err, &owned) || errors.As(err, &exists) {
+		return true
+	}
+	var aerr interface{ ErrorCode() string }
+	if errors.As(err, &aerr) {
+		switch aerr.ErrorCode() {
+		case "BucketAlreadyExists", "BucketAlreadyOwnedByYou":
+			return true
+		}
+	}
+	return false
+}
+
+// isNoSuchBucket 判断错误是否为"桶不存在"。
+// 兼容 AWS SDK v2 的强类型错误与 smithy.GenericAPIError 两种形式。
+func isNoSuchBucket(err error) bool {
+	var nsk *s3types.NoSuchBucket
+	if errors.As(err, &nsk) {
+		return true
+	}
+	var aerr interface{ ErrorCode() string }
+	return errors.As(err, &aerr) && aerr.ErrorCode() == "NoSuchBucket"
 }
 
 // Put 上传媒体字节。mime 为空时按文件头嗅探。
@@ -108,8 +135,7 @@ func (s *ObjectStore) Put(ctx context.Context, data []byte, mime string) (string
 	}
 	if _, err := s.client.PutObject(ctx, input); err != nil {
 		// 桶不存在 → 创建后重试一次
-		var nsk *s3types.NoSuchBucket
-		if errors.As(err, &nsk) {
+		if isNoSuchBucket(err) {
 			if cerr := s.ensureBucket(ctx); cerr != nil {
 				return "", fmt.Errorf("media: 上传 %s 失败且桶创建失败: %w", key, cerr)
 			}

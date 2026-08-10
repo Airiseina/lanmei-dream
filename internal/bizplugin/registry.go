@@ -4,7 +4,6 @@ import (
 	"fmt"
 
 	"github.com/DaWesen/lanmei-dream/internal/config"
-	"github.com/DaWesen/lanmei-dream/internal/database"
 	pluginpkg "github.com/DaWesen/lanmei-dream/internal/plugin"
 	"go.uber.org/zap"
 )
@@ -20,21 +19,21 @@ import (
 //   - 插件启用与否完全由配置（[plugin.builtins]）决定，改配置即可启停，无需改代码；
 //   - 注册前先查询注册表：若同名插件已由 Wasm 动态加载（如用户安装了 wasm 版签到/欢迎），
 //     则跳过内置注册，避免 ID 冲突，保证"注册表优先、Wasm 优先"的动态性；
-//   - 内置插件与 Wasm 插件走同一注册表，后续生命周期（Init/Start/Stop）统一由 Registry 管理。
+//   - 内置插件与 Wasm 插件走同一注册表，后续生命周期（Init/Start/Stop）统一由 Registry 管理；
+//   - 插件私有业务数据通过受限 KV 存储（PluginContext.KV，PostgreSQL 持久化）读写，
+//     内置插件不直接持有裸数据库。
 type BusinessRegistry struct {
 	cfg      *config.PluginBuiltinsConfig // 内置插件开关配置
 	registry *pluginpkg.Registry          // 插件注册表
-	db       *database.DB                 // 数据库（签到等插件依赖）
 	ncmURL   string                       // 网易云音乐 API 地址（点歌插件使用）
 	logger   *zap.Logger
 }
 
 // NewBusinessRegistry 创建内置业务插件注册表。
-func NewBusinessRegistry(cfg *config.PluginBuiltinsConfig, registry *pluginpkg.Registry, db *database.DB, logger *zap.Logger) *BusinessRegistry {
+func NewBusinessRegistry(cfg *config.PluginBuiltinsConfig, registry *pluginpkg.Registry, logger *zap.Logger) *BusinessRegistry {
 	return &BusinessRegistry{
 		cfg:      cfg,
 		registry: registry,
-		db:       db,
 		logger:   logger,
 	}
 }
@@ -84,7 +83,7 @@ func (r *BusinessRegistry) RegisterBuiltins() error {
 	}
 
 	// ── 签到插件 ──
-	if err := register(builtins.Signin, "signin", NewSigninPlugin(r.db, logger)); err != nil {
+	if err := register(builtins.Signin, "signin", NewSigninPlugin(logger)); err != nil {
 		return err
 	}
 
@@ -94,7 +93,7 @@ func (r *BusinessRegistry) RegisterBuiltins() error {
 	}
 
 	// ── 签到积分排行榜插件 ──
-	if err := register(builtins.Rank, "signin_rank", NewRankPlugin(r.db, logger)); err != nil {
+	if err := register(builtins.Rank, "signin_rank", NewRankPlugin(logger)); err != nil {
 		return err
 	}
 

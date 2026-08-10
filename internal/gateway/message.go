@@ -58,7 +58,10 @@ func (m MessageSegmentV11) TextContent() string {
 			return s
 		}
 	case "at":
-		// NapCat 的 at 消息段，qq 字段可能是 number 或 string
+		// NapCat 的 at 消息段，qq 字段可能是 number 或 string；昵称优先（name 字段）
+		if name := m.Data["name"]; name != nil {
+			return "@" + formatIntOrString(name)
+		}
 		if qq := m.Data["qq"]; qq != nil {
 			return "@" + formatIntOrString(qq)
 		}
@@ -215,12 +218,21 @@ func NormalizeV11(connID string, evt *EventV11, platform Platform) *NormalizedMe
 			msg.GroupID = strconv.FormatInt(evt.GroupID, 10)
 			msg.IsGroup = true
 		}
-		msg.Segments = ParseSegmentsV11(evt.ParseMessageSegments())
-		msg.Content = evt.RawMessage
-		if msg.Content == "" {
-			msg.Content = ExtractPlainTextV11(evt.ParseMessageSegments())
+		segs := ParseSegmentsV11(evt.ParseMessageSegments())
+		// NapCat 部分配置下 message 字段为空字符串：回退用 raw_message（CQ 码）解析，
+		// 确保 at 目标（平台 ID）与纯文本内容可被下游消费
+		if len(segs) == 0 && evt.RawMessage != "" {
+			segs = ParseSegmentsV11(ParseCQSegmentsV11(evt.RawMessage))
 		}
-		collectSegmentMeta(msg, msg.Segments)
+		msg.Segments = segs
+		// Content 一律使用纯文本（at 段转为 "@昵称"），避免原始 CQ 码污染
+		// 意图分析、话题提及检测与记忆层（CQ 码内 name= 会导致昵称误命中）。
+		// 纯媒体消息（如仅图片）不 fallback 为 CQ 码：保持空文本交给媒体管线处理。
+		msg.Content = ExtractNormalizedTextV11(segs)
+		if msg.Content == "" && len(segs) == 0 && evt.RawMessage != "" {
+			msg.Content = evt.RawMessage // 段解析彻底失败时兜底保留原文，避免消息被丢弃
+		}
+		collectSegmentMeta(msg, segs)
 
 		senderName := evt.Sender.Nickname
 		if msg.IsGroup && evt.Sender.Card != "" {
@@ -313,6 +325,91 @@ func ParseSegmentsV11(segs []MessageSegmentV11) []NormalizedSegment {
 		result = append(result, ns)
 	}
 	return result
+}
+
+// ── CQ 码字符串解析（OneBot 11 raw_message）──
+
+// ParseCQSegmentsV11 将 OneBot 11 的 CQ 码字符串（raw_message）解析为消息段列表。
+//
+// 支持文本与 CQ 码混排（如 "你好[CQ:at,qq=123,name=张三]在吗"）。
+// 参数值中的转义（&#44; 逗号、&#91; [、&#93; ]、&amp; &）在解析时还原。
+func ParseCQSegmentsV11(raw string) []MessageSegmentV11 {
+	var segs []MessageSegmentV11
+	rest := raw
+	for len(rest) > 0 {
+		start := strings.Index(rest, "[CQ:")
+		if start < 0 {
+			// 剩余为纯文本（文本中的 [ / ] / & 以转义形式出现，不会误命中 CQ 码前缀）
+			if t := unescapeCQText(rest); t != "" {
+				segs = append(segs, MessageSegmentV11{Type: "text", Data: map[string]any{"text": t}})
+			}
+			break
+		}
+		// CQ 码之前的文本
+		if t := unescapeCQText(rest[:start]); t != "" {
+			segs = append(segs, MessageSegmentV11{Type: "text", Data: map[string]any{"text": t}})
+		}
+		end := strings.IndexByte(rest[start:], ']')
+		if end < 0 {
+			// 未闭合的 CQ 码按文本处理，避免吞掉后续内容
+			if t := unescapeCQText(rest[start:]); t != "" {
+				segs = append(segs, MessageSegmentV11{Type: "text", Data: map[string]any{"text": t}})
+			}
+			break
+		}
+		end += start
+		if seg := parseCQSegment(rest[start : end+1]); seg.Type != "" {
+			segs = append(segs, seg)
+		}
+		rest = rest[end+1:]
+	}
+	return segs
+}
+
+// parseCQSegment 解析单个 CQ 码为消息段。
+// 格式: [CQ:type,key1=value1,key2=value2]
+func parseCQSegment(code string) MessageSegmentV11 {
+	inner := strings.TrimPrefix(code, "[CQ:")
+	inner = strings.TrimSuffix(inner, "]")
+	segType, params, hasParams := strings.Cut(inner, ",")
+	seg := MessageSegmentV11{Type: segType, Data: map[string]any{}}
+	if !hasParams {
+		return seg
+	}
+	// CQ 码参数以字面逗号分隔（值内的逗号被转义为 &#44;，切分后由 unescapeCQText 还原）
+	for _, pair := range strings.Split(params, ",") {
+		key, val, ok := strings.Cut(pair, "=")
+		if !ok || key == "" {
+			continue
+		}
+		seg.Data[key] = unescapeCQText(val)
+	}
+	return seg
+}
+
+// cqTextReplacer 还原 CQ 码转义序列。
+// 单遍替换避免级联（&amp;#91; 应还原为 &#91; 而非 "["）。
+var cqTextReplacer = strings.NewReplacer(
+	"&#91;", "[",
+	"&#93;", "]",
+	"&#44;", ",",
+	"&amp;", "&",
+)
+
+// unescapeCQText 还原 CQ 码转义序列。
+func unescapeCQText(s string) string {
+	return cqTextReplacer.Replace(s)
+}
+
+// ExtractNormalizedTextV11 从标准化段列表提取纯文本（at 段使用 "@昵称" 表示）。
+func ExtractNormalizedTextV11(segs []NormalizedSegment) string {
+	var parts []string
+	for _, s := range segs {
+		if s.Text != "" {
+			parts = append(parts, s.Text)
+		}
+	}
+	return strings.Join(parts, "")
 }
 
 // collectSegmentMeta 收集 at 目标列表与去重 MIME 类型列表写入 msg。

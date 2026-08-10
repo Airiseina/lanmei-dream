@@ -122,8 +122,13 @@ type PluginContext struct {
 	// Engine Conduit 消息处理引擎，插件通过它注册 Pass、Pipeline、Subtree
 	Engine *conduit.Engine
 
-	// Store 全局状态存储，用于读写跨请求的持久化数据
+	// Store 全局状态存储，用于读写跨请求的持久化数据（Redis，易失）
 	Store conduit.StateStore
+
+	// KV 受限键值存储（PostgreSQL 后端，持久化不丢）。
+	// 插件私有业务数据应优先使用本存储（语义类似前端 IndexedDB），
+	// 而非直接操作 DB；按 pluginID 自动隔离命名空间。
+	KV *database.PluginKVStore
 
 	// DB 数据库访问层，用于读写业务数据
 	DB *database.DB

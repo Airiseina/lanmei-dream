@@ -41,7 +41,7 @@ func (p *IntentAnalysisPass) Execute(ctx *conduit.MessageContext) error {
 		conduit.Set(ctx, intentResultKey, &intent.Result{Intent: intent.IntentChat, Confidence: 1.0})
 		return nil
 	}
-	result, err := p.Analyzer.Analyze(ctx.Ctx, ctx.RawMsg)
+	result, err := p.Analyzer.Analyze(ctx.Ctx, ctx.RawMsg, nil) // 私聊无群聊上下文，不进行提及判断
 	if err != nil {
 		p.logger.Error("intent: analyze failed, defaulting to chat",
 			zap.Error(err),

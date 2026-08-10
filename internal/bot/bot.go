@@ -1,9 +1,9 @@
 package bot
 
 import (
-	"context"
 	"errors"
 	"math/rand/v2"
+	"regexp"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -33,7 +33,6 @@ type Bot struct {
 	cmdSys        *command.System  // 命令系统引用
 	toolReg       *tool.Registry   // 工具注册表引用
 	dedup         *Deduper         // 消息去重（message_id SETNX）
-	limiter       *ReplyLimiter    // 回复限流（群/用户/全局）
 	typingSpeedMS int              // 打字速度（毫秒/字），0 禁用间隔
 	minIntervalMS int              // 最小发送间隔（毫秒）
 	maxIntervalMS int              // 最大发送间隔（毫秒），0 不限
@@ -75,9 +74,11 @@ func New(cfg *config.BotConfig, cmdSys *command.System, chatSvc *ai.ChatService,
 	}
 
 	// ── Conduit 引擎 ──
+	// 超时 20s：意图分析/命令等慢路径（如 LLM 慢响应）在超时前完成，
+	// 避免"慢 LLM 调用超时被丢弃"导致群聊消息静默。
 	engine := conduit.New(store,
 		conduit.WithWorkers(4),
-		conduit.WithTimeout(10*time.Second),
+		conduit.WithTimeout(20*time.Second),
 		conduit.WithFallbackPipeline("pipeline.fallback"),
 	)
 
@@ -148,7 +149,7 @@ func New(cfg *config.BotConfig, cmdSys *command.System, chatSvc *ai.ChatService,
 
 	// ── 群聊话题管线（选择性放行；topicMgr 为 nil 时 TopicGatePass 全放行）──
 	engine.MustRegisterPipeline(conduit.NewPipeline("pipeline.topic_gate",
-		&TopicGatePass{Manager: topicMgr, Logger: logger},
+		&TopicGatePass{Manager: topicMgr, Analyzer: analyzer, Logger: logger},
 	))
 	engine.MustRegisterPipeline(conduit.NewPipeline("pipeline.topic_ignore",
 		&TopicIgnorePass{DB: db},
@@ -207,7 +208,6 @@ func New(cfg *config.BotConfig, cmdSys *command.System, chatSvc *ai.ChatService,
 		cmdSys:        cmdSys,
 		toolReg:       toolReg,
 		dedup:         NewDeduper(store, 0),
-		limiter:       NewReplyLimiter(store, &cfg.RateLimit, logger),
 		typingSpeedMS: cfg.Stream.TypingSpeedMS,
 		minIntervalMS: cfg.Stream.MinIntervalMS,
 		maxIntervalMS: cfg.Stream.MaxIntervalMS,
@@ -421,8 +421,9 @@ func (b *Bot) streamSegments(ctx *conduit.MessageContext, msg *gateway.Normalize
 // calcSegmentInterval 根据段落文本长度计算发送间隔。
 //
 // 算法：基础间隔 = 字数 × typingSpeedMS，
+// 先叠加 ±jitterPct 的随机抖动（模拟真人打字的不均匀节奏），
 // 再 clamp 到 [minIntervalMS, maxIntervalMS]，
-// 最后叠加 ±jitterPct 的随机抖动，模拟真人打字的不均匀节奏。
+// 保证抖动后仍不超过上限（长消息不会被无限拖慢）。
 //
 // 返回 0 表示不延迟（typingSpeedMS 为 0 时禁用整个间隔机制）。
 func (b *Bot) calcSegmentInterval(text string) time.Duration {
@@ -433,6 +434,12 @@ func (b *Bot) calcSegmentInterval(text string) time.Duration {
 	charCount := utf8.RuneCountInString(text)
 	baseMS := charCount * b.typingSpeedMS
 
+	// 叠加抖动：实际间隔 = base × (1 + uniform[-jitter, +jitter])
+	if b.jitterPct > 0 {
+		jitter := (rand.Float64()*2 - 1) * b.jitterPct // [-jitterPct, +jitterPct]
+		baseMS = int(float64(baseMS) * (1 + jitter))
+	}
+
 	// clamp 到最小值
 	if b.minIntervalMS > 0 && baseMS < b.minIntervalMS {
 		baseMS = b.minIntervalMS
@@ -442,27 +449,16 @@ func (b *Bot) calcSegmentInterval(text string) time.Duration {
 		baseMS = b.maxIntervalMS
 	}
 
-	// 叠加抖动：实际间隔 = base × (1 + uniform[-jitter, +jitter])
-	if b.jitterPct > 0 {
-		jitter := (rand.Float64()*2 - 1) * b.jitterPct // [-jitterPct, +jitterPct]
-		baseMS = int(float64(baseMS) * (1 + jitter))
-	}
-
 	return time.Duration(baseMS) * time.Millisecond
 }
 
 // reply 通过网关回复消息。
-// 发送前执行回复限流（群配额 + 全局配额），超限时静默丢弃，防止 Bot 刷屏。
 // 回复内容为纯 http(s) URL 时按图片消息发送（富媒体段），供 cat/balogo/github_card 等图片类插件使用。
 func (b *Bot) reply(msg *gateway.NormalizedMessage, text string) {
-	ctx := context.Background()
-	if b.limiter != nil {
-		if !b.limiter.AllowGroupReply(ctx, msg.GroupID) || !b.limiter.AllowTotalReply(ctx) {
-			b.logger.Debug("bot: 回复限流，静默丢弃",
-				zap.String("group", msg.GroupID), zap.String("conn", msg.ConnID))
-			return
-		}
-	}
+	// 剔除 markdown 代码块围栏（``` 边界行）：QQ 等平台不支持 markdown 渲染，
+	// 直接发送代码原文，避免把 ``` 符号原样发给用户。
+	text = stripCodeFences(text)
+
 	if isImageURL(text) {
 		// 纯 URL → 图片消息（走上游富媒体发送体系）
 		if err := b.gw.Hub().SendSegments(msg.ConnID, msg, []gateway.NormalizedSegment{{
@@ -476,6 +472,28 @@ func (b *Bot) reply(msg *gateway.NormalizedMessage, text string) {
 	if err := b.gw.Hub().SendMessageTo(msg.ConnID, msg, text); err != nil {
 		b.logger.Error("bot: 回复失败", zap.String("conn", msg.ConnID), zap.Error(err))
 	}
+}
+
+// codeFenceRe 匹配 markdown 代码块围栏（``` 起始行 → ``` 结束行）。
+// 兼容：开围栏可选语言标注；闭围栏可缺失（LLM 漏写结尾时从开围栏处剔除到末尾）。
+var codeFenceRe = regexp.MustCompile("```[^\n]*\n?([\\s\\S]*?)\n?(?:```|\\z)")
+
+// stripCodeFences 剔除文本中的 markdown 代码块围栏行，仅保留代码内容。
+// 例如 "```go\nfmt.Println(\"hi\")\n```" → "fmt.Println(\"hi\")"。
+// 代码块与后续文字之间的换行保留；未闭合代码块（LLM 漏写结尾 ```）原样保留内容。
+func stripCodeFences(text string) string {
+	return codeFenceRe.ReplaceAllStringFunc(text, func(m string) string {
+		idx := codeFenceRe.FindStringSubmatchIndex(m)
+		if idx == nil || idx[2] < 0 {
+			return m
+		}
+		content := m[idx[2]:idx[3]]
+		// 闭合代码块：去掉闭围栏前的换行；未闭合：保持原样
+		if strings.HasSuffix(m, "```") {
+			return strings.TrimRight(content, "\n")
+		}
+		return content
+	})
 }
 
 // isImageURL 判断文本是否为纯图片 URL。

@@ -44,6 +44,8 @@ type Registry struct {
 	engine *conduit.Engine
 	// store 全局状态存储
 	store conduit.StateStore
+	// kv 受限键值存储（PostgreSQL 后端，持久化；可为 nil）
+	kv *database.PluginKVStore
 	// db 数据库访问层
 	db *database.DB
 	// cmdSys 命令系统
@@ -102,6 +104,14 @@ func (r *Registry) SetEngine(engine *conduit.Engine) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.engine = engine
+}
+
+// SetKVStore 注入插件受限键值存储（PostgreSQL 持久化）。
+// 在 InitPlugins 之前调用；不设置时插件的 PluginContext.KV 为 nil。
+func (r *Registry) SetKVStore(kv *database.PluginKVStore) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.kv = kv
 }
 
 // SetRebuildBT 设置行为树重建回调。
@@ -482,6 +492,7 @@ func (r *Registry) newPluginContext() *PluginContext {
 	return &PluginContext{
 		Engine:   r.engine,
 		Store:    r.store,
+		KV:       r.kv,
 		DB:       r.db,
 		CmdSys:   r.cmdSys,
 		Registry: r,
@@ -496,6 +507,7 @@ func (r *Registry) newPluginContextWith(ctx context.Context) *PluginContext {
 	return &PluginContext{
 		Engine:   r.engine,
 		Store:    r.store,
+		KV:       r.kv,
 		DB:       r.db,
 		CmdSys:   r.cmdSys,
 		Registry: r,
@@ -513,9 +525,32 @@ func (r *Registry) newPluginContextWith(ctx context.Context) *PluginContext {
 func (r *Registry) makeCommandHandler(p Plugin, cmd CommandDef) func(ctx *command.Context) error {
 	return func(cmdCtx *command.Context) error {
 		pluginID := p.Info().ID
+
+		// 防重入死循环：当插件子树未匹配（如命令带插件不支持的参数）时，
+		// 重入消息会再次落入"命令分支 → 本 handler → 重入"的无限递归。
+		// 重入消息由下方 Extra 中的重入标记标识，第二次进入直接报错退出。
+		if cmdCtx.CommandReentry {
+			return fmt.Errorf("plugin %q command %q reentry loop detected", pluginID, cmd.Name)
+		}
+
+		// 还原消息上下文键（键名与 bot 包 Key* 常量保持一致），
+		// 保证重入后的消息在插件子树 / 记忆层 / 话题层能拿到正确的
+		// 平台、机器人自身 ID（平台 ID）与 at 目标（平台 ID 列表）。
 		extra := map[string]any{
 			"plugin_id":    pluginID,
 			"command_name": cmd.Name,
+			// 重入标记：插件子树消费后不再进入命令分支
+			"bot.command.reentry": true,
+			// ── 消息上下文（bot 包 KeyPlatform/KeyPlatformUserID/...）──
+			"platform":         cmdCtx.Platform,
+			"platform_user_id": cmdCtx.PlatformUserID,
+			"nickname":         cmdCtx.Nickname,
+			"message_id":       cmdCtx.MessageID,
+			"conn_id":          cmdCtx.ConnID,
+			"self_id":          cmdCtx.SelfID,
+			// bot.message_type = "message"（gateway.MessageTypeMessage）：命令必然为普通消息
+			"bot.message_type": "message",
+			"bot.at_targets":   cmdCtx.AtTargets,
 		}
 		if wasmPlugin, ok := p.(*WasmPlugin); ok {
 			extra["installation_id"] = wasmPlugin.InstallationID()

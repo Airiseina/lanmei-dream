@@ -80,13 +80,12 @@ type AIConfig struct {
 
 // BotConfig 机器人配置
 type BotConfig struct {
-	NickName   string          `mapstructure:"nickname"`
-	SuperUsers string          `mapstructure:"super_users"` // 格式：platform:userID,... 如 qq:123456,wechat:wxid_xxx
-	Gateway    GatewayConfig   `mapstructure:"gateway"`
-	Stream     StreamConfig    `mapstructure:"stream"`
-	Media      MediaConfig     `mapstructure:"media"`
-	RateLimit  RateLimitConfig `mapstructure:"ratelimit"`
-	Topic      TopicConfig     `mapstructure:"topic"`
+	NickName   string        `mapstructure:"nickname"`
+	SuperUsers string        `mapstructure:"super_users"` // 格式：platform:userID,... 如 qq:123456,wechat:wxid_xxx
+	Gateway    GatewayConfig `mapstructure:"gateway"`
+	Stream     StreamConfig  `mapstructure:"stream"`
+	Media      MediaConfig   `mapstructure:"media"`
+	Topic      TopicConfig   `mapstructure:"topic"`
 }
 
 // MediaConfig 多媒体处理配置（RustFS 对象存储 + 视觉理解）
@@ -108,16 +107,6 @@ type MediaConfig struct {
 	VisionModel string `mapstructure:"vision_model"`
 }
 
-// RateLimitConfig 消息去重与回复限流配置
-type RateLimitConfig struct {
-	// ReplyPerGroupPerMin 每群每分钟回复上限
-	ReplyPerGroupPerMin int `mapstructure:"reply_per_group_per_min"`
-	// LLMPerUserPerMin 每用户每分钟 LLM 对话上限
-	LLMPerUserPerMin int `mapstructure:"llm_per_user_per_min"`
-	// ReplyTotalPerMin 全局每分钟回复上限
-	ReplyTotalPerMin int `mapstructure:"reply_total_per_min"`
-}
-
 // TopicConfig 群聊话题（Topic）系统配置
 type TopicConfig struct {
 	// Enabled topic 系统总开关（false 时回退为现行为：群聊全回复）
@@ -132,10 +121,12 @@ type TopicConfig struct {
 	SemanticThreshold float64 `mapstructure:"semantic_threshold"`
 	// CreditEnabled 回复配额（防刷屏）
 	CreditEnabled bool `mapstructure:"credit_enabled"`
-	// LLMRecheck 弱信号 LLM 复核开关（成本敏感，默认关闭）
-	LLMRecheck bool `mapstructure:"llm_recheck"`
-	// LLMRecheckIntervalMsgs 每 N 条群消息最多复核 1 条弱信号
-	LLMRecheckIntervalMsgs int `mapstructure:"llm_recheck_interval_msgs"`
+	// LinguisticStrongThreshold 提及判断"强提及"的置信度下限（0~1），默认 0.7。
+	// 达到该值视为确定在跟 Bot 说话 → 直接回复（等同 at 强信号）。
+	LinguisticStrongThreshold float64 `mapstructure:"linguistic_strong_threshold"`
+	// LinguisticWeakThreshold 提及判断"弱提及"的置信度下限（0~1），默认 0.4。
+	// 达到该值视为疑似提及 → 拉入话题（非成员静默，成员按配额续聊）。
+	LinguisticWeakThreshold float64 `mapstructure:"linguistic_weak_threshold"`
 	// ArchiveIntervalSeconds 归档扫描间隔（秒）
 	ArchiveIntervalSeconds int `mapstructure:"archive_interval_seconds"`
 }

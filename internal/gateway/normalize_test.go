@@ -1,6 +1,8 @@
 package gateway
 
 import (
+	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -314,8 +316,176 @@ func TestNormalizeV11_PrivateMessage(t *testing.T) {
 	}
 }
 
+// TestNormalizeV11_MediaOnlyKeepsEmptyContent 纯媒体消息（如图片）Content 保持空，
+// 不 fallback 为原始 CQ 码（避免意图/话题层被 CQ 码污染，媒体走媒体管线）。
+func TestNormalizeV11_MediaOnlyKeepsEmptyContent(t *testing.T) {
+	evt := v11Evt("message", "")
+	evt.MessageType = "group"
+	evt.UserID = 2812899726
+	evt.GroupID = 1055835299
+	evt.SelfID = 3303679079
+	evt.RawMessage = "[CQ:image,file=C6A1.png,url=https://example.com/a.png]"
+	evt.Message = json.RawMessage(`""`)
+
+	msg := NormalizeV11("c1", evt, PlatformNapCat)
+	if msg == nil {
+		t.Fatal("message 事件不应为 nil")
+	}
+	if msg.Content != "" {
+		t.Errorf("纯媒体消息 Content = %q, want 空（不 fallback 为 CQ 码）", msg.Content)
+	}
+	if len(msg.Segments) != 1 || msg.Segments[0].Type != "image" {
+		t.Errorf("Segments = %+v, want 1 个 image 段", msg.Segments)
+	}
+	if len(msg.MimeTypes) != 1 || msg.MimeTypes[0] != "image/png" {
+		t.Errorf("MimeTypes = %v, want [image/png]", msg.MimeTypes)
+	}
+}
+
 func TestNormalizeV11_MetaReturnsNil(t *testing.T) {
 	if msg := NormalizeV11("c1", v11Evt("meta_event", ""), PlatformNapCat); msg != nil {
 		t.Fatalf("meta_event 应返回 nil，got %+v", msg)
+	}
+}
+
+// ── CQ 码字符串解析（raw_message）──
+
+func TestParseCQSegmentsV11(t *testing.T) {
+	cases := []struct {
+		name     string
+		raw      string
+		wantSegs []MessageSegmentV11
+	}{
+		{
+			name: "纯文本",
+			raw:  "你好",
+			wantSegs: []MessageSegmentV11{
+				{Type: "text", Data: map[string]any{"text": "你好"}},
+			},
+		},
+		{
+			name: "at+文本混排",
+			raw:  "[CQ:at,qq=3303679079,name=蓝妹]我喜欢你",
+			wantSegs: []MessageSegmentV11{
+				{Type: "at", Data: map[string]any{"qq": "3303679079", "name": "蓝妹"}},
+				{Type: "text", Data: map[string]any{"text": "我喜欢你"}},
+			},
+		},
+		{
+			name: "文本在前+at",
+			raw:  "大家看[CQ:at,qq=123,name=张三]来了",
+			wantSegs: []MessageSegmentV11{
+				{Type: "text", Data: map[string]any{"text": "大家看"}},
+				{Type: "at", Data: map[string]any{"qq": "123", "name": "张三"}},
+				{Type: "text", Data: map[string]any{"text": "来了"}},
+			},
+		},
+		{
+			name: "值内转义逗号",
+			raw:  "[CQ:reply,id=1,text=你好&#44;世界]ok",
+			wantSegs: []MessageSegmentV11{
+				{Type: "reply", Data: map[string]any{"id": "1", "text": "你好,世界"}},
+				{Type: "text", Data: map[string]any{"text": "ok"}},
+			},
+		},
+		{
+			name: "文本转义",
+			raw:  "a&amp;b&#91;c&#93;",
+			wantSegs: []MessageSegmentV11{
+				{Type: "text", Data: map[string]any{"text": "a&b[c]"}},
+			},
+		},
+		{
+			name: "未闭合CQ码按文本",
+			raw:  "前缀[CQ:at,qq=123",
+			wantSegs: []MessageSegmentV11{
+				{Type: "text", Data: map[string]any{"text": "前缀"}},
+				{Type: "text", Data: map[string]any{"text": "[CQ:at,qq=123"}},
+			},
+		},
+		{
+			name: "at全体",
+			raw:  "[CQ:at,qq=all]集合",
+			wantSegs: []MessageSegmentV11{
+				{Type: "at", Data: map[string]any{"qq": "all"}},
+				{Type: "text", Data: map[string]any{"text": "集合"}},
+			},
+		},
+		{
+			name: "空串",
+			raw:  "",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := ParseCQSegmentsV11(tc.raw)
+			if len(got) != len(tc.wantSegs) {
+				t.Fatalf("ParseCQSegmentsV11(%q) 段数 = %d, want %d: %+v", tc.raw, len(got), len(tc.wantSegs), got)
+			}
+			for i := range got {
+				if got[i].Type != tc.wantSegs[i].Type {
+					t.Errorf("段[%d] Type = %q, want %q", i, got[i].Type, tc.wantSegs[i].Type)
+				}
+				for k, v := range tc.wantSegs[i].Data {
+					if gotV, ok := got[i].Data[k]; !ok || gotV != v {
+						t.Errorf("段[%d] Data[%q] = %v, want %v", i, k, gotV, v)
+					}
+				}
+			}
+		})
+	}
+}
+
+// TestNormalizeV11_CQCodeContent 验证 CQ 码消息被标准化为纯文本，且 at 目标为平台 ID。
+func TestNormalizeV11_CQCodeContent(t *testing.T) {
+	evt := v11Evt("message", "")
+	evt.MessageType = "group"
+	evt.UserID = 2812899726
+	evt.GroupID = 1055835299
+	evt.SelfID = 3303679079
+	evt.RawMessage = "[CQ:at,qq=3303679079,name=蓝妹]蓝莓我喜欢你"
+	evt.Message = json.RawMessage(`""`) // message 字段为空字符串，回退用 raw_message 解析
+
+	msg := NormalizeV11("c1", evt, PlatformNapCat)
+	if msg == nil {
+		t.Fatal("message 事件不应为 nil")
+	}
+	// Content 必须是纯文本，不能含原始 CQ 码
+	if strings.Contains(msg.Content, "[CQ:") {
+		t.Fatalf("Content 含原始 CQ 码: %q", msg.Content)
+	}
+	if msg.Content != "@蓝妹蓝莓我喜欢你" {
+		t.Errorf("Content = %q, want @蓝妹蓝莓我喜欢你", msg.Content)
+	}
+	if len(msg.AtTargets) != 1 || msg.AtTargets[0] != "3303679079" {
+		t.Errorf("AtTargets = %v, want [3303679079]（平台 ID）", msg.AtTargets)
+	}
+	if len(msg.Segments) != 2 {
+		t.Errorf("Segments 段数 = %d, want 2", len(msg.Segments))
+	}
+}
+
+// TestNormalizeV11_ArraySegmentsPlainContent 验证 message 为数组时 Content 同样使用纯文本。
+func TestNormalizeV11_ArraySegmentsPlainContent(t *testing.T) {
+	evt := v11Evt("message", "")
+	evt.MessageType = "group"
+	evt.UserID = 2812899726
+	evt.GroupID = 1055835299
+	evt.SelfID = 3303679079
+	evt.RawMessage = "[CQ:at,qq=3303679079,name=蓝妹]在吗" // 与数组不一致，数组优先
+	evt.Message = json.RawMessage(`[{"type":"at","data":{"qq":"3303679079","name":"蓝妹"}},{"type":"text","data":{"text":"在吗"}}]`)
+
+	msg := NormalizeV11("c1", evt, PlatformNapCat)
+	if msg == nil {
+		t.Fatal("message 事件不应为 nil")
+	}
+	if strings.Contains(msg.Content, "[CQ:") {
+		t.Fatalf("Content 含原始 CQ 码: %q", msg.Content)
+	}
+	if msg.Content != "@蓝妹在吗" {
+		t.Errorf("Content = %q, want @蓝妹在吗", msg.Content)
+	}
+	if len(msg.AtTargets) != 1 || msg.AtTargets[0] != "3303679079" {
+		t.Errorf("AtTargets = %v, want [3303679079]", msg.AtTargets)
 	}
 }
