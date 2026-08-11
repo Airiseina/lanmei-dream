@@ -47,6 +47,7 @@ balogo = true      # 蔚蓝档案 LOGO 插件
 ping = true        # 连通性测试插件
 github_card = true # GitHub 链接卡片插件
 music = true       # 网易云点歌插件
+sticker = true     # 自定义表情库插件
 
 # ============================================
 # Prompt 系统路径声明

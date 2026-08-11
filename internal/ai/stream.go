@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 
 	"github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
@@ -72,6 +73,7 @@ func (s *ChatService) chatStreamWithToolLoop(
 	segmenter := NewStreamSegmenter()
 	totalTokens := 0
 	var invokedTools []string
+	var lastToolResult string // 最近一次工具结果（LLM 工具轮后无文本时兜底输出）
 
 	for round := 0; round < maxToolCallRounds; round++ {
 		reader, streamErr := chatModel.Stream(ctx, schemaMsgs)
@@ -83,6 +85,8 @@ func (s *ChatService) chatStreamWithToolLoop(
 		firstChunk, recvErr := reader.Recv()
 		if errors.Is(recvErr, io.EOF) {
 			reader.Close()
+			s.logger.Warn("chat stream: 首 chunk 即 EOF（LLM 空响应）",
+				zap.Int("round", round), zap.Int("msgs", len(schemaMsgs)))
 			break // 空响应
 		}
 		if recvErr != nil {
@@ -90,10 +94,53 @@ func (s *ChatService) chatStreamWithToolLoop(
 			return nil, fmt.Errorf("chat stream: recv first chunk: %w", recvErr)
 		}
 
-		isToolRound := len(firstChunk.ToolCalls) > 0
+		// 轮次判定日志：确认 LLM 实际返回的内容形态（文本 / 工具调用 / 仅 reasoning）
+		s.logger.Info("chat stream: 轮次判定",
+			zap.Int("round", round),
+			zap.Int("tool_calls", len(firstChunk.ToolCalls)),
+			zap.Int("content_len", len(firstChunk.Content)),
+			zap.Int("reasoning_len", len(firstChunk.ReasoningContent)))
 
-		if isToolRound {
-			// ── 工具轮次：缓冲全部 chunk，拼接完整消息，执行工具 ──
+		// 工具轮执行闭包：拼接 assistant 消息 + 执行工具 + 回传结果。
+		// 推理模型（如 deepseek-v4）先流 reasoning，工具调用可能出现在后续 chunk，
+		// 因此"首 chunk 初判"与"文本轮中途检测"到的工具调用都走这里。
+		runToolRound := func(chunks []*schema.Message) (bool, error) {
+			accumulated, concatErr := schema.ConcatMessages(chunks)
+			if concatErr != nil {
+				return false, fmt.Errorf("chat stream: concat tool message: %w", concatErr)
+			}
+			if accumulated.ResponseMeta != nil && accumulated.ResponseMeta.Usage != nil {
+				totalTokens += accumulated.ResponseMeta.Usage.TotalTokens
+			}
+			// DeepSeek 等实现要求 assistant 消息必须携带 content 字段，而 go-openai 序列化
+			// 时空 content 会被 omitempty 省略；工具调用类 assistant 消息 content 常为空，
+			// 补一个空格占位，避免下一轮请求被 400 拒绝。
+			if accumulated.Content == "" && len(accumulated.ToolCalls) > 0 {
+				accumulated.Content = " "
+			}
+			schemaMsgs = append(schemaMsgs, accumulated)
+			for _, tc := range accumulated.ToolCalls {
+				s.logger.Info("chat stream: 工具轮触发",
+					zap.String("tool", tc.Function.Name), zap.String("args", tc.Function.Arguments))
+				result, callErr := s.toolReg.Call(ctx, tc.Function.Name, tc.Function.Arguments)
+				if callErr != nil {
+					result = fmt.Sprintf("工具调用失败: %v", callErr)
+				}
+				s.logger.Info("chat stream: 工具结果", zap.String("tool", tc.Function.Name),
+					zap.Int("result_len", len(result)), zap.String("result", truncateForLog(result, 120)))
+				lastToolResult = result
+				schemaMsgs = append(schemaMsgs, &schema.Message{
+					Role:       schema.Tool,
+					ToolCallID: tc.ID,
+					Content:    result,
+				})
+				invokedTools = append(invokedTools, tc.Function.Name)
+			}
+			return true, nil
+		}
+
+		// 初判：首 chunk 即带工具调用 → 纯工具轮
+		if len(firstChunk.ToolCalls) > 0 {
 			chunks := []*schema.Message{firstChunk}
 			for {
 				chunk, err := reader.Recv()
@@ -107,38 +154,19 @@ func (s *ChatService) chatStreamWithToolLoop(
 				chunks = append(chunks, chunk)
 			}
 			reader.Close()
-
-			// 拼接所有 chunk 为完整消息（ConcatMessages 处理 tool_call delta 合并）
-			accumulated, concatErr := schema.ConcatMessages(chunks)
-			if concatErr != nil {
-				return nil, fmt.Errorf("chat stream: concat tool message: %w", concatErr)
-			}
-
-			// 累计 token
-			if accumulated.ResponseMeta != nil && accumulated.ResponseMeta.Usage != nil {
-				totalTokens += accumulated.ResponseMeta.Usage.TotalTokens
-			}
-
-			// 将 assistant 消息追加到消息列表
-			schemaMsgs = append(schemaMsgs, accumulated)
-
-			// 执行工具调用
-			for _, tc := range accumulated.ToolCalls {
-				result, callErr := s.toolReg.Call(ctx, tc.Function.Name, tc.Function.Arguments)
-				if callErr != nil {
-					result = fmt.Sprintf("工具调用失败: %v", callErr)
-				}
-				schemaMsgs = append(schemaMsgs, &schema.Message{
-					Role:       schema.Tool,
-					ToolCallID: tc.ID,
-					Content:    result,
-				})
-				invokedTools = append(invokedTools, tc.Function.Name)
+			if _, err := runToolRound(chunks); err != nil {
+				return nil, err
 			}
 			continue // 下一轮
 		}
 
 		// ── 文本轮次：流式产出段落 ──
+		// reasoning 型模型（如 deepseek-v4）可能只返回 reasoning_content 而无 content，
+		// 收集 reasoning 作为空响应兜底。
+		var reasoningBuf strings.Builder
+		if firstChunk.ReasoningContent != "" {
+			reasoningBuf.WriteString(firstChunk.ReasoningContent)
+		}
 		// 处理首 chunk
 		if firstChunk.Content != "" {
 			for _, seg := range segmenter.Feed(firstChunk.Content) {
@@ -152,7 +180,10 @@ func (s *ChatService) chatStreamWithToolLoop(
 			totalTokens += firstChunk.ResponseMeta.Usage.TotalTokens
 		}
 
-		// 处理剩余 chunk
+		// 处理剩余 chunk；推理模型可能在 reasoning 后才发出工具调用（tool_calls 出现在后续 chunk），
+		// 一旦检测到即切换为工具轮，避免把工具调用当纯文本轮处理导致"只想不做"。
+		switchedToTool := false
+	chunkLoop:
 		for {
 			chunk, err := reader.Recv()
 			if errors.Is(err, io.EOF) {
@@ -161,6 +192,29 @@ func (s *ChatService) chatStreamWithToolLoop(
 			if err != nil {
 				reader.Close()
 				return nil, fmt.Errorf("chat stream: recv text chunk: %w", err)
+			}
+			if chunk.ReasoningContent != "" {
+				reasoningBuf.WriteString(chunk.ReasoningContent)
+			}
+			if len(chunk.ToolCalls) > 0 {
+				chunks := []*schema.Message{firstChunk, chunk}
+				for {
+					c, err := reader.Recv()
+					if errors.Is(err, io.EOF) {
+						break
+					}
+					if err != nil {
+						reader.Close()
+						return nil, fmt.Errorf("chat stream: recv tool chunk: %w", err)
+					}
+					chunks = append(chunks, c)
+				}
+				reader.Close()
+				if _, err := runToolRound(chunks); err != nil {
+					return nil, err
+				}
+				switchedToTool = true
+				break chunkLoop
 			}
 			if chunk.Content != "" {
 				for _, seg := range segmenter.Feed(chunk.Content) {
@@ -174,12 +228,46 @@ func (s *ChatService) chatStreamWithToolLoop(
 				totalTokens += chunk.ResponseMeta.Usage.TotalTokens
 			}
 		}
-		reader.Close()
+		// 工具切换分支已在内部 Close，此处避免二次 Close（会 panic: close of closed channel）
+		if !switchedToTool {
+			reader.Close()
+		}
+		if switchedToTool {
+			continue // 本轮已切换为工具轮，进入下一轮生成
+		}
 
 		// flush 剩余缓冲为末段
 		if last := segmenter.Flush(); last != "" {
 			if sendErr := sendSegment(ctx, segmentCh, last); sendErr != nil {
 				return nil, sendErr
+			}
+		}
+
+		// 工具已执行但 LLM 未产出最终文本（部分模型认为工具结果即答案，工具轮后不再生成内容）：
+		// 将最近一次工具结果作为回复输出，避免"调了工具却无响应"。
+		if segmenter.FullText() == "" && lastToolResult != "" {
+			for _, seg := range segmenter.Feed(lastToolResult) {
+				if sendErr := sendSegment(ctx, segmentCh, seg); sendErr != nil {
+					return nil, sendErr
+				}
+			}
+			if last := segmenter.Flush(); last != "" {
+				if sendErr := sendSegment(ctx, segmentCh, last); sendErr != nil {
+					return nil, sendErr
+				}
+			}
+		} else if segmenter.FullText() == "" && reasoningBuf.Len() > 0 {
+			// 仅返回 reasoning 而无 content 的空响应：输出思考内容兜底，避免用户看到"没听清"。
+			s.logger.Info("chat stream: 使用 reasoning 兜底输出", zap.Int("reasoning_len", reasoningBuf.Len()))
+			for _, seg := range segmenter.Feed(strings.TrimSpace(reasoningBuf.String())) {
+				if sendErr := sendSegment(ctx, segmentCh, seg); sendErr != nil {
+					return nil, sendErr
+				}
+			}
+			if last := segmenter.Flush(); last != "" {
+				if sendErr := sendSegment(ctx, segmentCh, last); sendErr != nil {
+					return nil, sendErr
+				}
 			}
 		}
 
@@ -195,6 +283,15 @@ func (s *ChatService) chatStreamWithToolLoop(
 
 	// 达到最大工具调用轮次，返回已有内容
 	s.asyncStoreAndCompress(ctx, req.UserID, req.GroupID, lastMsgContent, queryVec)
+
+	// 同上：工具已执行但未产出文本时，用最近一次工具结果兜底
+	if segmenter.FullText() == "" && lastToolResult != "" {
+		for _, seg := range segmenter.Feed(lastToolResult) {
+			if sendErr := sendSegment(ctx, segmentCh, seg); sendErr != nil {
+				return nil, sendErr
+			}
+		}
+	}
 
 	return &llm.ChatResponse{
 		Content:       segmenter.FullText(),
@@ -257,4 +354,12 @@ func sendSegment(ctx context.Context, ch chan<- string, seg string) error {
 	case <-ctx.Done():
 		return ctx.Err()
 	}
+}
+
+// truncateForLog 截断过长的日志值（工具结果可能是完整图片 URL，全量打印会刷屏）。
+func truncateForLog(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	return s[:max] + "...(truncated)"
 }

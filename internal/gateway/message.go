@@ -120,6 +120,7 @@ type NormalizedMessage struct {
 	Segments     []NormalizedSegment // 完整段列表
 	AtTargets    []string            // at 目标 user_id 列表
 	MimeTypes    []string            // 去重后的 MIME 类型列表
+	ImageURLs    []string            // 去重后的图片段 url 列表（无 url 的图片段不收录）
 	MessageType  MessageType         // message / notice / request
 	EventType    string              // 规范化事件类型（见 notice.go；普通消息为空）
 	EventSubType string              // 事件子类型（透传原始 sub_type，可为空）
@@ -412,7 +413,7 @@ func ExtractNormalizedTextV11(segs []NormalizedSegment) string {
 	return strings.Join(parts, "")
 }
 
-// collectSegmentMeta 收集 at 目标列表与去重 MIME 类型列表写入 msg。
+// collectSegmentMeta 收集 at 目标列表、去重 MIME 类型列表与图片 url 列表写入 msg。
 func collectSegmentMeta(msg *NormalizedMessage, segs []NormalizedSegment) {
 	seen := make(map[string]struct{})
 	for _, s := range segs {
@@ -428,6 +429,14 @@ func collectSegmentMeta(msg *NormalizedMessage, segs []NormalizedSegment) {
 			if _, ok := seen["mime:"+s.MimeType]; !ok {
 				seen["mime:"+s.MimeType] = struct{}{}
 				msg.MimeTypes = append(msg.MimeTypes, s.MimeType)
+			}
+		}
+		if s.Type == "image" {
+			if u := s.Data["url"]; u != "" {
+				if _, ok := seen["img:"+u]; !ok {
+					seen["img:"+u] = struct{}{}
+					msg.ImageURLs = append(msg.ImageURLs, u)
+				}
 			}
 		}
 	}

@@ -194,8 +194,12 @@ func (p *RoleplayStreamPass) runStream(
 		source = model.SourcePlugin
 		pluginTag = resp.InvolvedTools[0] // 取首个工具名作为标签
 	}
-	if saveErr := p.DB.SaveConversation(bgCtx, userID, groupID, "assistant", resp.Content, source, pluginTag); saveErr != nil {
-		p.Logger.Error("roleplay stream: save assistant conversation", zap.Error(saveErr))
+	// 空回复不落库（LLM 空响应场景），否则空内容消息会污染对话历史，
+	// 后续组装请求时被 API 以 "missing field content" 拒绝。
+	if strings.TrimSpace(resp.Content) != "" {
+		if saveErr := p.DB.SaveConversation(bgCtx, userID, groupID, "assistant", resp.Content, source, pluginTag); saveErr != nil {
+			p.Logger.Error("roleplay stream: save assistant conversation", zap.Error(saveErr))
+		}
 	}
 
 	// 群聊话题命中：记录 Bot 回复（追加窗口、授回复配额，保持话题活跃）

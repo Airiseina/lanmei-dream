@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/DaWesen/lanmei-dream/internal/config"
+	"github.com/DaWesen/lanmei-dream/internal/media"
 	pluginpkg "github.com/DaWesen/lanmei-dream/internal/plugin"
 	"go.uber.org/zap"
 )
@@ -26,6 +27,7 @@ type BusinessRegistry struct {
 	cfg      *config.PluginBuiltinsConfig // 内置插件开关配置
 	registry *pluginpkg.Registry          // 插件注册表
 	ncmURL   string                       // 网易云音乐 API 地址（点歌插件使用）
+	store    *media.ObjectStore           // RustFS 对象存储（表情库插件使用，未配置时为 nil）
 	logger   *zap.Logger
 }
 
@@ -41,6 +43,11 @@ func NewBusinessRegistry(cfg *config.PluginBuiltinsConfig, registry *pluginpkg.R
 // SetNCMURL 设置网易云音乐 API 地址（点歌插件依赖）。
 func (r *BusinessRegistry) SetNCMURL(url string) {
 	r.ncmURL = url
+}
+
+// SetObjectStore 设置 RustFS 对象存储（表情库插件依赖；未配置时收藏功能不可用）。
+func (r *BusinessRegistry) SetObjectStore(store *media.ObjectStore) {
+	r.store = store
 }
 
 // RegisterBuiltins 按配置注册所有内置业务插件。
@@ -129,6 +136,11 @@ func (r *BusinessRegistry) RegisterBuiltins() error {
 
 	// ── 网易云点歌插件 ──
 	if err := register(builtins.Music, "music", NewMusicPlugin(r.ncmURL, logger)); err != nil {
+		return err
+	}
+
+	// ── 自定义表情库插件 ──
+	if err := register(builtins.Sticker, "sticker", NewStickerPlugin(r.store, logger)); err != nil {
 		return err
 	}
 

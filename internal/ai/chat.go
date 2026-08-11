@@ -192,6 +192,11 @@ func (s *ChatService) assembleContext(ctx context.Context, req *llm.ChatRequest)
 	// L2/L1 摘要仍保留在 system prompt 中作为补充。
 	if lod != nil && req.TopicContext == nil {
 		for _, c := range lod.RawConversations {
+			// 跳过空内容历史（如 LLM 空响应误存），否则拼进请求会被 API 以
+			// "missing field content" 拒绝。
+			if strings.TrimSpace(c.Content) == "" {
+				continue
+			}
 			msgs = append(msgs, llm.Message{Role: llm.Role(c.Role), Content: c.Content})
 		}
 		// 在历史对话后追加强化指令，抵消历史中 assistant 旧风格对当前行为的模式污染。
@@ -207,6 +212,9 @@ func (s *ChatService) assembleContext(ctx context.Context, req *llm.ChatRequest)
 	// 话题近期消息作为主历史（user/assistant 交替），并附加话题约束，防止 Bot 越界回复无关内容。
 	if req.TopicContext != nil {
 		for _, tm := range req.TopicContext.Recent {
+			if strings.TrimSpace(tm.Content) == "" {
+				continue // 同上：跳过空内容历史，避免请求 400
+			}
 			role := llm.RoleUser
 			if tm.IsBot {
 				role = llm.RoleAssistant
@@ -405,6 +413,12 @@ func (s *ChatService) processToolCalls(ctx context.Context, chatModel model.Base
 			return msgs, totalTokens, invokedTools, err
 		}
 		// 将 LLM 回复追加到消息列表，作为下一轮的上下文
+		// DeepSeek 等实现要求 assistant 消息必须携带 content 字段，而 go-openai 序列化
+		// 时空 content 会被 omitempty 省略；工具调用类 assistant 消息 content 常为空，
+		// 补一个空格占位，避免下一轮请求被 400 拒绝。
+		if resp.Content == "" && len(resp.ToolCalls) > 0 {
+			resp.Content = " "
+		}
 		msgs = append(msgs, resp)
 
 		// 累计 token 用量（用于计费和监控）

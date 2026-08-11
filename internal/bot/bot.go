@@ -1,6 +1,7 @@
 package bot
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"math/rand/v2"
@@ -27,19 +28,68 @@ import (
 
 // Bot 封装 Conduit 引擎 + 网关服务 + 意图分析器引用（用于动态更新命令/工具列表）
 type Bot struct {
-	engine        *conduit.Engine
-	plugins       *pluginpkg.Registry
-	gw            *gateway.Server
-	analyzer      *intent.Analyzer               // 意图分析器引用，供插件加载后刷新命令/工具列表
-	cmdSys        *command.System                // 命令系统引用
-	toolReg       *tool.Registry                 // 工具注册表引用
-	dedup         *Deduper                       // 消息去重（message_id SETNX）
-	typingSpeedMS int                            // 打字速度（毫秒/字），0 禁用间隔
-	minIntervalMS int                            // 最小发送间隔（毫秒）
-	maxIntervalMS int                            // 最大发送间隔（毫秒），0 不限
-	jitterPct     float64                        // 间隔抖动比例（0.0-1.0）
-	superUsers    map[string]map[string]struct{} // 超管集合：平台 → 用户ID
-	logger        *zap.Logger
+	engine          *conduit.Engine
+	plugins         *pluginpkg.Registry
+	gw              *gateway.Server
+	analyzer        *intent.Analyzer               // 意图分析器引用，供插件加载后刷新命令/工具列表
+	cmdSys          *command.System                // 命令系统引用
+	toolReg         *tool.Registry                 // 工具注册表引用
+	dedup           *Deduper                       // 消息去重（message_id SETNX）
+	typingSpeedMS   int                            // 打字速度（毫秒/字），0 禁用间隔
+	minIntervalMS   int                            // 最小发送间隔（毫秒）
+	maxIntervalMS   int                            // 最大发送间隔（毫秒），0 不限
+	jitterPct       float64                        // 间隔抖动比例（0.0-1.0）
+	superUsers      map[string]map[string]struct{} // 超管集合：平台 → 用户ID
+	stickerInjector StickerEmotionInjector         // 硬性表情规则注入器（表情库插件，nil 表示未启用）
+	stickerCount    int                            // 已回复消息计数（硬性表情规则）
+	stickerTarget   int                            // 触发阈值（10~20 随机，0 表示首次回复前未初始化）
+	objectStore     *media.ObjectStore             // RustFS 对象存储（nil 时内网图片转 base64 发送不可用）
+	logger          *zap.Logger
+}
+
+// StickerEmotionInjector 硬性表情规则注入器：Bot 周期性回复中附带一张表情。
+// 由表情库插件实现（StickerPlugin.Pick，结构满足即可，插件无需依赖本包），
+// nil 表示未启用。保证在 LLM 主动调用 pick_sticker 之外，bot 也会"带表情说话"。
+type StickerEmotionInjector interface {
+	// Pick 返回一张随机表情的可发送 URL；无可用表情时返回空串。
+	Pick(ctx context.Context) string
+}
+
+// SetStickerInjector 注入硬性表情规则实现（表情库插件注册完成后由 main 调用）。
+func (b *Bot) SetStickerInjector(inj StickerEmotionInjector) {
+	b.stickerInjector = inj
+	b.stickerCount = 0
+	b.stickerTarget = 0
+}
+
+// maybeInjectSticker 硬性表情规则：每回复 10~20 条消息后，附带一张随机表情。
+// 只在普通消息回复时计数（事件/通知不计）；触发后阈值在 10~20 间重新随机。
+// turnSentSticker 为本轮是否已发出图片（LLM 输出 URL / 插件段 / 命令发图）：
+// 已带图则本轮不再补发（视为本轮已"携带表情"，直接重置计数），
+// 避免"LLM 已发表情 + 硬性规则又命中"造成连续两条表情。
+func (b *Bot) maybeInjectSticker(msg *gateway.NormalizedMessage, turnSentSticker bool) {
+	if b.stickerInjector == nil {
+		return
+	}
+	if msg == nil || msg.MessageType != gateway.MessageTypeMessage {
+		return
+	}
+	if b.stickerTarget == 0 {
+		b.stickerTarget = 10 + rand.IntN(11) // 首次回复时初始化 10~20
+	}
+	b.stickerCount++
+	if b.stickerCount < b.stickerTarget {
+		return
+	}
+	b.stickerCount = 0
+	b.stickerTarget = 10 + rand.IntN(11)
+	if turnSentSticker {
+		return
+	}
+	// 纯 URL 输出 → reply 识别为图片段发送（与 LLM 输出 URL 同一路径）
+	if url := b.stickerInjector.Pick(context.Background()); url != "" {
+		b.reply(msg, url)
+	}
 }
 
 // RefreshIntentAnalyzer 在插件注册新的命令或工具后同步更新意图分析器。
@@ -217,6 +267,7 @@ func New(cfg *config.BotConfig, cmdSys *command.System, chatSvc *ai.ChatService,
 		maxIntervalMS: cfg.Stream.MaxIntervalMS,
 		jitterPct:     cfg.Stream.JitterPct,
 		superUsers:    parseSuperUsers(cfg.SuperUsers),
+		objectStore:   mediaStore,
 		logger:        logger,
 	}
 }
@@ -299,6 +350,9 @@ func (b *Bot) OnMessage(msg *gateway.NormalizedMessage) {
 		return
 	}
 
+	// 超管身份需计算后注入（Extra 其余字段均为 msg 直取）
+	isSuperUser := b.isSuperUser(string(msg.Platform), msg.UserID)
+
 	input := &conduit.InputMessage{
 		UserID:  msg.UserID,
 		GroupID: msg.GroupID,
@@ -311,7 +365,8 @@ func (b *Bot) OnMessage(msg *gateway.NormalizedMessage) {
 			KeyMessageID:      msg.MessageID,
 			KeyConnID:         msg.ConnID,
 			KeySelfID:         msg.SelfID,
-			KeyIsSuperUser:    b.isSuperUser(string(msg.Platform), msg.UserID),
+			KeyIsSuperUser:    isSuperUser,
+			KeyImageURLs:      msg.ImageURLs,
 			// ── 事件输入（只读 Extra）──
 			KeyMessageType:  msg.MessageType,
 			KeySegments:     msg.Segments,
@@ -379,12 +434,33 @@ func (b *Bot) makeResponseCallback(msg *gateway.NormalizedMessage) func(*conduit
 //   - 插件经 conduit.Set 写入出站段键（KeySendSegments）→ 按段列表发送（at/text/image 组合）
 //   - 否则遍历 ctx.Output 逐条纯文本回复（历史行为，老插件零影响）
 func (b *Bot) flushOutput(ctx *conduit.MessageContext, msg *gateway.NormalizedMessage) {
+	sentSticker := segmentsContainImage(ctx)
 	if b.trySendSegments(ctx, msg) {
+		b.maybeInjectSticker(msg, sentSticker)
 		return
 	}
 	for _, out := range ctx.Output {
+		if isImageURL(out.Content) {
+			sentSticker = true
+		}
 		b.reply(msg, out.Content)
 	}
+	b.maybeInjectSticker(msg, sentSticker)
+}
+
+// segmentsContainImage 判断出站段列表（KeySendSegments）是否已含 image 段，
+// 供硬性表情规则判断"本轮是否已带图"，避免与 LLM/插件发的表情重复。
+func segmentsContainImage(ctx *conduit.MessageContext) bool {
+	raw, ok := conduit.Get[[]map[string]any](ctx, KeySendSegments)
+	if !ok {
+		return false
+	}
+	for _, seg := range raw {
+		if t, _ := seg["type"].(string); t == "image" {
+			return true
+		}
+	}
+	return false
 }
 
 // trySendSegments 尝试按插件写入的出站段列表发送。
@@ -432,7 +508,12 @@ func (b *Bot) streamSegments(ctx *conduit.MessageContext, msg *gateway.Normalize
 	}
 
 	first := true
+	sentSticker := false
 	for segment := range segCh {
+		// 本轮已输出图片 URL（LLM 调 pick_sticker 等）则标记，收尾不再补发随机表情
+		if isImageURL(segment) {
+			sentSticker = true
+		}
 		// 首段无延迟（LLM 生成期间已"打字"完毕）；
 		// 后续段落等待打字间隔，模拟真人逐段输入的节奏。
 		if !first {
@@ -469,6 +550,9 @@ func (b *Bot) streamSegments(ctx *conduit.MessageContext, msg *gateway.Normalize
 		// 顺序等待：前一段发送完成后才投递下一段
 		<-done
 	}
+
+	// 流式回复发送完毕后，按硬性表情规则决定是否补发一张表情
+	b.maybeInjectSticker(msg, sentSticker)
 }
 
 // calcSegmentInterval 根据段落文本长度计算发送间隔。
@@ -514,9 +598,19 @@ func (b *Bot) reply(msg *gateway.NormalizedMessage, text string) {
 
 	if isImageURL(text) {
 		// 纯 URL → 图片消息（走上游富媒体发送体系）
+		file := strings.TrimSpace(text)
+		// 内网 rustfs 预签名 URL：外部 IM 客户端无法解析容器内网主机名，
+		// 由 bot 下载对象内容转 base64 后发送（失败时按原 URL 降级）。
+		if b.objectStore != nil {
+			if uri, err := b.objectStore.ImageBase64FromURL(context.Background(), file); err != nil {
+				b.logger.Warn("bot: 内网图片转 base64 失败，按 URL 降级发送", zap.String("url", file), zap.Error(err))
+			} else if uri != "" {
+				file = uri
+			}
+		}
 		if err := b.gw.Hub().SendSegments(msg.ConnID, msg, []gateway.NormalizedSegment{{
 			Type: "image",
-			Data: map[string]string{"url": strings.TrimSpace(text)},
+			Data: map[string]string{"file": file},
 		}}); err != nil {
 			b.logger.Error("bot: 图片回复失败", zap.String("conn", msg.ConnID), zap.Error(err))
 		}

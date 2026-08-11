@@ -4,10 +4,13 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
+	"strings"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -29,9 +32,10 @@ import (
 //   - 桶不存在时 Put 自动创建并重试一次（启动不依赖网络可达）；
 //   - 所有方法均返回可读错误，调用方（MediaPass）负责降级。
 type ObjectStore struct {
-	client    *s3.Client
-	presigner *s3.PresignClient
-	bucket    string
+	client       *s3.Client
+	presigner    *s3.PresignClient
+	bucket       string
+	endpointHost string // 端点主机名（如 "rustfs:9000"），用于识别预签名 URL 是否为容器内网地址
 }
 
 // NewObjectStore 创建 RustFS（S3 兼容）对象存储客户端。
@@ -53,11 +57,28 @@ func NewObjectStore(endpoint, accessKey, secretKey, bucket, region string) (*Obj
 		Credentials:  credentials.NewStaticCredentialsProvider(accessKey, secretKey, ""),
 		UsePathStyle: true, // RustFS/MinIO 等兼容实现要求 path-style
 	})
+	host, err := endpointHost(endpoint)
+	if err != nil {
+		return nil, err
+	}
 	return &ObjectStore{
-		client:    client,
-		presigner: s3.NewPresignClient(client),
-		bucket:    bucket,
+		client:       client,
+		presigner:    s3.NewPresignClient(client),
+		bucket:       bucket,
+		endpointHost: host,
 	}, nil
+}
+
+// endpointHost 解析端点 URL 的 host（host:port），供内网 URL 识别用。
+func endpointHost(endpoint string) (string, error) {
+	u, err := url.Parse(endpoint)
+	if err != nil {
+		return "", fmt.Errorf("media: 解析端点 %q 失败: %w", endpoint, err)
+	}
+	if u.Host == "" {
+		return "", fmt.Errorf("media: 端点 %q 缺少 host", endpoint)
+	}
+	return u.Host, nil
 }
 
 // Bucket 返回桶名。
@@ -197,4 +218,24 @@ func (s *ObjectStore) Presign(ctx context.Context, key string, ttl time.Duration
 		return "", fmt.Errorf("media: 生成 %s 预签名 URL 失败: %w", key, err)
 	}
 	return req.URL, nil
+}
+
+// ImageBase64FromURL 若 rawURL 指向本对象存储的内网端点（host 与配置一致），
+// 则下载对象内容并返回 OneBot 11 约定的 base64 图片串（base64://<原始base64>），
+// 供外部 IM 客户端（无法解析容器内网主机名）直接发送图片。
+// 非内网 URL 返回空串；下载失败返回错误，调用方按原 URL 降级。
+func (s *ObjectStore) ImageBase64FromURL(ctx context.Context, rawURL string) (string, error) {
+	u, err := url.Parse(rawURL)
+	if err != nil || u.Host != s.endpointHost {
+		return "", nil
+	}
+	key := strings.TrimPrefix(u.Path, "/"+s.bucket+"/")
+	if key == "" || key == u.Path {
+		return "", nil // 路径不包含对象 key，非本存储对象
+	}
+	data, err := s.Get(ctx, key)
+	if err != nil {
+		return "", err
+	}
+	return "base64://" + base64.StdEncoding.EncodeToString(data), nil
 }

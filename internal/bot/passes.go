@@ -36,6 +36,7 @@ const (
 	KeyEventType    = "bot.event.type"     // string 规范化事件类型（普通消息为空）
 	KeyEventSubType = "bot.event.sub_type" // string 事件子类型
 	KeyEventData    = "bot.event.data"     // map[string]any 事件全字段
+	KeyImageURLs    = "bot.image_urls"     // []string 消息中图片段 url 列表（OnMessage 注入，插件零依赖读取）
 
 	// ── 媒体处理中间结果（data，由 MediaPass 写入）──
 	KeyImageDesc    = "bot.image_desc"    // string 图片理解描述
