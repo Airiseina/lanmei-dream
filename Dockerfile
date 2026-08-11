@@ -6,6 +6,9 @@ RUN apk add --no-cache git
 
 WORKDIR /app
 
+# 国内网络加速：替换默认的 proxy.golang.org（境外访问超时）
+ENV GOPROXY=https://goproxy.cn,direct
+
 COPY go.mod go.sum ./
 RUN go mod download
 
