@@ -30,14 +30,15 @@ type Bot struct {
 	engine        *conduit.Engine
 	plugins       *pluginpkg.Registry
 	gw            *gateway.Server
-	analyzer      *intent.Analyzer // 意图分析器引用，供插件加载后刷新命令/工具列表
-	cmdSys        *command.System  // 命令系统引用
-	toolReg       *tool.Registry   // 工具注册表引用
-	dedup         *Deduper         // 消息去重（message_id SETNX）
-	typingSpeedMS int              // 打字速度（毫秒/字），0 禁用间隔
-	minIntervalMS int              // 最小发送间隔（毫秒）
-	maxIntervalMS int              // 最大发送间隔（毫秒），0 不限
-	jitterPct     float64          // 间隔抖动比例（0.0-1.0）
+	analyzer      *intent.Analyzer               // 意图分析器引用，供插件加载后刷新命令/工具列表
+	cmdSys        *command.System                // 命令系统引用
+	toolReg       *tool.Registry                 // 工具注册表引用
+	dedup         *Deduper                       // 消息去重（message_id SETNX）
+	typingSpeedMS int                            // 打字速度（毫秒/字），0 禁用间隔
+	minIntervalMS int                            // 最小发送间隔（毫秒）
+	maxIntervalMS int                            // 最大发送间隔（毫秒），0 不限
+	jitterPct     float64                        // 间隔抖动比例（0.0-1.0）
+	superUsers    map[string]map[string]struct{} // 超管集合：平台 → 用户ID
 	logger        *zap.Logger
 }
 
@@ -89,7 +90,9 @@ func New(cfg *config.BotConfig, cmdSys *command.System, chatSvc *ai.ChatService,
 	analyzer := intent.NewAnalyzer(llmClient, cmdDefs, toolDefs)
 
 	// ── 注册管线 ──
+	// 管理员命令管线：AdminGuardPass 校验超管身份，非超管拦截不执行命令
 	engine.MustRegisterPipeline(conduit.NewPipeline("pipeline.admin",
+		&AdminGuardPass{},
 		&CommandPass{CmdSys: cmdSys},
 	))
 
@@ -213,8 +216,18 @@ func New(cfg *config.BotConfig, cmdSys *command.System, chatSvc *ai.ChatService,
 		minIntervalMS: cfg.Stream.MinIntervalMS,
 		maxIntervalMS: cfg.Stream.MaxIntervalMS,
 		jitterPct:     cfg.Stream.JitterPct,
+		superUsers:    parseSuperUsers(cfg.SuperUsers),
 		logger:        logger,
 	}
+}
+
+// isSuperUser 判断 (platform, userID) 是否在超管集合中。
+func (b *Bot) isSuperUser(platform, userID string) bool {
+	if m, ok := b.superUsers[platform]; ok {
+		_, ok := m[userID]
+		return ok
+	}
+	return false
 }
 
 // buildBehaviorTree 构建主行为树。
@@ -298,6 +311,7 @@ func (b *Bot) OnMessage(msg *gateway.NormalizedMessage) {
 			KeyMessageID:      msg.MessageID,
 			KeyConnID:         msg.ConnID,
 			KeySelfID:         msg.SelfID,
+			KeyIsSuperUser:    b.isSuperUser(string(msg.Platform), msg.UserID),
 			// ── 事件输入（只读 Extra）──
 			KeyMessageType:  msg.MessageType,
 			KeySegments:     msg.Segments,

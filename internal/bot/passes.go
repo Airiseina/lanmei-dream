@@ -15,14 +15,15 @@ import (
 // ── 上下文键 ──
 
 const (
-	KeyPlatform       = "platform"         // string 平台标识（qq/wechat/telegram/...）
-	KeyPlatformUserID = "platform_user_id" // string 平台用户 ID
-	KeyNickname       = "nickname"         // string 昵称
-	KeyMessageID      = "message_id"       // string 消息 ID
-	KeyConnID         = "conn_id"          // string 来源连接 ID
-	KeySelfID         = "self_id"          // string 机器人自身 ID
-	KeyIsSegment      = "bot.is_segment"   // bool 标记流式段落重入消息
-	KeyStreamChannel  = "bot.stream.ch"    // chan string 流式段落通道
+	KeyPlatform       = "platform"          // string 平台标识（qq/wechat/telegram/...）
+	KeyPlatformUserID = "platform_user_id"  // string 平台用户 ID
+	KeyNickname       = "nickname"          // string 昵称
+	KeyMessageID      = "message_id"        // string 消息 ID
+	KeyConnID         = "conn_id"           // string 来源连接 ID
+	KeySelfID         = "self_id"           // string 机器人自身 ID
+	KeyIsSegment      = "bot.is_segment"    // bool 标记流式段落重入消息
+	KeyStreamChannel  = "bot.stream.ch"     // chan string 流式段落通道
+	KeyIsSuperUser    = "bot.is_super_user" // bool 当前用户是否为超管（OnMessage 注入）
 
 	// ── 出站段输出（data，插件经 conduit.Set 写入，回调读取后按段发送）──
 	KeySendSegments = "bot.send.segments" // []map[string]any OneBot 原生段列表（at/text/image 组合）
@@ -46,6 +47,56 @@ const (
 	KeyTopicContext = "bot.topic.ctx"     // *llm.TopicContext 话题上下文（data）
 	KeyMentionMode  = "bot.topic.mention" // topic.MentionMode 提及模式（data）
 )
+
+// ── 管理员命令 ──
+
+// AdminGuardPass 校验 /admin 命令的发送者是否为超管。
+// 非超管：写入拒绝回复并返回错误中断管线（CommandPass 不会执行），
+// 不触发超时降级管线（fallback 仅在超时触发）。
+type AdminGuardPass struct{}
+
+func (p *AdminGuardPass) Execute(ctx *conduit.MessageContext) error {
+	if IsSuperUserFromCtx(ctx) {
+		return nil
+	}
+	conduit.AppendOutput(ctx, &conduit.Message{
+		UserID:  ctx.UserID,
+		GroupID: ctx.GroupID,
+		IsGroup: ctx.IsGroup,
+		Content: "只有管理员才能执行该命令哦~",
+	})
+	return fmt.Errorf("admin: 非超管用户 %s 尝试执行管理员命令", ctx.UserID)
+}
+
+// ── 超管判定 ──
+
+// parseSuperUsers 解析超管配置字符串为平台→用户ID 集合。
+// 格式：qq:123456,wechat:wxid_xxx → {"qq": {"123456": {}, "wxid_xxx": {}}}
+func parseSuperUsers(raw string) map[string]map[string]struct{} {
+	result := map[string]map[string]struct{}{}
+	for _, entry := range strings.Split(raw, ",") {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+		parts := strings.SplitN(entry, ":", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		if result[parts[0]] == nil {
+			result[parts[0]] = map[string]struct{}{}
+		}
+		result[parts[0]][parts[1]] = struct{}{}
+	}
+	return result
+}
+
+// IsSuperUserFromCtx 判断当前消息发送者是否为超管（读取 OnMessage 写入黑板的标记）。
+// 供插件 Pass 直接使用，插件无需依赖 bot 包。
+func IsSuperUserFromCtx(ctx *conduit.MessageContext) bool {
+	v, _ := ctx.Extra[KeyIsSuperUser].(bool)
+	return v
+}
 
 // ── CommandPass：处理斜杠命令 ──
 
