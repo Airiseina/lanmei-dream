@@ -45,6 +45,13 @@ services:
     volumes:
       - rustfsdata:/data
 
+  # ── 网易云音乐 API（ncm-api，点歌插件依赖，提供 /search 等接口）──
+  ncm-api:
+    image: moefurina/ncm-api:latest
+    restart: unless-stopped
+    ports:
+      - "${NCM_API_PORT:-3000}:3000"
+
   # ── 蓝妹 Bot ──
   lanmei:
     build: .
@@ -56,6 +63,8 @@ services:
       LANMEI_REDIS_ADDR: redis:6379
       LANMEI_BOT_GATEWAY_LISTEN_ADDR: "0.0.0.0:8080"
       LANMEI_BOT_GATEWAY_ACCESS_TOKEN: ${LANMEI_BOT_GATEWAY_ACCESS_TOKEN:-}
+      # 网易云点歌 API（ncm-api 服务，覆盖 config.toml 的 plugin.ncm_url）
+      LANMEI_PLUGIN_NCM_URL: http://ncm-api:3000
       # RustFS 多媒体对象存储
       LANMEI_MEDIA_ENDPOINT: http://rustfs:9000
       LANMEI_MEDIA_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:-lanmei}
