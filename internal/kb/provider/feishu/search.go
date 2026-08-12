@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	kbpkg "github.com/DaWesen/lanmei-dream/internal/kb"
+	kbscore "github.com/DaWesen/lanmei-dream/internal/kb/provider/score"
 	"go.uber.org/zap"
 )
 
@@ -78,7 +79,7 @@ func (p *Provider) searchVector(ctx context.Context, req *kbpkg.RecallRequest, d
 		if !ok {
 			continue
 		}
-		list = append(list, scored{doc: d, score: cosineSimilarity(req.QueryVector, vec)})
+		list = append(list, scored{doc: d, score: kbscore.CosineSimilarity(req.QueryVector, vec)})
 	}
 	p.mu.Unlock()
 
@@ -112,7 +113,7 @@ func (p *Provider) ensureEmbeddings(ctx context.Context, docs []*cachedDoc) erro
 	texts := make([]string, 0, len(missing))
 	keys := make([]string, 0, len(missing))
 	for _, d := range missing {
-		content := truncateRunes(d.content, maxContentRunes)
+		content := kbscore.TruncateRunes(d.content, maxContentRunes)
 		if strings.TrimSpace(content) == "" {
 			continue
 		}
@@ -156,7 +157,7 @@ func (p *Provider) searchFuzzy(req *kbpkg.RecallRequest, docs []*cachedDoc) []kb
 	}
 	list := make([]scored, 0, len(docs))
 	for _, d := range docs {
-		score := fuzzyScore(req.Query, d.title, d.content)
+		score := kbscore.FuzzyScore(req.Query, d.title, d.content)
 		if score >= p.fuzzyThreshold {
 			list = append(list, scored{doc: d, score: score})
 		}

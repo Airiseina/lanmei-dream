@@ -12,6 +12,7 @@ package ai
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -26,6 +27,7 @@ import (
 	"github.com/DaWesen/lanmei-dream/internal/database"
 	kbpkg "github.com/DaWesen/lanmei-dream/internal/kb"
 	modelpkg "github.com/DaWesen/lanmei-dream/internal/model"
+	"github.com/DaWesen/lanmei-dream/internal/topic"
 	"go.uber.org/zap"
 )
 
@@ -218,22 +220,32 @@ func (s *ChatService) assembleContext(ctx context.Context, req *llm.ChatRequest)
 		// 历史中带 emoji 的 assistant 回复会让 LLM 认为"这是预期风格"。
 		msgs = append(msgs, llm.Message{
 			Role:    llm.RoleSystem,
-			Content: "注意：以上是历史对话记录，其中 assistant 的回复风格可能不完全符合当前规范。请严格遵守本 prompt 开头的「关键行为规则」，特别是 Emoji 使用规范和长回复分段规则，不要被历史中的回复模式带偏。",
+			Content: "注意：以上是历史对话记录，其中 assistant 的回复风格可能不完全符合当前规范。请严格遵守本 prompt 开头的「关键行为规则」，特别是 Emoji 使用规范和回复长度与分段规则（简单消息话少、单条；长回复按空行分段），不要被历史中的回复模式带偏。",
 		})
 	}
 
 	// ── 群聊话题上下文注入（TopicGatePass 命中话题时写入）──
 	// 话题近期消息作为主历史（user/assistant 交替），并附加话题约束，防止 Bot 越界回复无关内容。
+	//
+	// 发言者标注（上下文污染修复）：群聊中 role=user 的消息可能来自不同成员，
+	// 若只按 role 注入内容，LLM 无法区分历史消息到底是谁发的（导致记忆串线）。
+	// 因此对用户消息以「昵称(用户ID)：」前缀标注实际发送者；Bot 消息即"蓝妹"自己，
+	// role=assistant 已足以标识，不加前缀。
+	// 用户ID 是稳定身份锚点：群昵称经常被修改，若只标昵称，昵称变化后
+	// LLM 会把同一人当作新成员，历史记忆随之失效；带 ID 后身份恒可对应。
 	if req.TopicContext != nil {
 		for _, tm := range req.TopicContext.Recent {
 			if strings.TrimSpace(tm.Content) == "" {
 				continue // 同上：跳过空内容历史，避免请求 400
 			}
 			role := llm.RoleUser
+			content := tm.Content
 			if tm.IsBot {
 				role = llm.RoleAssistant
+			} else {
+				content = topic.SpeakerLabel(tm.Nickname, tm.UserID) + "：" + tm.Content
 			}
-			msgs = append(msgs, llm.Message{Role: role, Content: tm.Content})
+			msgs = append(msgs, llm.Message{Role: role, Content: content})
 		}
 		label := req.TopicContext.Label
 		if label == "" {
@@ -246,7 +258,9 @@ func (s *ChatService) assembleContext(ctx context.Context, req *llm.ChatRequest)
 		msgs = append(msgs, llm.Message{
 			Role: llm.RoleSystem,
 			Content: "当前正处于群聊话题「" + label + "」中，参与成员：" + members +
-				"。请围绕该话题与成员们对话；只回应与话题相关的消息，如果用户在谈论其他事情，可以简短回应或不必回复。",
+				"。请围绕该话题与成员们对话；只回应与话题相关的消息，如果用户在谈论其他事情，可以简短回应或不必回复。" +
+				"注意：以上群聊历史中，每条用户消息以「昵称(用户ID)：」开头标注实际发送者，括号内的用户ID 是稳定身份标识，" +
+				"同一用户即使昵称变化也是同一人，请据此区分不同成员的话；蓝妹（你）的发言不带前缀。",
 		})
 	}
 
@@ -299,8 +313,27 @@ func (s *ChatService) assembleContext(ctx context.Context, req *llm.ChatRequest)
 		}
 	}
 
-	// 追加用户请求消息（当前轮次）
-	msgs = append(msgs, req.Messages...)
+	// 追加用户请求消息（当前轮次）。
+	// 群聊场景下为当前消息补上发言者前缀，与历史「昵称(用户ID)：」格式保持一致，
+	// 避免 LLM 把当前消息误判为历史中最后发言的成员。
+	if req.TopicContext != nil && len(req.Messages) > 0 {
+		last := req.Messages[len(req.Messages)-1]
+		uid := ""
+		if req.UserID > 0 { // UserID 未设置时省略 (id) 标注，避免 "昵称(0)" 噪音
+			uid = strconv.FormatInt(req.UserID, 10)
+		}
+		prefixed := llm.Message{
+			Role:         last.Role,
+			Content:      topic.SpeakerLabel(req.UserName, uid) + "：" + last.Content,
+			ImageURLs:    last.ImageURLs,
+			ToolCallID:   last.ToolCallID,
+			ToolCallName: last.ToolCallName,
+		}
+		msgs = append(msgs, req.Messages[:len(req.Messages)-1]...)
+		msgs = append(msgs, prefixed)
+	} else {
+		msgs = append(msgs, req.Messages...)
+	}
 
 	req.Messages = msgs
 

@@ -29,10 +29,10 @@ type SkillEnableConfig struct {
 //   - 支持运行时启用/关闭切换
 //   - 支持插件通过 Register()/Unregister() 动态注册/注销技能
 type Manager struct {
-	skillsDir  string          // skills/ 目录的绝对路径
-	configPath string          // config/skills.toml 路径
-	skills     map[string]*Skill  // ID → Skill（全部已发现的技能）
-	enabled    map[string]bool    // ID → 是否启用
+	skillsDir  string            // skills/ 目录的绝对路径
+	configPath string            // config/skills.toml 路径
+	skills     map[string]*Skill // ID → Skill（全部已发现的技能）
+	enabled    map[string]bool   // ID → 是否启用
 }
 
 // NewManager 创建技能管理器。
@@ -88,11 +88,18 @@ func (m *Manager) LoadAll() error {
 func (m *Manager) ReloadConfig() error {
 	raw, err := os.ReadFile(m.configPath)
 	if err != nil {
-		// 配置文件不存在时全部禁用
-		for id := range m.skills {
-			m.enabled[id] = false
+		if os.IsNotExist(err) {
+			// 配置文件不存在时默认启用全部已发现技能，与 Register() 的
+			// "配置未声明则默认启用"语义保持一致。历史教训：Docker 部署时
+			// 只挂载 config.toml 而未挂载 skills.toml，导致此处静默禁用
+			// 全部技能（表现为"技能未生效"）。改为默认启用后，缺失配置
+			// 只会多启用技能，不会出现"全部失效"的坑。
+			for id := range m.skills {
+				m.enabled[id] = true
+			}
+			return nil
 		}
-		return nil
+		return fmt.Errorf("skill: 读取 %s 失败: %w", m.configPath, err)
 	}
 
 	var cfg SkillsConfig

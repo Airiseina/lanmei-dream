@@ -6,6 +6,7 @@ import (
 	"path"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // ── OneBot 12 消息段 ──
@@ -114,6 +115,8 @@ type NormalizedMessage struct {
 	SenderName string   // 发送者昵称
 	MessageID  string   // 消息 ID
 	ConnID     string   // 来源连接 ID（用于回复路由）
+	// ReceivedAt 消息到达时间（由事件时间戳填充；用于"回复前会话是否已有新消息"判定）
+	ReceivedAt time.Time
 
 	// ── 多模态 / 事件扩展字段 ──
 	// 多模态段（message 事件填充）；事件字段（notice/request 事件填充，普通消息为空）
@@ -149,6 +152,12 @@ func NormalizeV12(connID string, evt *EventV12, platform Platform) *NormalizedMe
 		IsGroup:   evt.GroupID != "",
 		MessageID: evt.ID,
 		ConnID:    connID,
+	}
+	// 事件时间戳（Unix 秒，浮点保留亚秒精度）填充到达时间
+	if evt.Time > 0 {
+		sec := int64(evt.Time)
+		nsec := int64((evt.Time - float64(sec)) * 1e9)
+		msg.ReceivedAt = time.Unix(sec, nsec)
 	}
 
 	switch evt.Type {
@@ -203,6 +212,10 @@ func NormalizeV11(connID string, evt *EventV11, platform Platform) *NormalizedMe
 		Protocol: ProtocolV11,
 		SelfID:   strconv.FormatInt(evt.SelfID, 10),
 		ConnID:   connID,
+	}
+	// 事件时间戳（Unix 秒）填充到达时间
+	if evt.Time > 0 {
+		msg.ReceivedAt = time.Unix(evt.Time, 0)
 	}
 
 	switch evt.PostType {
