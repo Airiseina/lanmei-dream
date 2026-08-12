@@ -45,9 +45,11 @@ services:
     volumes:
       - rustfsdata:/data
 
-  # ── 网易云音乐 API（ncm-api，点歌插件依赖，提供 /search 等接口）──
+  # ── 网易云音乐 API（点歌插件依赖，提供 /search 等接口）──
+  # 原版 binaryify 镜像稳定且无需 xeapi 加密公钥；增强版 moefurina/ncm-api
+  # 依赖动态获取 xeapi 公钥（"xeapi public key is missing"），实测 /search 不可用。
   ncm-api:
-    image: moefurina/ncm-api:latest
+    image: binaryify/netease_cloud_music_api:latest
     restart: unless-stopped
     ports:
       - "${NCM_API_PORT:-3000}:3000"

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -226,8 +227,9 @@ type ncmAlbum struct {
 // ============================================================
 
 // searchNCM 调用网易云音乐搜索 API，返回前 limit 首结果。
+// keyword 必须 URL 编码（中文关键词直接拼接会导致服务端返回 400）。
 func searchNCM(ctx context.Context, ncmURL, keyword string, limit int) ([]ncmSong, error) {
-	url := fmt.Sprintf("%s/search?keywords=%s&limit=%d", ncmURL, keyword, limit)
+	url := fmt.Sprintf("%s/search?keywords=%s&limit=%d", ncmURL, url.QueryEscape(keyword), limit)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
