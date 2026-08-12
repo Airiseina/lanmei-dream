@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"math/rand/v2"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -39,7 +41,9 @@ type Bot struct {
 	minIntervalMS   int                            // 最小发送间隔（毫秒）
 	maxIntervalMS   int                            // 最大发送间隔（毫秒），0 不限
 	jitterPct       float64                        // 间隔抖动比例（0.0-1.0）
-	superUsers      map[string]map[string]struct{} // 超管集合：平台 → 用户ID
+	superUsers      map[string]map[string]struct{} // 超管集合：平台 → 用户ID（静态配置 + 动态添加合并）
+	adminMu         sync.RWMutex                   // 保护 superUsers 的并发读写
+	db              *database.DB                   // 数据库访问（动态管理员持久化；nil 时动态添加不可用）
 	stickerInjector StickerEmotionInjector         // 硬性表情规则注入器（表情库插件，nil 表示未启用）
 	stickerCount    int                            // 已回复消息计数（硬性表情规则）
 	stickerTarget   int                            // 触发阈值（10~20 随机，0 表示首次回复前未初始化）
@@ -254,7 +258,7 @@ func New(cfg *config.BotConfig, cmdSys *command.System, chatSvc *ai.ChatService,
 	bt := buildBehaviorTree(pluginReg, coreAdmin, coreCommand, coreIntent, coreSegment, coreNotice, coreMedia)
 	engine.SetBehaviorTree(bt)
 
-	return &Bot{
+	b := &Bot{
 		engine:        engine,
 		plugins:       pluginReg,
 		gw:            gwServer,
@@ -267,18 +271,139 @@ func New(cfg *config.BotConfig, cmdSys *command.System, chatSvc *ai.ChatService,
 		maxIntervalMS: cfg.Stream.MaxIntervalMS,
 		jitterPct:     cfg.Stream.JitterPct,
 		superUsers:    parseSuperUsers(cfg.SuperUsers),
+		db:            db,
 		objectStore:   mediaStore,
 		logger:        logger,
 	}
+
+	// 合并持久化的动态管理员（重启不丢）并注册管理员命令
+	b.loadDynamicAdmins()
+	b.registerAdminCommands()
+
+	return b
 }
 
-// isSuperUser 判断 (platform, userID) 是否在超管集合中。
+// isSuperUser 判断 (platform, userID) 是否在超管集合中（静态配置 + 动态添加合并，并发安全）。
 func (b *Bot) isSuperUser(platform, userID string) bool {
+	b.adminMu.RLock()
+	defer b.adminMu.RUnlock()
 	if m, ok := b.superUsers[platform]; ok {
 		_, ok := m[userID]
 		return ok
 	}
 	return false
+}
+
+// AddSuperUser 向内存超管集合添加一个成员（并发安全）。
+// 调用方需先完成持久化，保证内存与存储一致。
+func (b *Bot) AddSuperUser(platform, userID string) {
+	if platform == "" || userID == "" {
+		return
+	}
+	b.adminMu.Lock()
+	defer b.adminMu.Unlock()
+	if b.superUsers[platform] == nil {
+		b.superUsers[platform] = map[string]struct{}{}
+	}
+	b.superUsers[platform][userID] = struct{}{}
+}
+
+// loadDynamicAdmins 启动时从 bot_admin 表加载动态管理员并入内存集合。
+// DB 不可用时仅记录错误（静态配置超管不受影响），不阻断启动。
+func (b *Bot) loadDynamicAdmins() {
+	if b.db == nil {
+		return
+	}
+	admins, err := b.db.ListAdmins(context.Background())
+	if err != nil {
+		b.logger.Error("bot: 加载动态管理员失败", zap.Error(err))
+		return
+	}
+	for _, a := range admins {
+		b.AddSuperUser(a.Platform, a.UserID)
+	}
+	if len(admins) > 0 {
+		b.logger.Info("bot: 动态管理员已加载", zap.Int("count", len(admins)))
+	}
+}
+
+// ── 管理员管理命令 ──
+
+// registerAdminCommands 注册管理员管理命令（/添加管理员）。
+func (b *Bot) registerAdminCommands() {
+	_ = b.cmdSys.Register(command.Command{
+		Name:        "添加管理员",
+		Description: "添加管理员（仅超管），格式：/添加管理员 [平台:]用户ID，如 /添加管理员 qq:123456",
+		Handler:     b.handleAddAdmin,
+	})
+}
+
+// handleAddAdmin 处理 /添加管理员：
+// 超管校验 → 解析 [平台:]用户ID → 幂等写库 → 更新内存集合。
+// 顺序保证一致性：先持久化成功再更新内存，DB 失败则内存不变。
+func (b *Bot) handleAddAdmin(cmdCtx *command.Context) error {
+	if !cmdCtx.IsSuperUser {
+		cmdCtx.Reply("只有管理员才能添加管理员哦~")
+		return nil
+	}
+	if b.db == nil {
+		cmdCtx.Reply("数据库不可用，无法添加管理员")
+		return nil
+	}
+
+	platform, userID, err := parseAdminArg(cmdCtx)
+	if err != nil {
+		cmdCtx.Reply(err.Error())
+		return nil
+	}
+
+	existed, err := b.db.AddAdmin(context.Background(), platform, userID,
+		cmdCtx.Platform+":"+cmdCtx.PlatformUserID)
+	if err != nil {
+		b.logger.Error("bot: 添加管理员写库失败",
+			zap.String("platform", platform), zap.String("user", userID), zap.Error(err))
+		cmdCtx.Reply("添加管理员失败，请稍后重试")
+		return nil
+	}
+	// 写库成功（或已存在）后再更新内存集合，保证内存与存储一致
+	b.AddSuperUser(platform, userID)
+	if existed {
+		cmdCtx.Reply(fmt.Sprintf("%s:%s 已经是管理员啦", platform, userID))
+		return nil
+	}
+	cmdCtx.Reply(fmt.Sprintf("已添加管理员 ✅ %s:%s", platform, userID))
+	return nil
+}
+
+// knownPlatforms 合法平台标识（与 gateway.Platform 常量保持一致）。
+var knownPlatforms = map[string]struct{}{"qq": {}, "napcat": {}, "wechat": {}, "telegram": {}}
+
+// parseAdminArg 解析 /添加管理员 参数：[平台:]用户ID。
+//   - 带冒号（如 "qq:123456"）：校验平台合法性；
+//   - 裸用户ID（如 "123456"）：默认取当前消息平台；当前平台未知（unknown）时要求显式带平台前缀。
+func parseAdminArg(cmdCtx *command.Context) (platform, userID string, err error) {
+	raw := strings.TrimSpace(strings.Join(cmdCtx.CommandArgs, " "))
+	if raw == "" {
+		return "", "", errors.New("格式错误！用法：/添加管理员 [平台:]用户ID，如 /添加管理员 qq:123456")
+	}
+	if strings.Contains(raw, ":") {
+		parts := strings.SplitN(raw, ":", 2)
+		platform = strings.TrimSpace(parts[0])
+		userID = strings.TrimSpace(parts[1])
+		if _, ok := knownPlatforms[platform]; !ok {
+			return "", "", fmt.Errorf("未知平台「%s」，支持 qq/napcat/wechat/telegram", platform)
+		}
+	} else {
+		platform = cmdCtx.Platform
+		userID = strings.TrimSpace(raw)
+		if _, ok := knownPlatforms[platform]; !ok {
+			return "", "", fmt.Errorf("无法确定平台，请用 /添加管理员 [平台:]用户ID 指定，如 qq:%s", userID)
+		}
+	}
+	if userID == "" {
+		return "", "", errors.New("用户 ID 不能为空")
+	}
+	return platform, userID, nil
 }
 
 // buildBehaviorTree 构建主行为树。

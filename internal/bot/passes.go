@@ -122,6 +122,7 @@ func (p *CommandPass) Execute(ctx *conduit.MessageContext) error {
 		MessageID:      messageIDFromCtx(ctx),
 		ConnID:         connIDFromCtx(ctx),
 		CommandReentry: commandReentryFromCtx(ctx),
+		IsSuperUser:    IsSuperUserFromCtx(ctx),
 	})
 
 	// 将回复追加到输出
@@ -215,6 +216,7 @@ func (p *ExecuteCommandPass) Execute(ctx *conduit.MessageContext) error {
 		MessageID:      messageIDFromCtx(ctx),
 		ConnID:         connIDFromCtx(ctx),
 		CommandReentry: commandReentryFromCtx(ctx),
+		IsSuperUser:    IsSuperUserFromCtx(ctx),
 	}
 
 	if err := handlerRaw(cmdCtx); err != nil {

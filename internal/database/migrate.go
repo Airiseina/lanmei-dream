@@ -41,6 +41,7 @@ func (db *DB) Migrate(ctx context.Context, vectorDim int) error {
 		&model.PluginKV{},
 		&model.KnowledgeChunk{},
 		&model.StickerLibrary{},
+		&model.BotAdmin{},
 	); err != nil {
 		return fmt.Errorf("migrate: %w", err)
 	}
