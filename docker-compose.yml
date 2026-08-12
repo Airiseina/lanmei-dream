@@ -84,6 +84,10 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      rustfs:
+        condition: service_started
+      ncm-api:
+        condition: service_started
 
   # ── Onebots 网关（统一 IM 平台适配，通过反向 WS 转发事件到蓝妹）──
   onebots:
