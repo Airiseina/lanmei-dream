@@ -66,6 +66,7 @@ func Init() (*Config, error) {
 		"LANMEI_AI_EMBEDDING_DIM":            "ai.embedding_dim",
 		"LANMEI_PLUGIN_ROOT_DIR":             "plugin.root_dir",
 		"LANMEI_PLUGIN_NCM_URL":              "plugin.ncm_url",
+		"LANMEI_PLUGIN_MUSIC_SEND_MODE":      "plugin.music_send_mode",
 		"LANMEI_KNOWLEDGE_ENABLED":           "knowledge.enabled",
 		"LANMEI_KNOWLEDGE_AUTO_RECALL_LIMIT": "knowledge.auto_recall_limit",
 		// 多媒体（RustFS）与机器人行为配置
@@ -166,6 +167,7 @@ func setDefaults(v *viper.Viper) {
 	// Plugin 默认值
 	v.SetDefault("plugin.root_dir", "./data/plugins")
 	v.SetDefault("plugin.ncm_url", "")
+	v.SetDefault("plugin.music_send_mode", "auto") // auto/card/link，见 PluginConfig.MusicSendMode
 
 	// Prompts 默认路径
 	v.SetDefault("prompts.dir", "./prompts")

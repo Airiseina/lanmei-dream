@@ -67,6 +67,9 @@ services:
       LANMEI_BOT_GATEWAY_ACCESS_TOKEN: ${LANMEI_BOT_GATEWAY_ACCESS_TOKEN:-}
       # 网易云点歌 API（ncm-api 服务，覆盖 config.toml 的 plugin.ncm_url）
       LANMEI_PLUGIN_NCM_URL: http://ncm-api:3000
+      # 点歌结果发送方式：auto = 发语音（record 段，点击即听，无需签名服务）；
+      # 取不到音频时自动降级文字链接。card 需工具支持音乐签名，link 为纯文字。
+      LANMEI_PLUGIN_MUSIC_SEND_MODE: auto
       # RustFS 多媒体对象存储
       LANMEI_MEDIA_ENDPOINT: http://rustfs:9000
       LANMEI_MEDIA_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:-lanmei}

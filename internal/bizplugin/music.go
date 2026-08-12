@@ -40,15 +40,17 @@ import (
 //	pipeline.music.search  → [musicSearchPass]
 //	pipeline.music.select  → [musicSelectPass]
 type MusicPlugin struct {
-	ncmURL string // 网易云音乐 API 基础 URL
-	store  conduit.StateStore
-	logger *zap.Logger
+	ncmURL        string // 网易云音乐 API 基础 URL
+	musicSendMode string // 点歌发送方式：auto/card/link
+	store         conduit.StateStore
+	logger        *zap.Logger
 }
 
 // NewMusicPlugin 创建网易云点歌插件。
 // ncmURL 为网易云音乐 API 基础 URL（如 http://ncm-api:3000），为空时插件仍可初始化但使用时报错。
-func NewMusicPlugin(ncmURL string, logger *zap.Logger) *MusicPlugin {
-	return &MusicPlugin{ncmURL: ncmURL, logger: logger}
+// musicSendMode 为点歌结果发送方式（auto/card/link），用于适配不同反向代理工具。
+func NewMusicPlugin(ncmURL, musicSendMode string, logger *zap.Logger) *MusicPlugin {
+	return &MusicPlugin{ncmURL: ncmURL, musicSendMode: musicSendMode, logger: logger}
 }
 
 // Info 返回网易云点歌插件元信息。
@@ -87,7 +89,7 @@ func (p *MusicPlugin) OnInit(ctx *pluginpkg.PluginContext) error {
 	ctx.Registry.TrackPass("music", searchPassID)
 
 	selectPassID := pluginpkg.PassID("music", "select")
-	selectPass := &musicSelectPass{store: p.store, logger: p.logger}
+	selectPass := &musicSelectPass{store: p.store, ncmURL: p.ncmURL, sendMode: p.musicSendMode, logger: p.logger}
 
 	if err := ctx.Engine.RegisterPass(selectPassID, selectPass); err != nil {
 		return fmt.Errorf("register music select pass: %w", err)
@@ -147,10 +149,19 @@ func isMusicCommand(ctx *conduit.MessageContext) bool {
 
 // isMusicSelect 返回一个条件函数，判断消息是否为点歌序号选择（1/2/3）且存在活跃会话。
 // 使用闭包捕获 StateStore 以检查会话。
+//
+// 防误触规则：
+//   - 群聊必须 @ 机器人（RawMsg 含 "@"）才视为选择，纯数字对话不会误触发；
+//   - 私聊直接发序号即可（无 @ 场景）；
+//   - 会话 20s 内有效（musicSessionTTL）。
 func isMusicSelect(store conduit.StateStore) func(*conduit.MessageContext) bool {
 	return func(ctx *conduit.MessageContext) bool {
-		msg := strings.TrimSpace(ctx.RawMsg)
-		if msg != "1" && msg != "2" && msg != "3" {
+		raw := strings.TrimSpace(ctx.RawMsg)
+		if ctx.IsGroup && !strings.Contains(raw, "@") {
+			return false
+		}
+		sel := extractSelection(raw)
+		if sel != "1" && sel != "2" && sel != "3" {
 			return false
 		}
 		// 检查是否存在活跃会话
@@ -161,6 +172,19 @@ func isMusicSelect(store conduit.StateStore) func(*conduit.MessageContext) bool 
 		}
 		return true
 	}
+}
+
+// extractSelection 从消息中提取独立出现的序号（1/2/3）。
+// 容忍 @机器人 等前缀（如 "@2055194291 1" → "1"）；按空白切词后仅接受单个
+// 1/2/3 的完整 token，忽略 @QQ号 等长数字串（否则提取到 "20551942911" 导致选择失效）。
+func extractSelection(msg string) string {
+	for _, f := range strings.Fields(msg) {
+		f = strings.Trim(f, "，。,.、!！?？")
+		if f == "1" || f == "2" || f == "3" {
+			return f
+		}
+	}
+	return ""
 }
 
 // ============================================================
@@ -181,8 +205,9 @@ type musicSong struct {
 	DurationMs int64  `json:"duration_ms"`
 }
 
-// musicSessionTTL 会话过期时间。
-const musicSessionTTL = 60 * time.Second
+// musicSessionTTL 点歌选择会话有效期。
+// 缩到 20 秒：得到歌曲列表后短时间内回复序号才触发，避免"仅数字的对话"被误判。
+const musicSessionTTL = 20 * time.Second
 
 // musicSessionKey 生成会话的 StateStore 键，按群+用户隔离。
 func musicSessionKey(groupID, userID string) string {
@@ -258,6 +283,44 @@ func searchNCM(ctx context.Context, ncmURL, keyword string, limit int) ([]ncmSon
 	}
 
 	return result.Result.Songs, nil
+}
+
+// getSongURL 获取歌曲音频 URL（ncm-api /song/url/v1）。
+// 返回空串表示该曲无可用音频（VIP/版权受限）。
+func getSongURL(ctx context.Context, ncmURL string, songID int64) (string, error) {
+	if ncmURL == "" {
+		return "", fmt.Errorf("音乐服务未配置")
+	}
+	u := fmt.Sprintf("%s/song/url/v1?id=%d&level=standard", ncmURL, songID)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return "", fmt.Errorf("create request: %w", err)
+	}
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("api returned status %d", resp.StatusCode)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("read response: %w", err)
+	}
+	var result struct {
+		Data []struct {
+			URL string `json:"url"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &result); err != nil {
+		return "", fmt.Errorf("parse response: %w", err)
+	}
+	if len(result.Data) > 0 {
+		return result.Data[0].URL, nil
+	}
+	return "", fmt.Errorf("no audio url")
 }
 
 // ============================================================
@@ -383,13 +446,15 @@ func (pass *musicSearchPass) Execute(ctx *conduit.MessageContext) error {
 
 // musicSelectPass 根据用户输入的序号选择歌曲并输出详情。
 type musicSelectPass struct {
-	store  conduit.StateStore
-	logger *zap.Logger
+	store    conduit.StateStore
+	ncmURL   string // 网易云音乐 API 基础 URL（语音方案取音频用）
+	sendMode string // auto/card/link，点歌结果发送方式
+	logger   *zap.Logger
 }
 
 func (pass *musicSelectPass) Execute(ctx *conduit.MessageContext) error {
-	// 解析序号
-	selection, err := strconv.Atoi(strings.TrimSpace(ctx.RawMsg))
+	// 解析序号（容忍 @机器人 前缀，与 isMusicSelect 的匹配逻辑一致）
+	selection, err := strconv.Atoi(extractSelection(ctx.RawMsg))
 	if err != nil || selection < 1 || selection > 3 {
 		conduit.AppendOutput(ctx, &conduit.Message{
 			UserID: ctx.UserID, GroupID: ctx.GroupID, IsGroup: ctx.IsGroup,
@@ -429,14 +494,54 @@ func (pass *musicSelectPass) Execute(ctx *conduit.MessageContext) error {
 
 	song := session.Songs[selection-1]
 
-	// 输出选中歌曲
-	content := fmt.Sprintf("🎵 %s - %s 《%s》\n网易云音乐: https://music.163.com/#/song?id=%d",
-		song.Name, song.Artists, song.Album, song.ID)
-
-	conduit.AppendOutput(ctx, &conduit.Message{
-		UserID: ctx.UserID, GroupID: ctx.GroupID, IsGroup: ctx.IsGroup,
-		Content: content,
-	})
+	// 点歌结果发送方式（适配不同反向代理工具）：
+	//   - auto（默认）：发语音（record 段，OneBot 端自动转码，点击即听）；取不到音频时降级文字链接
+	//   - card：强制 OB11 music 段（真正的音乐卡片，需工具支持签名，如 NapCat 配可用 musicSignUrl）
+	//   - link：强制纯文字链接
+	mode := pass.sendMode
+	if mode == "" {
+		mode = "auto"
+	}
+	if mode != "link" {
+		// card：音乐卡片段；auto：语音段（均无需混发）
+		if mode == "card" {
+			// 音乐段必须单独发送（llonebot 校验"音乐消息不能与其他类型混发"），
+			// 经出站段键（bot.send.segments）发送；gateway 对未知段类型原样透传。
+			conduit.Set(ctx, "bot.send.segments", []map[string]any{{
+				"type": "music",
+				"data": map[string]any{"type": "163", "id": fmt.Sprintf("%d", song.ID)},
+			}})
+		} else {
+			// 语音：调 ncm-api 获取音频 URL，OneBot 端（napcat/llonebot 自带 ffmpeg）转码为 QQ 语音
+			audioURL, aerr := getSongURL(ctx.Ctx, pass.ncmURL, song.ID)
+			if aerr == nil && audioURL != "" {
+				conduit.Set(ctx, "bot.send.segments", []map[string]any{{
+					"type": "record",
+					"data": map[string]any{"file": audioURL},
+				}})
+			} else {
+				// 取不到音频（VIP/版权受限）→ 降级文字链接
+				if aerr != nil {
+					pass.logger.Warn("music: 获取音频失败，降级文字链接",
+						zap.Int64("song", song.ID), zap.Error(aerr))
+				}
+				content := fmt.Sprintf("🎵 %s - %s 《%s》\n网易云音乐: https://music.163.com/#/song?id=%d",
+					song.Name, song.Artists, song.Album, song.ID)
+				conduit.AppendOutput(ctx, &conduit.Message{
+					UserID: ctx.UserID, GroupID: ctx.GroupID, IsGroup: ctx.IsGroup,
+					Content: content,
+				})
+			}
+		}
+	} else {
+		// link：纯文字链接
+		content := fmt.Sprintf("🎵 %s - %s 《%s》\n网易云音乐: https://music.163.com/#/song?id=%d",
+			song.Name, song.Artists, song.Album, song.ID)
+		conduit.AppendOutput(ctx, &conduit.Message{
+			UserID: ctx.UserID, GroupID: ctx.GroupID, IsGroup: ctx.IsGroup,
+			Content: content,
+		})
+	}
 
 	// 选择后删除会话
 	_ = pass.store.Delete(ctx.Ctx, sessionKey)

@@ -33,6 +33,11 @@ max_backups = 10
 root_dir = "./data/plugins"
 # 网易云点歌 API 服务地址（ncm-api），为空时点歌插件不可用
 ncm_url = ""
+# 点歌结果发送方式（适配不同反向代理工具）：
+#   auto = QQ/NapCat 发音乐卡片段，其余平台发文字链接（默认）
+#   card = 强制发 OB11 music 段（要求实现支持，如 llonebot）
+#   link = 强制发文字链接（最通用）
+music_send_mode = "auto"
 
 # 内置业务插件开关（配置驱动注册，无需改代码即可启停）
 # 若同名插件已由 Wasm 动态加载，内置注册自动跳过，避免重复

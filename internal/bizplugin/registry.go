@@ -24,11 +24,12 @@ import (
 //   - 插件私有业务数据通过受限 KV 存储（PluginContext.KV，PostgreSQL 持久化）读写，
 //     内置插件不直接持有裸数据库。
 type BusinessRegistry struct {
-	cfg      *config.PluginBuiltinsConfig // 内置插件开关配置
-	registry *pluginpkg.Registry          // 插件注册表
-	ncmURL   string                       // 网易云音乐 API 地址（点歌插件使用）
-	store    *media.ObjectStore           // RustFS 对象存储（表情库插件使用，未配置时为 nil）
-	logger   *zap.Logger
+	cfg           *config.PluginBuiltinsConfig // 内置插件开关配置
+	registry      *pluginpkg.Registry          // 插件注册表
+	ncmURL        string                       // 网易云音乐 API 地址（点歌插件使用）
+	musicSendMode string                       // 点歌发送方式：auto/card/link
+	store         *media.ObjectStore           // RustFS 对象存储（表情库插件使用，未配置时为 nil）
+	logger        *zap.Logger
 }
 
 // NewBusinessRegistry 创建内置业务插件注册表。
@@ -43,6 +44,11 @@ func NewBusinessRegistry(cfg *config.PluginBuiltinsConfig, registry *pluginpkg.R
 // SetNCMURL 设置网易云音乐 API 地址（点歌插件依赖）。
 func (r *BusinessRegistry) SetNCMURL(url string) {
 	r.ncmURL = url
+}
+
+// SetMusicSendMode 设置点歌发送方式（auto/card/link，适配不同反向代理工具）。
+func (r *BusinessRegistry) SetMusicSendMode(mode string) {
+	r.musicSendMode = mode
 }
 
 // SetObjectStore 设置 RustFS 对象存储（表情库插件依赖；未配置时收藏功能不可用）。
@@ -135,7 +141,7 @@ func (r *BusinessRegistry) RegisterBuiltins() error {
 	}
 
 	// ── 网易云点歌插件 ──
-	if err := register(builtins.Music, "music", NewMusicPlugin(r.ncmURL, logger)); err != nil {
+	if err := register(builtins.Music, "music", NewMusicPlugin(r.ncmURL, r.musicSendMode, logger)); err != nil {
 		return err
 	}
 

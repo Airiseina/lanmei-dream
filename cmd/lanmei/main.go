@@ -238,6 +238,7 @@ func main() {
 	// 内置插件与 Wasm 插件同走一个注册表，同名插件已由 Wasm 加载时自动跳过，避免 ID 冲突。
 	bizReg := bizplugin.NewBusinessRegistry(&cfg.Plugin.Builtins, pluginReg, logger)
 	bizReg.SetNCMURL(cfg.Plugin.NCMURL)
+	bizReg.SetMusicSendMode(cfg.Plugin.MusicSendMode)
 	bizReg.SetObjectStore(inf.ObjectStore)
 	if err := bizReg.RegisterBuiltins(); err != nil {
 		logger.Fatal("内置业务插件注册失败", zap.Error(err))

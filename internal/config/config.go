@@ -26,6 +26,12 @@ type PluginConfig struct {
 	// 为空时点歌插件不可用；格式如 http://ncm-api:3000
 	NCMURL string `mapstructure:"ncm_url"`
 
+	// MusicSendMode 点歌结果的发送方式（适配不同反向代理工具）：
+	//   - auto（默认）：QQ/NapCat 平台发 OB11 music 段（音乐卡片），其余平台发文字链接
+	//   - card：强制发 music 段（要求 OneBot 实现支持 music 段，如 llonebot）
+	//   - link：强制发文字链接（最通用，任何工具都能展示）
+	MusicSendMode string `mapstructure:"music_send_mode"`
+
 	// Builtins 内置业务插件开关（配置驱动注册，替代 main.go 硬编码注册）
 	Builtins PluginBuiltinsConfig `mapstructure:"builtins"`
 }
