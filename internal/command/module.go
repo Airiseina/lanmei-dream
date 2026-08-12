@@ -25,6 +25,9 @@ type Context struct {
 	MessageID string   // 消息 ID
 	ConnID    string   // 来源连接 ID
 
+	// IsSuperUser 当前消息发送者是否为超管（bot 层注入，命令 handler 据此做权限校验）。
+	IsSuperUser bool
+
 	// CommandReentry 标记本次 handler 调用来自插件命令重入（防止插件子树
 	// 未匹配时"命令分支 → 重入 → 命令分支"的无限递归）。
 	CommandReentry bool
