@@ -174,22 +174,27 @@ const groupArchiveSystemPrompt = `你是一个群聊话题记忆归档引擎。�
 
 facts 规则：
 - 只提取客观事实，不提取寒暄/闲聊
-- 格式："张三提议周末去爬山"、"李四推荐了某家餐厅"
+- 格式："张三(10001)提议周末去爬山"、"李四(10002)推荐了某家餐厅"
+- 发言者必须保留括号内的用户ID（稳定身份锚点），即使昵称后来改了也能对应到同一人
 - 每条事实不超过20字
 
 注意：只输出 JSON，不要任何额外文字。`
 
-// formatWindow 将话题消息窗口格式化为对话文本（用户/机器人交替行）。
-// 供归档摘要与话题标签生成共用。
+// formatWindow 将话题消息窗口格式化为对话文本（昵称/机器人交替行）。
+// 供归档摘要与话题标签生成共用。用户消息以「昵称(用户ID)」标注发言者：
+// 用户ID 是稳定身份锚点（群昵称常变，只留昵称会让归档记忆"认不出"同一人），
+// 缺失昵称时退化为 user_id，避免匿名 user_id 导致记忆串线（历史教训）。
 func formatWindow(window []TopicMsg) string {
 	var b strings.Builder
 	for i, tm := range window {
 		if i >= 100 { // 防御上限：最多格式前 100 条
 			break
 		}
-		who := tm.UserID
+		who := "用户"
 		if tm.IsBot {
 			who = "机器人"
+		} else if tm.Nickname != "" || tm.UserID != "" {
+			who = SpeakerLabel(tm.Nickname, tm.UserID)
 		}
 		if b.Len() > 0 {
 			b.WriteString("\n")

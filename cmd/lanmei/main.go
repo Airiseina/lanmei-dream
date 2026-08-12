@@ -23,6 +23,7 @@ import (
 	kbpkg "github.com/DaWesen/lanmei-dream/internal/kb"
 	"github.com/DaWesen/lanmei-dream/internal/kb/provider/feishu"
 	"github.com/DaWesen/lanmei-dream/internal/kb/provider/local"
+	"github.com/DaWesen/lanmei-dream/internal/kb/provider/sheet"
 	pluginpkg "github.com/DaWesen/lanmei-dream/internal/plugin"
 	"github.com/DaWesen/lanmei-dream/internal/topic"
 	"go.uber.org/zap"
@@ -133,6 +134,9 @@ func main() {
 			}
 			if err := kbpkg.RegisterProvider("feishu", feishu.New); err != nil {
 				logger.Fatal("注册 feishu provider 失败", zap.Error(err))
+			}
+			if err := kbpkg.RegisterProvider("sheet", sheet.New); err != nil {
+				logger.Fatal("注册 sheet provider 失败", zap.Error(err))
 			}
 			kbSvc, err = kbpkg.NewService(ctx, &cfg.Knowledge, inf.DB.Orm, embedder, logger)
 			if err != nil {

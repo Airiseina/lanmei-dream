@@ -43,6 +43,8 @@ type Bot struct {
 	jitterPct       float64                        // 间隔抖动比例（0.0-1.0）
 	superUsers      map[string]map[string]struct{} // 超管集合：平台 → 用户ID（静态配置 + 动态添加合并）
 	adminMu         sync.RWMutex                   // 保护 superUsers 的并发读写
+	sessionMu       sync.Mutex                     // 保护 sessions 的并发读写
+	sessions        map[string]*sessionInfo        // 会话最近消息（供"回复前已有新消息→引用+at"判定）
 	db              *database.DB                   // 数据库访问（动态管理员持久化；nil 时动态添加不可用）
 	stickerInjector StickerEmotionInjector         // 硬性表情规则注入器（表情库插件，nil 表示未启用）
 	stickerCount    int                            // 已回复消息计数（硬性表情规则）
@@ -271,6 +273,7 @@ func New(cfg *config.BotConfig, cmdSys *command.System, chatSvc *ai.ChatService,
 		maxIntervalMS: cfg.Stream.MaxIntervalMS,
 		jitterPct:     cfg.Stream.JitterPct,
 		superUsers:    parseSuperUsers(cfg.SuperUsers),
+		sessions:      make(map[string]*sessionInfo),
 		db:            db,
 		objectStore:   mediaStore,
 		logger:        logger,
@@ -493,6 +496,9 @@ func (b *Bot) OnMessage(msg *gateway.NormalizedMessage) {
 		return
 	}
 
+	// 记录会话最近消息（供"回复前会话已有新消息 → 引用并 at"判定）
+	b.recordSession(msg)
+
 	// 超管身份需计算后注入（Extra 其余字段均为 msg 直取）
 	isSuperUser := b.isSuperUser(string(msg.Platform), msg.UserID)
 
@@ -576,17 +582,28 @@ func (b *Bot) makeResponseCallback(msg *gateway.NormalizedMessage) func(*conduit
 //
 //   - 插件经 conduit.Set 写入出站段键（KeySendSegments）→ 按段列表发送（at/text/image 组合）
 //   - 否则遍历 ctx.Output 逐条纯文本回复（历史行为，老插件零影响）
+//
+// 纯文本回复在群聊中若为明确指向性回复（命令/工具/at/话题提及），
+// 会自动 at 请求者，防止"这回复给谁的"歧义（签到等插件回复即受益于此）。
 func (b *Bot) flushOutput(ctx *conduit.MessageContext, msg *gateway.NormalizedMessage) {
 	sentSticker := segmentsContainImage(ctx)
 	if b.trySendSegments(ctx, msg) {
 		b.maybeInjectSticker(msg, sentSticker)
 		return
 	}
+	directed := b.isDirected(ctx, msg)
+	// 引用/at 只建立在首条文本消息上（anchorDone 标记），
+	// 避免多输出回复（如签到插件输出两条）重复引用同一条消息、重复 at 同一人；
+	// 图片消息无法携带引用段，不建立锚点，后续文本再补。
+	anchorDone := false
 	for _, out := range ctx.Output {
 		if isImageURL(out.Content) {
 			sentSticker = true
+			b.sendReply(msg, out.Content, replyOpts{})
+			continue
 		}
-		b.reply(msg, out.Content)
+		b.sendReply(msg, out.Content, replyOpts{quoteIfStale: !anchorDone, atRequester: !anchorDone && directed})
+		anchorDone = true
 	}
 	b.maybeInjectSticker(msg, sentSticker)
 }
@@ -642,6 +659,12 @@ func (b *Bot) trySendSegments(ctx *conduit.MessageContext, msg *gateway.Normaliz
 // 段落间发送间隔由 calcSegmentInterval 按下一段字数动态计算，模拟真人打字节奏，
 // 避免 QQ 等平台短时间内快速发送消息导致乱序。
 // 流式 goroutine 关闭通道后，range 循环自然退出。
+//
+// 打字时间算法（v2）：间隔约束的是「距离上一次实际发送的时间」，而非
+// "入队后必须等待这么长时间"。LLM 流式生成期间已经消耗了大量时间（用户感知为
+// "正在打字"），因此后续段落到达时若距上次发送已超过打字间隔，则立即发送、
+// 不再额外等待；仅当剩余等待为正时才 Sleep。首段在 LLM 生成期间已"打完字"，
+// 直接发送（lastSentAt 以首段为基准启动计时）。
 func (b *Bot) streamSegments(ctx *conduit.MessageContext, msg *gateway.NormalizedMessage) {
 	segCh, ok := conduit.Get[chan string](ctx, KeyStreamChannel)
 	if !ok {
@@ -652,24 +675,37 @@ func (b *Bot) streamSegments(ctx *conduit.MessageContext, msg *gateway.Normalize
 
 	first := true
 	sentSticker := false
+	// 明确指向性回复（at/话题提及/命令等）在群聊中首段 at 请求者（任务4）；
+	// 计算一次复用，后续段落不再 at。
+	directed := b.isDirected(ctx, msg)
+	// lastSentAt 记录上一次段落实际发送完成的时间（在 <-done 后读取，线程安全）；
+	// 首段发送后初始化，后续段落按 "lastSentAt + 打字间隔" 计算最早可发送时间。
+	var lastSentAt time.Time
 	for segment := range segCh {
 		// 本轮已输出图片 URL（LLM 调 pick_sticker 等）则标记，收尾不再补发随机表情
 		if isImageURL(segment) {
 			sentSticker = true
 		}
-		// 首段无延迟（LLM 生成期间已"打字"完毕）；
-		// 后续段落等待打字间隔，模拟真人逐段输入的节奏。
-		if !first {
+		// 首段无延迟（LLM 生成期间已"打字"完毕）；后续段落等待「距上次发送」的
+		// 打字间隔：若 LLM 生成耗时已超过打字间隔则直接发送，仅剩余时间为正才 Sleep。
+		if !first && !lastSentAt.IsZero() {
 			if d := b.calcSegmentInterval(segment); d > 0 {
-				time.Sleep(d)
+				target := lastSentAt.Add(d)
+				if wait := time.Until(target); wait > 0 {
+					time.Sleep(wait)
+				}
 			}
 		}
+		// 快照当前段是否为首段（回调异步执行，不能引用会被后续迭代修改的 first）
+		quoteThis := first
 		first = false
 
 		child := ctx.NewChildInput(segment)
 		child.Extra[KeyIsSegment] = true
 
-		// 段落回调：发送该段输出，完成后关闭 done 通知主循环
+		// 段落回调：发送该段输出，完成后关闭 done 通知主循环。
+		// 仅首段参与"会话已有新消息 → 引用+at"判定（引用只需建立一次锚点）与
+		// 明确指向性 at；后续段落直接发送，不重复引用/at。
 		done := make(chan struct{})
 		child.ResponseCallback = func(childCtx *conduit.MessageContext, childErr error) {
 			defer close(done)
@@ -678,7 +714,10 @@ func (b *Bot) streamSegments(ctx *conduit.MessageContext, msg *gateway.Normalize
 				return
 			}
 			for _, out := range childCtx.Output {
-				b.reply(msg, out.Content)
+				b.sendReply(msg, out.Content, replyOpts{
+					quoteIfStale: quoteThis,
+					atRequester:  quoteThis && directed,
+				})
 			}
 		}
 
@@ -692,6 +731,8 @@ func (b *Bot) streamSegments(ctx *conduit.MessageContext, msg *gateway.Normalize
 
 		// 顺序等待：前一段发送完成后才投递下一段
 		<-done
+		// 上一段已发送完成，以此刻作为"距上次发送"的计时基准
+		lastSentAt = time.Now()
 	}
 
 	// 流式回复发送完毕后，按硬性表情规则决定是否补发一张表情
@@ -732,9 +773,28 @@ func (b *Bot) calcSegmentInterval(text string) time.Duration {
 	return time.Duration(baseMS) * time.Millisecond
 }
 
-// reply 通过网关回复消息。
+// reply 通过网关回复消息（通用入口）。
 // 回复内容为纯 http(s) URL 时按图片消息发送（富媒体段），供 cat/balogo/github_card 等图片类插件使用。
+// 附加行为：会话内已有新消息时引用原消息（quoteIfStale=true，群聊附带 at 原发送者）；
+// 不主动 at 请求者（at 由调用方按明确指向性回复显式指定）。
 func (b *Bot) reply(msg *gateway.NormalizedMessage, text string) {
+	b.sendReply(msg, text, replyOpts{quoteIfStale: true})
+}
+
+// replyOpts 回复发送选项。
+type replyOpts struct {
+	// quoteIfStale 会话内已有新消息时，引用被回复的原消息（群聊附带 at 原发送者）。
+	// 用于 LLM 长耗时回复期间会话出现插话的场景，防止"这条到底回复谁/哪条"的困惑。
+	quoteIfStale bool
+	// atRequester 群聊中 at 当前请求者（命令/插件/at/话题提及等明确指向性回复）。
+	atRequester bool
+}
+
+// sendReply 发送文本回复，支持按需附加引用/at 前缀段（协议自适应）。
+//
+// 段组合顺序：reply(引用原消息) → at(原发送者，群聊) → at(请求者，明确指向性) → text。
+// 引用与 at 均会去重：同一消息只会出现一次 at。
+func (b *Bot) sendReply(msg *gateway.NormalizedMessage, text string, opts replyOpts) {
 	// 剔除 markdown 代码块围栏（``` 边界行）：QQ 等平台不支持 markdown 渲染，
 	// 直接发送代码原文，避免把 ``` 符号原样发给用户。
 	text = stripCodeFences(text)
@@ -759,9 +819,149 @@ func (b *Bot) reply(msg *gateway.NormalizedMessage, text string) {
 		}
 		return
 	}
-	if err := b.gw.Hub().SendMessageTo(msg.ConnID, msg, text); err != nil {
+
+	segs := make([]gateway.NormalizedSegment, 0, 3)
+	atAdded := false
+
+	// 会话内已有新消息：引用被回复的原消息（群聊附带 at 原发送者），
+	// 明确告诉群友这条回复是对谁、对哪条消息的回应。
+	if opts.quoteIfStale && b.hasNewerMessages(msg) {
+		if msg.MessageID != "" {
+			segs = append(segs, b.replyQuoteSegment(msg))
+		}
+		if msg.IsGroup && msg.UserID != "" {
+			segs = append(segs, gateway.NormalizedSegment{Type: "at", Data: map[string]string{"user_id": msg.UserID}})
+			atAdded = true
+		}
+	}
+
+	// 明确指向性回复（命令/插件/at/话题提及）：群聊中 at 请求者，防止"这回复给谁的"歧义。
+	// 已因引用而 at 过原发送者时不再重复 at。
+	if opts.atRequester && msg.IsGroup && msg.UserID != "" && !atAdded {
+		segs = append(segs, gateway.NormalizedSegment{Type: "at", Data: map[string]string{"user_id": msg.UserID}})
+	}
+
+	segs = append(segs, gateway.NormalizedSegment{Type: "text", Text: text})
+	if err := b.gw.Hub().SendSegments(msg.ConnID, msg, segs); err != nil {
 		b.logger.Error("bot: 回复失败", zap.String("conn", msg.ConnID), zap.Error(err))
 	}
+}
+
+// replyQuoteSegment 构造协议自适应的引用（reply）消息段：
+// OneBot 11（NapCat 方言）引用段用 id 字段；OneBot 12 规范用 message_id 字段。
+func (b *Bot) replyQuoteSegment(msg *gateway.NormalizedMessage) gateway.NormalizedSegment {
+	data := map[string]string{}
+	if msg.Protocol == gateway.ProtocolV12 {
+		data["message_id"] = msg.MessageID
+	} else {
+		data["id"] = msg.MessageID
+	}
+	return gateway.NormalizedSegment{Type: "reply", Data: data}
+}
+
+// ── 会话最近消息追踪（供"回复前会话已有新消息 → 引用并 at"判定）──
+
+// sessionInfo 记录某会话最近一条入站消息，用于判定回复时是否已出现新消息。
+type sessionInfo struct {
+	LastMsgID string // 最近一条消息的 ID
+	LastMsgAt time.Time
+	IsGroup   bool
+}
+
+// sessionKey 生成会话键：群聊按 (平台, 群ID)，私聊按 (平台, 用户ID)。
+func sessionKey(msg *gateway.NormalizedMessage) string {
+	if msg == nil {
+		return ""
+	}
+	if msg.IsGroup {
+		return "g:" + string(msg.Platform) + ":" + msg.GroupID
+	}
+	return "p:" + string(msg.Platform) + ":" + msg.UserID
+}
+
+// recordSession 更新会话最近消息记录（仅普通消息；通知事件不参与）。
+// 网关事件按序到达，但为防止乱序事件覆盖新消息，按到达时间取新。
+// 机器人自身消息（网关若回显自己发出的回复）不参与追踪：
+// 否则 bot 的回复会被记为"会话最新消息"，导致后续回复误判为"已有新消息"而全部引用+at。
+func (b *Bot) recordSession(msg *gateway.NormalizedMessage) {
+	if msg == nil || msg.MessageType != gateway.MessageTypeMessage {
+		return
+	}
+	if msg.UserID != "" && msg.UserID == msg.SelfID {
+		return // 机器人自身消息（回显），跳过
+	}
+	key := sessionKey(msg)
+	if key == "" {
+		return
+	}
+	b.sessionMu.Lock()
+	defer b.sessionMu.Unlock()
+	if prev, ok := b.sessions[key]; ok {
+		if !prev.LastMsgAt.IsZero() && !msg.ReceivedAt.IsZero() && msg.ReceivedAt.Before(prev.LastMsgAt) {
+			return // 乱序的旧消息，不覆盖
+		}
+	}
+	b.sessions[key] = &sessionInfo{
+		LastMsgID: msg.MessageID,
+		LastMsgAt: msg.ReceivedAt,
+		IsGroup:   msg.IsGroup,
+	}
+}
+
+// hasNewerMessages 判断触发回复的消息之后，会话中是否又出现了新消息。
+// 优先用 message_id 精确比较；ID 缺失（平台未提供）时退化为到达时间比较。
+func (b *Bot) hasNewerMessages(msg *gateway.NormalizedMessage) bool {
+	if msg == nil || msg.MessageType != gateway.MessageTypeMessage {
+		return false
+	}
+	key := sessionKey(msg)
+	if key == "" {
+		return false
+	}
+	b.sessionMu.Lock()
+	defer b.sessionMu.Unlock()
+	info, ok := b.sessions[key]
+	if !ok {
+		return false
+	}
+	if msg.MessageID != "" && info.LastMsgID != "" {
+		return info.LastMsgID != msg.MessageID
+	}
+	if !msg.ReceivedAt.IsZero() && !info.LastMsgAt.IsZero() {
+		return info.LastMsgAt.After(msg.ReceivedAt)
+	}
+	return false
+}
+
+// isDirected 判断本次回复是否为"明确指向某成员"的回复（群聊中需要 at 请求者）。
+// 判定依据（任一命中即视为明确指向）：
+//   - 消息 at 了机器人；
+//   - 斜杠命令（如 /签到）；
+//   - 意图为命令或工具（自然语言指令，如"帮我签到"）；
+//   - 话题提及（at / 语言学提及）。
+func (b *Bot) isDirected(ctx *conduit.MessageContext, msg *gateway.NormalizedMessage) bool {
+	if ctx == nil || msg == nil || !msg.IsGroup {
+		return false
+	}
+	if msg.SelfID != "" {
+		for _, t := range msg.AtTargets {
+			if t == msg.SelfID {
+				return true
+			}
+		}
+	}
+	if strings.HasPrefix(strings.TrimSpace(msg.Content), "/") {
+		return true
+	}
+	if result, ok := conduit.Get[*intent.Result](ctx, intentResultKey); ok && result != nil {
+		if result.Intent == intent.IntentCommand || result.Intent == intent.IntentTool {
+			return true
+		}
+	}
+	if mode, ok := conduit.Get[topic.MentionMode](ctx, KeyMentionMode); ok && mode != topic.MentionNone {
+		return true
+	}
+	return false
 }
 
 // codeFenceRe 匹配 markdown 代码块围栏（``` 起始行 → ``` 结束行）。

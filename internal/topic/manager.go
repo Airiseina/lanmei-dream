@@ -257,17 +257,19 @@ func (m *Manager) BuildJudgeContext(msg *IncomingMsg) *intent.JudgeContext {
 		return jc
 	}
 
-	start := len(t.MsgWindow) - judgeContextMsgs
-	if start < 0 {
-		start = 0
-	}
+	start := max(len(t.MsgWindow)-judgeContextMsgs, 0)
 	for _, tm := range t.MsgWindow[start:] {
 		if tm.Content == "" {
 			continue
 		}
+		// 用户消息以「昵称(用户ID)」标注发言者：用户ID 是稳定身份锚点，
+		// 群昵称常变，若只标注昵称，意图分析会认错人；Bot 消息统一用 "bot"
+		// （与意图分析 prompt 中"bot 发言即机器人的话"约定一致）。
 		speaker := "user"
 		if tm.IsBot {
 			speaker = "bot"
+		} else {
+			speaker = SpeakerLabel(tm.Nickname, tm.UserID)
 		}
 		jc.Recent = append(jc.Recent, intent.JudgeMessage{
 			Speaker: speaker,
@@ -319,31 +321,22 @@ func (m *Manager) BuildTopicContext(t *Topic, excludeTail int) *llm.TopicContext
 	defer m.mu.RUnlock()
 
 	tc := &llm.TopicContext{TopicID: t.ID, Label: t.DisplayLabel()}
-	// 成员昵称排序，保证上下文注入顺序确定
+	// 成员以「昵称(用户ID)」标注，ID 锚定身份，昵称变化不影响成员识别
 	memberNames := make([]string, 0, len(t.Members))
 	for _, mem := range t.Members {
-		n := mem.Nickname
-		if n == "" {
-			n = mem.UserID
-		}
-		memberNames = append(memberNames, n)
+		memberNames = append(memberNames, SpeakerLabel(mem.Nickname, mem.UserID))
 	}
 	sort.Strings(memberNames)
 	tc.Members = memberNames
-	end := len(t.MsgWindow) - excludeTail
-	if end < 0 {
-		end = 0
-	}
-	if end > len(t.MsgWindow) {
-		end = len(t.MsgWindow)
-	}
+	end := min(max(len(t.MsgWindow)-excludeTail, 0), len(t.MsgWindow))
 	for _, tm := range t.MsgWindow[:end] {
 		tc.Recent = append(tc.Recent, llm.TopicMsg{
-			UserID:  tm.UserID,
-			IsBot:   tm.IsBot,
-			Content: tm.Content,
-			At:      tm.At,
-			SentAt:  tm.SentAt,
+			UserID:   tm.UserID,
+			Nickname: tm.Nickname,
+			IsBot:    tm.IsBot,
+			Content:  tm.Content,
+			At:       tm.At,
+			SentAt:   tm.SentAt,
 		})
 	}
 	return tc
@@ -572,10 +565,11 @@ func (m *Manager) msgToTopicMsg(msg *IncomingMsg) TopicMsg {
 		sentAt = time.Now()
 	}
 	return TopicMsg{
-		UserID:  msg.UserID,
-		Content: truncateRunes(msg.Content, maxRecordRunes),
-		At:      containsString(msg.AtTargets, msg.SelfID),
-		SentAt:  sentAt,
+		UserID:   msg.UserID,
+		Nickname: msg.UserName,
+		Content:  truncateRunes(msg.Content, maxRecordRunes),
+		At:       containsString(msg.AtTargets, msg.SelfID),
+		SentAt:   sentAt,
 	}
 }
 

@@ -62,8 +62,8 @@ services:
       LANMEI_MEDIA_SECRET_KEY: ${RUSTFS_SECRET_KEY:-lanmei-secret}
       LANMEI_MEDIA_BUCKET: ${LANMEI_MEDIA_BUCKET:-lanmei-media}
     volumes:
-      # 配置文件（只读）
-      - ./config/config.toml:/app/config/config.toml:ro
+      # 配置文件目录（只读）：包含 config.toml 与 skills.toml 等运行时配置
+      - ./config:/app/config:ro
       # Prompt 系统（只读）
       - ./prompts:/app/prompts:ro
       # Skill 系统（只读）

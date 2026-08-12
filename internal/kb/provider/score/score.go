@@ -1,13 +1,19 @@
-package feishu
+// Package kbscore 提供知识库 Provider 共用的本地评分算法。
+//
+// 各 Provider（local/feishu/sheet）的召回评分逻辑完全一致，抽为公共包避免重复：
+//   - CosineSimilarity：向量余弦相似度（vector 召回排序）
+//   - FuzzyScore：查询对标题/内容的 token 命中评分（fuzzy 召回排序）
+//   - TruncateRunes：按 rune 截断（避免切断多字节 UTF-8 字符）
+package kbscore
 
 import (
 	"math"
 	"strings"
 )
 
-// cosineSimilarity 计算两个向量的余弦相似度（归一化到 [0,1]，负数视为 0）。
+// CosineSimilarity 计算两个向量的余弦相似度（归一化到 [0,1]，负数视为 0）。
 // 维度不匹配或零向量返回 0。
-func cosineSimilarity(a, b []float32) float64 {
+func CosineSimilarity(a, b []float32) float64 {
 	if len(a) == 0 || len(a) != len(b) {
 		return 0
 	}
@@ -29,14 +35,14 @@ func cosineSimilarity(a, b []float32) float64 {
 	return sim
 }
 
-// fuzzyScore 计算查询与文档的模糊匹配分数（0~1）。
+// FuzzyScore 计算查询与文档的模糊匹配分数（0~1）。
 //
 // 评分规则：
 //   - 标题与内容各自计算命中率（整体包含给满分，否则按 token 命中比例）；
 //   - 最终分数 = 0.35 × 标题命中率 + 0.65 × 内容命中率（内容证据更强）。
 //
 // token 切分：拉丁单词按字母数字连续段，中文按单字，兼顾中英文查询。
-func fuzzyScore(query, title, content string) float64 {
+func FuzzyScore(query, title, content string) float64 {
 	q := strings.ToLower(strings.TrimSpace(query))
 	if q == "" {
 		return 0
@@ -105,8 +111,8 @@ func isCJK(r rune) bool {
 	return (r >= 0x4E00 && r <= 0x9FFF) || (r >= 0x3400 && r <= 0x4DBF)
 }
 
-// truncateRunes 按 rune 截断字符串，避免切断多字节 UTF-8 字符。
-func truncateRunes(s string, n int) string {
+// TruncateRunes 按 rune 截断字符串，避免切断多字节 UTF-8 字符。
+func TruncateRunes(s string, n int) string {
 	runes := []rune(s)
 	if len(runes) <= n {
 		return s

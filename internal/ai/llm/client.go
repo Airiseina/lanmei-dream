@@ -28,11 +28,12 @@ type Message struct {
 
 // TopicMsg 群聊话题内的一条消息（供上下文注入与归档）
 type TopicMsg struct {
-	UserID  string    `json:"user_id"` // 发送者平台 user_id（Bot 回复时为 bot 自身 ID）
-	IsBot   bool      `json:"is_bot"`  // 是否 Bot 回复
-	Content string    `json:"content"`
-	At      bool      `json:"at"` // 是否提及了 bot
-	SentAt  time.Time `json:"sent_at"`
+	UserID   string    `json:"user_id"`  // 发送者平台 user_id（Bot 回复时为 bot 自身 ID）
+	Nickname string    `json:"nickname"` // 发送者昵称（上下文注入标注发言者，可能为空）
+	IsBot    bool      `json:"is_bot"`   // 是否 Bot 回复
+	Content  string    `json:"content"`
+	At       bool      `json:"at"` // 是否提及了 bot
+	SentAt   time.Time `json:"sent_at"`
 }
 
 // TopicContext 群聊话题上下文（nil = 私聊/无话题）。
