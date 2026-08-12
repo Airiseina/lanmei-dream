@@ -25,6 +25,7 @@ import (
 	"github.com/DaWesen/lanmei-dream/internal/ai/tool"
 	"github.com/DaWesen/lanmei-dream/internal/database"
 	kbpkg "github.com/DaWesen/lanmei-dream/internal/kb"
+	modelpkg "github.com/DaWesen/lanmei-dream/internal/model"
 	"go.uber.org/zap"
 )
 
@@ -195,6 +196,19 @@ func (s *ChatService) assembleContext(ctx context.Context, req *llm.ChatRequest)
 			// 跳过空内容历史（如 LLM 空响应误存），否则拼进请求会被 API 以
 			// "missing field content" 拒绝。
 			if strings.TrimSpace(c.Content) == "" {
+				continue
+			}
+			// 插件/工具输出不直接进上下文：插件随机结果（如签到积分文案）不是真实事实，
+			// 原样喂给 LLM 会污染 RAG 上下文（历史教训：插件输出穿透记忆层导致事实污染，
+			// 表现为"要表情却主动签到"）。替换为"用户使用了XX功能"的意图占位，
+			// 保留 role 序列且不含随机结果内容。
+			if c.Role == "assistant" && c.Source == modelpkg.SourcePlugin {
+				tag := c.PluginTag
+				if tag == "" {
+					tag = "插件"
+				}
+				msgs = append(msgs, llm.Message{Role: llm.RoleAssistant,
+					Content: fmt.Sprintf("（用户使用了 %s 功能）", tag)})
 				continue
 			}
 			msgs = append(msgs, llm.Message{Role: llm.Role(c.Role), Content: c.Content})

@@ -329,13 +329,31 @@ func (b *Bot) loadDynamicAdmins() {
 
 // ── 管理员管理命令 ──
 
-// registerAdminCommands 注册管理员管理命令（/添加管理员）。
+// registerAdminCommands 注册管理员管理命令（/admin 帮助入口 + /添加管理员）。
 func (b *Bot) registerAdminCommands() {
+	// /admin 作为管理员管线（pipeline.admin）入口：IsAdminCommand 匹配 /admin 前缀后
+	// 由 CommandPass 执行，必须注册对应命令，否则报 unknown command: admin。
+	_ = b.cmdSys.Register(command.Command{
+		Name:        "admin",
+		Description: "管理员帮助（仅超管），列出可用管理员命令",
+		Handler:     b.handleAdminHelp,
+	})
 	_ = b.cmdSys.Register(command.Command{
 		Name:        "添加管理员",
 		Description: "添加管理员（仅超管），格式：/添加管理员 [平台:]用户ID，如 /添加管理员 qq:123456",
 		Handler:     b.handleAddAdmin,
 	})
+}
+
+// handleAdminHelp 处理 /admin：列出当前可用的管理员命令。
+func (b *Bot) handleAdminHelp(cmdCtx *command.Context) error {
+	if !cmdCtx.IsSuperUser {
+		cmdCtx.Reply("只有管理员才能查看管理员命令哦~")
+		return nil
+	}
+	cmdCtx.Reply("📋 管理员命令：\n" +
+		"  /添加管理员 [平台:]用户ID — 添加管理员（如 /添加管理员 qq:123456）")
+	return nil
 }
 
 // handleAddAdmin 处理 /添加管理员：
