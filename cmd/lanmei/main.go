@@ -234,8 +234,17 @@ func main() {
 	// 内置插件与 Wasm 插件同走一个注册表，同名插件已由 Wasm 加载时自动跳过，避免 ID 冲突。
 	bizReg := bizplugin.NewBusinessRegistry(&cfg.Plugin.Builtins, pluginReg, logger)
 	bizReg.SetNCMURL(cfg.Plugin.NCMURL)
+	bizReg.SetObjectStore(inf.ObjectStore)
 	if err := bizReg.RegisterBuiltins(); err != nil {
 		logger.Fatal("内置业务插件注册失败", zap.Error(err))
+	}
+
+	// 硬性表情规则：把表情库插件的随机表情能力注入 Bot（未启用/未注册时自动跳过）。
+	// 使 bot 每回复 10~20 条消息会周期性附带一张表情，不依赖 LLM 主动调用。
+	if p, ok := pluginReg.Get("sticker"); ok {
+		if inj, ok := p.(bot.StickerEmotionInjector); ok {
+			b.SetStickerInjector(inj)
+		}
 	}
 
 	if err := pluginReg.InitPlugins(ctx); err != nil {

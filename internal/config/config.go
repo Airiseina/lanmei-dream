@@ -54,6 +54,8 @@ type PluginBuiltinsConfig struct {
 	GitHubCard bool `mapstructure:"github_card"`
 	// Music 网易云点歌插件
 	Music bool `mapstructure:"music"`
+	// Sticker 自定义表情库插件
+	Sticker bool `mapstructure:"sticker"`
 }
 
 // DatabaseConfig 数据库配置
