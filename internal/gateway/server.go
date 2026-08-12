@@ -54,6 +54,21 @@ func NewServer(cfg *ListenConfig, logger *zap.Logger, handler EventHandler) *Ser
 	s.upgrader = gws.NewUpgrader(s, &gws.ServerOption{
 		ParallelEnabled: true,
 		Recovery:        gws.Recovery,
+		// 兼容非 13 的 WS 版本：gws 只接受 Sec-WebSocket-Version: 13（RFC6455），
+		// 部分 OneBot 客户端（如新版 llonebot）握手时发送其他版本。
+		// 握手后的帧格式相同（RFC6455 基于 hybi-10），改写版本头放行不影响后续解析。
+		// Authorize 在 gws 的版本检查之前执行（见 gws.upgrader.doUpgradeFromConn）。
+		Authorize: func(r *http.Request, _ gws.SessionStorage) bool {
+			ver := r.Header.Get("Sec-WebSocket-Version")
+			if ver != "" && ver != "13" {
+				logger.Info("gateway: WS 版本兼容",
+					zap.String("version", ver),
+					zap.String("remote", r.RemoteAddr),
+				)
+			}
+			r.Header.Set("Sec-WebSocket-Version", "13")
+			return true
+		},
 	})
 	return s
 }
