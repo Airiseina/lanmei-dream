@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math/rand/v2"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -51,6 +52,121 @@ type Bot struct {
 	stickerTarget   int                            // 触发阈值（10~20 随机，0 表示首次回复前未初始化）
 	objectStore     *media.ObjectStore             // RustFS 对象存储（nil 时内网图片转 base64 发送不可用）
 	logger          *zap.Logger
+
+	// ── 管理面板控制平面 ──
+	btMu           sync.RWMutex                     // 保护 btRoot 引用
+	btRoot         conduit.BTNode                   // 行为树根节点引用（供面板快照/可视化）
+	traceSink      TraceSink                        // 执行链路 Trace 落库回调（面板注入；nil 不采集）
+	condMu         sync.RWMutex                     // 保护条件注册表
+	condByName     map[string]conduit.ConditionFunc // 命名条件：名称 → 判断函数（供面板编辑行为树时引用）
+	condByInstance map[*conduit.Condition]string    // 实例 → 名称（供面板快照时反查条件名）
+}
+
+// TraceMeta 消息级元数据，供 Trace 落库关联（面板审计日志）。
+type TraceMeta struct {
+	MessageID string
+	UserID    string
+	GroupID   string
+	Platform  string
+}
+
+// TraceSink 执行链路 Trace 采集回调（由管理面板注入；nil 表示不采集）。
+// 在消息处理回调中调用：ctx 内 trace 已完成（可经 conduit.GetTraceResult 读取），
+// err 为管线处理错误（nil 表示成功），meta 为消息关联元数据。
+type TraceSink func(ctx *conduit.MessageContext, err error, meta TraceMeta)
+
+// SetTraceSink 注入 Trace 采集回调（面板启动时调用）。
+func (b *Bot) SetTraceSink(sink TraceSink) {
+	b.traceSink = sink
+}
+
+// setBehaviorTree 设置主行为树并记录根节点引用（供面板快照），并发安全。
+func (b *Bot) setBehaviorTree(root conduit.BTNode) {
+	b.btMu.Lock()
+	b.btRoot = root
+	b.btMu.Unlock()
+	b.engine.SetBehaviorTree(root)
+}
+
+// BehaviorTree 返回当前行为树根节点（供管理面板快照/可视化）。
+func (b *Bot) BehaviorTree() conduit.BTNode {
+	b.btMu.RLock()
+	defer b.btMu.RUnlock()
+	return b.btRoot
+}
+
+// SetBehaviorTree 设置主行为树（管理面板应用编辑后调用；内部记录根节点引用）。
+func (b *Bot) SetBehaviorTree(root conduit.BTNode) {
+	b.setBehaviorTree(root)
+}
+
+// Engine 返回底层 Conduit 引擎（供管理面板控制平面使用）。
+func (b *Bot) Engine() *conduit.Engine {
+	return b.engine
+}
+
+// Plugins 返回插件注册表（供管理面板插件管理）。
+func (b *Bot) Plugins() *pluginpkg.Registry {
+	return b.plugins
+}
+
+// RegisterCondition 注册命名条件（供面板编辑行为树时按名引用；重名覆盖）。
+// 核心条件（IsSegment/IsNotice/IsAdminCommand/IsCommand/IsMedia）在 New 中自动注册。
+func (b *Bot) RegisterCondition(name string, fn conduit.ConditionFunc) {
+	b.condMu.Lock()
+	b.condByName[name] = fn
+	b.condMu.Unlock()
+}
+
+// Condition 按名称解析条件函数；未注册返回 false。
+func (b *Bot) Condition(name string) (conduit.ConditionFunc, bool) {
+	b.condMu.RLock()
+	fn, ok := b.condByName[name]
+	b.condMu.RUnlock()
+	return fn, ok
+}
+
+// Conditions 返回全部已注册条件名（供面板下拉选择）。
+func (b *Bot) Conditions() []string {
+	b.condMu.RLock()
+	defer b.condMu.RUnlock()
+	names := make([]string, 0, len(b.condByName))
+	for name := range b.condByName {
+		names = append(names, name)
+	}
+	slices.Sort(names)
+	return names
+}
+
+// ConditionName 反查条件实例的名称（供面板快照还原语义）；未登记返回空串。
+func (b *Bot) ConditionName(cond *conduit.Condition) string {
+	b.condMu.RLock()
+	defer b.condMu.RUnlock()
+	return b.condByInstance[cond]
+}
+
+// newCondition 创建命名条件节点并登记映射（面板快照/编辑均依赖该映射）。
+// 同一条件实例在行为树重建间复用，映射按实例指针稳定。
+func (b *Bot) newCondition(name string, fn conduit.ConditionFunc) *conduit.Condition {
+	cond := conduit.NewCondition(fn)
+	b.condMu.Lock()
+	b.condByName[name] = fn
+	b.condByInstance[cond] = name
+	b.condMu.Unlock()
+	return cond
+}
+
+// emitTrace 在消息处理回调中采集执行链路 Trace（无 sink 时零开销）。
+func (b *Bot) emitTrace(ctx *conduit.MessageContext, err error, msg *gateway.NormalizedMessage) {
+	if b.traceSink == nil || ctx == nil {
+		return
+	}
+	b.traceSink(ctx, err, TraceMeta{
+		MessageID: msg.MessageID,
+		UserID:    msg.UserID,
+		GroupID:   msg.GroupID,
+		Platform:  string(msg.Platform),
+	})
 }
 
 // StickerEmotionInjector 硬性表情规则注入器：Bot 周期性回复中附带一张表情。
@@ -134,10 +250,12 @@ func New(cfg *config.BotConfig, cmdSys *command.System, chatSvc *ai.ChatService,
 	// ── Conduit 引擎 ──
 	// 超时 20s：意图分析/命令等慢路径（如 LLM 慢响应）在超时前完成，
 	// 避免"慢 LLM 调用超时被丢弃"导致群聊消息静默。
+	// WithTracing(true)：启用执行链路追踪，供管理面板 Trace 审计采集。
 	engine := conduit.New(store,
 		conduit.WithWorkers(4),
 		conduit.WithTimeout(20*time.Second),
 		conduit.WithFallbackPipeline("pipeline.fallback"),
+		conduit.WithTracing(true),
 	)
 
 	// ── 构建意图分析器（LLM 不可用时自动降级为 IntentChat）──
@@ -145,50 +263,61 @@ func New(cfg *config.BotConfig, cmdSys *command.System, chatSvc *ai.ChatService,
 	toolDefs := BuildIntentTools(toolReg)
 	analyzer := intent.NewAnalyzer(llmClient, cmdDefs, toolDefs)
 
-	// ── 注册管线 ──
+	// ── 注册 Pass 与管线 ──
+	// 核心管线全部以"动态管线"（PassID 引用）注册：
+	// 面板可可视化编辑管线 Pass 顺序（只替换 PassID 列表，Pass 实例复用），
+	// Pass 替换时引擎自动失效对应管线解析缓存（热更新）。
 	// 管理员命令管线：AdminGuardPass 校验超管身份，非超管拦截不执行命令
-	engine.MustRegisterPipeline(conduit.NewPipeline("pipeline.admin",
-		&AdminGuardPass{},
-		&CommandPass{CmdSys: cmdSys},
+	engine.MustRegisterPass("pass.admin.guard", &AdminGuardPass{})
+	engine.MustRegisterPass("pass.admin.command", &CommandPass{CmdSys: cmdSys})
+	engine.MustRegisterPipeline(conduit.NewPipelineFromIDs("pipeline.admin",
+		"pass.admin.guard", "pass.admin.command",
 	))
 
-	engine.MustRegisterPipeline(conduit.NewPipeline("pipeline.command",
-		&CommandRouterPass{CmdSys: cmdSys},
-		&ExecuteCommandPass{},
+	engine.MustRegisterPass("pass.command.router", &CommandRouterPass{CmdSys: cmdSys})
+	engine.MustRegisterPass("pass.command.execute", &ExecuteCommandPass{})
+	engine.MustRegisterPipeline(conduit.NewPipelineFromIDs("pipeline.command",
+		"pass.command.router", "pass.command.execute",
 	))
 
 	// IntentAnalysisPass 是 RouterPass — Execute 执行分析，Route 动态路由
-	engine.MustRegisterPipeline(conduit.NewPipeline("pipeline.intent_analysis",
-		&IntentAnalysisPass{
-			Analyzer: analyzer,
-			ChatSvc:  chatSvc, // nil 时 IntentChat/IntentTool 走 fallback
-			logger:   logger,
-		},
+	engine.MustRegisterPass("pass.intent.analysis", &IntentAnalysisPass{
+		Analyzer: analyzer,
+		ChatSvc:  chatSvc, // nil 时 IntentChat/IntentTool 走 fallback
+		logger:   logger,
+	})
+	engine.MustRegisterPipeline(conduit.NewPipelineFromIDs("pipeline.intent_analysis",
+		"pass.intent.analysis",
 	))
 
 	// 当 chatSvc 为 nil（LLM 未配置）时不注册对话管线
 	if chatSvc != nil {
-		engine.MustRegisterPipeline(conduit.NewPipeline("pipeline.roleplay",
-			&RoleplayStreamPass{Chat: chatSvc, DB: db, Logger: logger, TopicMgr: topicMgr},
+		engine.MustRegisterPass("pass.roleplay.stream", &RoleplayStreamPass{Chat: chatSvc, DB: db, Logger: logger, TopicMgr: topicMgr})
+		engine.MustRegisterPipeline(conduit.NewPipelineFromIDs("pipeline.roleplay",
+			"pass.roleplay.stream",
 		))
 	}
 
 	// 流式段落交付管线（每个段落作为子消息重入引擎后走此管线）
-	engine.MustRegisterPipeline(conduit.NewPipeline("pipeline.roleplay_segment",
-		&RoleplaySegmentPass{},
+	engine.MustRegisterPass("pass.roleplay.segment", &RoleplaySegmentPass{})
+	engine.MustRegisterPipeline(conduit.NewPipelineFromIDs("pipeline.roleplay_segment",
+		"pass.roleplay.segment",
 	))
 
-	engine.MustRegisterPipeline(conduit.NewPipeline("pipeline.intent_ignore",
-		&IntentIgnorePass{DB: db},
+	engine.MustRegisterPass("pass.intent.ignore", &IntentIgnorePass{DB: db})
+	engine.MustRegisterPipeline(conduit.NewPipelineFromIDs("pipeline.intent_ignore",
+		"pass.intent.ignore",
 	))
 
-	engine.MustRegisterPipeline(conduit.NewPipeline("pipeline.intent_command_exec",
-		&IntentCommandExecPass{CmdSys: cmdSys},
+	engine.MustRegisterPass("pass.intent.command_exec", &IntentCommandExecPass{CmdSys: cmdSys})
+	engine.MustRegisterPipeline(conduit.NewPipelineFromIDs("pipeline.intent_command_exec",
+		"pass.intent.command_exec",
 	))
 
 	// ── 互动事件预留节点（具体逻辑由插件子树实现）──
-	engine.MustRegisterPipeline(conduit.NewPipeline("pipeline.notice",
-		&NoticeGatePass{Logger: logger},
+	engine.MustRegisterPass("pass.notice.gate", &NoticeGatePass{Logger: logger})
+	engine.MustRegisterPipeline(conduit.NewPipelineFromIDs("pipeline.notice",
+		"pass.notice.gate",
 	))
 
 	// ── 多媒体处理管线（下载/缓存/理解 → RouterPass 路由）──
@@ -198,46 +327,75 @@ func New(cfg *config.BotConfig, cmdSys *command.System, chatSvc *ai.ChatService,
 		mediaStore = mediaDeps.Store
 		visionSvc = mediaDeps.Vision
 	}
-	engine.MustRegisterPipeline(conduit.NewPipeline("pipeline.media",
-		&MediaPass{Store: mediaStore, Vision: visionSvc, DB: db, Cfg: &cfg.Media, Logger: logger},
-		&MediaRouterPass{},
+	engine.MustRegisterPass("pass.media.process", &MediaPass{Store: mediaStore, Vision: visionSvc, DB: db, Cfg: &cfg.Media, Logger: logger})
+	engine.MustRegisterPass("pass.media.router", &MediaRouterPass{})
+	engine.MustRegisterPipeline(conduit.NewPipelineFromIDs("pipeline.media",
+		"pass.media.process", "pass.media.router",
 	))
 
-	engine.MustRegisterPipeline(conduit.NewPipeline("pipeline.fallback",
-		&FallbackPass{},
+	engine.MustRegisterPass("pass.fallback", &FallbackPass{})
+	engine.MustRegisterPipeline(conduit.NewPipelineFromIDs("pipeline.fallback",
+		"pass.fallback",
 	))
 
 	// ── 群聊话题管线（选择性放行；topicMgr 为 nil 时 TopicGatePass 全放行）──
-	engine.MustRegisterPipeline(conduit.NewPipeline("pipeline.topic_gate",
-		&TopicGatePass{Manager: topicMgr, Analyzer: analyzer, Logger: logger},
+	engine.MustRegisterPass("pass.topic.gate", &TopicGatePass{Manager: topicMgr, Analyzer: analyzer, Logger: logger})
+	engine.MustRegisterPipeline(conduit.NewPipelineFromIDs("pipeline.topic_gate",
+		"pass.topic.gate",
 	))
-	engine.MustRegisterPipeline(conduit.NewPipeline("pipeline.topic_ignore",
-		&TopicIgnorePass{DB: db},
+	engine.MustRegisterPass("pass.topic.ignore", &TopicIgnorePass{DB: db})
+	engine.MustRegisterPipeline(conduit.NewPipelineFromIDs("pipeline.topic_ignore",
+		"pass.topic.ignore",
 	))
 
+	// ── 创建 Bot 实例 ──
+	// 先于行为树构建：条件注册表（condByName/condByInstance）由 newCondition 填充，
+	// 供管理面板快照还原条件语义、编辑行为树时按名引用。
+	b := &Bot{
+		engine:         engine,
+		plugins:        pluginReg,
+		gw:             gwServer,
+		analyzer:       analyzer,
+		cmdSys:         cmdSys,
+		toolReg:        toolReg,
+		dedup:          NewDeduper(store, 0),
+		typingSpeedMS:  cfg.Stream.TypingSpeedMS,
+		minIntervalMS:  cfg.Stream.MinIntervalMS,
+		maxIntervalMS:  cfg.Stream.MaxIntervalMS,
+		jitterPct:      cfg.Stream.JitterPct,
+		superUsers:     parseSuperUsers(cfg.SuperUsers),
+		sessions:       make(map[string]*sessionInfo),
+		db:             db,
+		objectStore:    mediaStore,
+		logger:         logger,
+		condByName:     make(map[string]conduit.ConditionFunc),
+		condByInstance: make(map[*conduit.Condition]string),
+	}
+
 	// ── 行为树核心分支 ──
-	// 段落分支优先级最高：流式段落重入消息直接走交付管线，不经过意图分析
+	// 段落分支优先级最高：流式段落重入消息直接走交付管线，不经过意图分析。
+	// 条件节点统一使用命名条件（b.newCondition）：实例与名称双向登记，快照可还原。
 	coreSegment := conduit.NewSequence(
-		conduit.NewCondition(IsSegment),
+		b.newCondition("IsSegment", IsSegment),
 		conduit.NewAction("pipeline.roleplay_segment"),
 	)
 	// 互动事件分支：notice/request 事件路由到预留节点（插件子树可先行消费）
 	coreNotice := conduit.NewSequence(
-		conduit.NewCondition(IsNotice),
+		b.newCondition("IsNotice", IsNotice),
 		conduit.NewAction("pipeline.notice"),
 	)
 	coreAdmin := conduit.NewSequence(
-		conduit.NewCondition(IsAdminCommand),
+		b.newCondition("IsAdminCommand", IsAdminCommand),
 		conduit.NewAction("pipeline.admin"),
 	)
 	coreCommand := conduit.NewSequence(
-		conduit.NewCondition(IsCommand),
+		b.newCondition("IsCommand", IsCommand),
 		conduit.NewAction("pipeline.command"),
 	)
 	// 多媒体分支：含图片/音频/视频/文件段的消息先经 pipeline.media 处理
 	// （MediaRouterPass 内部再路由到 intent_analysis / intent_ignore）
 	coreMedia := conduit.NewSequence(
-		conduit.NewCondition(IsMedia),
+		b.newCondition("IsMedia", IsMedia),
 		conduit.NewAction("pipeline.media"),
 	)
 
@@ -252,32 +410,11 @@ func New(cfg *config.BotConfig, cmdSys *command.System, chatSvc *ai.ChatService,
 	if pluginReg != nil {
 		pluginReg.SetEngine(engine)
 		pluginReg.SetRebuildBT(func() {
-			bt := buildBehaviorTree(pluginReg, coreAdmin, coreCommand, coreIntent, coreSegment, coreNotice, coreMedia)
-			engine.SetBehaviorTree(bt)
+			b.setBehaviorTree(buildBehaviorTree(pluginReg, coreAdmin, coreCommand, coreIntent, coreSegment, coreNotice, coreMedia))
 		})
 	}
 
-	bt := buildBehaviorTree(pluginReg, coreAdmin, coreCommand, coreIntent, coreSegment, coreNotice, coreMedia)
-	engine.SetBehaviorTree(bt)
-
-	b := &Bot{
-		engine:        engine,
-		plugins:       pluginReg,
-		gw:            gwServer,
-		analyzer:      analyzer,
-		cmdSys:        cmdSys,
-		toolReg:       toolReg,
-		dedup:         NewDeduper(store, 0),
-		typingSpeedMS: cfg.Stream.TypingSpeedMS,
-		minIntervalMS: cfg.Stream.MinIntervalMS,
-		maxIntervalMS: cfg.Stream.MaxIntervalMS,
-		jitterPct:     cfg.Stream.JitterPct,
-		superUsers:    parseSuperUsers(cfg.SuperUsers),
-		sessions:      make(map[string]*sessionInfo),
-		db:            db,
-		objectStore:   mediaStore,
-		logger:        logger,
-	}
+	b.setBehaviorTree(buildBehaviorTree(pluginReg, coreAdmin, coreCommand, coreIntent, coreSegment, coreNotice, coreMedia))
 
 	// 合并持久化的动态管理员（重启不丢）并注册管理员命令
 	b.loadDynamicAdmins()
@@ -496,6 +633,19 @@ func (b *Bot) OnMessage(msg *gateway.NormalizedMessage) {
 		return
 	}
 
+	// ── 用户封禁拦截：被封禁用户的全部消息静默丢弃（不进入行为树）──
+	if b.db != nil {
+		banned, err := b.db.IsUserBanned(context.Background(), string(msg.Platform), msg.UserID)
+		if err != nil {
+			b.logger.Warn("bot: 查询封禁状态失败，放行消息",
+				zap.String("user", msg.UserID), zap.Error(err))
+		} else if banned {
+			b.logger.Debug("bot: 用户已被封禁，消息丢弃",
+				zap.String("user", msg.UserID), zap.String("group", msg.GroupID))
+			return
+		}
+	}
+
 	// 记录会话最近消息（供"回复前会话已有新消息 → 引用并 at"判定）
 	b.recordSession(msg)
 
@@ -544,8 +694,10 @@ func (b *Bot) OnMessage(msg *gateway.NormalizedMessage) {
 
 // makeEventCallback 构造通知事件专用回调：事件处理出错时只记日志、绝不回复；
 // 正常完成时发送管线输出（出站段优先，纯文本兜底，供事件消费插件使用）。
+// 无论成败均采集执行链路 Trace（审计面板可查看事件处理轨迹）。
 func (b *Bot) makeEventCallback(msg *gateway.NormalizedMessage) func(*conduit.MessageContext, error) {
 	return func(ctx *conduit.MessageContext, err error) {
+		b.emitTrace(ctx, err, msg)
 		if err != nil {
 			b.logger.Error("bot: event process failed",
 				zap.String("event", msg.EventType),
@@ -561,18 +713,23 @@ func (b *Bot) makeEventCallback(msg *gateway.NormalizedMessage) func(*conduit.Me
 // makeResponseCallback 构造消息级回调，处理两种情况：
 //   - 正常完成（未 yield）：发送管线输出（出站段优先，纯文本兜底）
 //   - 流式挂起（yield）：启动 goroutine 消费段落通道，逐条重入引擎投递
+//
+// 无论成败均采集执行链路 Trace（管理面板实时查看节点状态/耗时/错误）。
 func (b *Bot) makeResponseCallback(msg *gateway.NormalizedMessage) func(*conduit.MessageContext, error) {
 	return func(ctx *conduit.MessageContext, err error) {
 		if err != nil {
+			b.emitTrace(ctx, err, msg)
 			b.logger.Error("conduit: process failed", zap.Error(err))
 			b.reply(msg, "蓝妹现在有点迷糊，稍后再试~")
 			return
 		}
 		if conduit.IsYielded(ctx) {
-			// 流式回复：启动 goroutine 逐条投递段落
+			// 流式回复：Trace 在 yield 时已 finish，先采集再启动 goroutine 投递段落
+			b.emitTrace(ctx, nil, msg)
 			go b.streamSegments(ctx, msg)
 			return
 		}
+		b.emitTrace(ctx, nil, msg)
 		// 正常回复：发送所有输出消息
 		b.flushOutput(ctx, msg)
 	}

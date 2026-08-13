@@ -483,6 +483,25 @@ func (r *Registry) State(pluginID string) (stateKind, bool) {
 	return st.state, true
 }
 
+// StateName 返回插件的可读状态名（供管理面板展示）。
+func (r *Registry) StateName(pluginID string) string {
+	st, ok := r.State(pluginID)
+	if !ok {
+		return "not_loaded"
+	}
+	switch st {
+	case stateRegistered:
+		return "registered"
+	case stateInitialized:
+		return "initialized"
+	case stateStarted:
+		return "started"
+	case stateStopped:
+		return "stopped"
+	}
+	return "unknown"
+}
+
 // ============================================================
 // 内部方法
 // ============================================================

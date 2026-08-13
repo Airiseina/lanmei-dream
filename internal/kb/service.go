@@ -2,6 +2,7 @@ package kb
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/DaWesen/lanmei-dream/internal/ai/embedding"
@@ -141,6 +142,39 @@ func (s *Service) List() []KnowledgeBase {
 		return nil
 	}
 	return s.engine.List()
+}
+
+// Sync 触发内容重同步（管理面板"重新同步"入口）。
+// kbID 为空时同步全部实现了 Syncer 的知识库；单个失败不中断其余。
+func (s *Service) Sync(ctx context.Context, kbID string) error {
+	if s == nil || s.engine == nil {
+		return nil
+	}
+	if kbID != "" {
+		p, ok := s.engine.Provider(kbID)
+		if !ok {
+			return fmt.Errorf("kb: 知识库 %q 不存在", kbID)
+		}
+		syncr, ok := p.(Syncer)
+		if !ok {
+			return fmt.Errorf("kb: 知识库 %q 的 provider 不支持内容同步", kbID)
+		}
+		return syncr.Sync(ctx)
+	}
+	var firstErr error
+	for _, kbb := range s.engine.List() {
+		p, ok := s.engine.Provider(kbb.ID)
+		if !ok {
+			continue
+		}
+		if syncr, ok := p.(Syncer); ok {
+			if err := syncr.Sync(ctx); err != nil && firstErr == nil {
+				firstErr = err
+				s.logger.Warn("kb: 内容重同步失败", zap.String("kb", kbb.ID), zap.Error(err))
+			}
+		}
+	}
+	return firstErr
 }
 
 // Close 关闭全部 provider。

@@ -35,7 +35,7 @@ func (s *ChatService) ChatStream(ctx context.Context, req *llm.ChatRequest, segm
 	}
 
 	// EinoClient 流式路径（支持工具调用循环）
-	if einoClient, isEino := s.client.(*llm.EinoClient); isEino {
+	if einoClient, isEino := s.client.(llm.EinoCapable); isEino {
 		return s.chatStreamWithToolLoop(ctx, req, einoClient, segmentCh, queryVec, lastMsgContent)
 	}
 
@@ -58,7 +58,7 @@ func (s *ChatService) ChatStream(ctx context.Context, req *llm.ChatRequest, segm
 func (s *ChatService) chatStreamWithToolLoop(
 	ctx context.Context,
 	req *llm.ChatRequest,
-	einoClient *llm.EinoClient,
+	einoClient llm.EinoCapable,
 	segmentCh chan<- string,
 	queryVec []float32,
 	lastMsgContent string,
@@ -71,7 +71,8 @@ func (s *ChatService) chatStreamWithToolLoop(
 
 	schemaMsgs := llm.ToSchemaMessages(req.Messages)
 	segmenter := NewStreamSegmenter()
-	totalTokens := 0
+	totalInput := 0
+	totalOutput := 0
 	var invokedTools []string
 	var lastToolResult string // 最近一次工具结果（LLM 工具轮后无文本时兜底输出）
 
@@ -110,7 +111,8 @@ func (s *ChatService) chatStreamWithToolLoop(
 				return false, fmt.Errorf("chat stream: concat tool message: %w", concatErr)
 			}
 			if accumulated.ResponseMeta != nil && accumulated.ResponseMeta.Usage != nil {
-				totalTokens += accumulated.ResponseMeta.Usage.TotalTokens
+				totalInput += accumulated.ResponseMeta.Usage.PromptTokens
+				totalOutput += accumulated.ResponseMeta.Usage.CompletionTokens
 			}
 			// DeepSeek 等实现要求 assistant 消息必须携带 content 字段，而 go-openai 序列化
 			// 时空 content 会被 omitempty 省略；工具调用类 assistant 消息 content 常为空，
@@ -177,7 +179,8 @@ func (s *ChatService) chatStreamWithToolLoop(
 			}
 		}
 		if firstChunk.ResponseMeta != nil && firstChunk.ResponseMeta.Usage != nil {
-			totalTokens += firstChunk.ResponseMeta.Usage.TotalTokens
+			totalInput += firstChunk.ResponseMeta.Usage.PromptTokens
+			totalOutput += firstChunk.ResponseMeta.Usage.CompletionTokens
 		}
 
 		// 处理剩余 chunk；推理模型可能在 reasoning 后才发出工具调用（tool_calls 出现在后续 chunk），
@@ -225,7 +228,8 @@ func (s *ChatService) chatStreamWithToolLoop(
 				}
 			}
 			if chunk.ResponseMeta != nil && chunk.ResponseMeta.Usage != nil {
-				totalTokens += chunk.ResponseMeta.Usage.TotalTokens
+				totalInput += chunk.ResponseMeta.Usage.PromptTokens
+				totalOutput += chunk.ResponseMeta.Usage.CompletionTokens
 			}
 		}
 		// 工具切换分支已在内部 Close，此处避免二次 Close（会 panic: close of closed channel）
@@ -274,9 +278,14 @@ func (s *ChatService) chatStreamWithToolLoop(
 		// 异步存记忆 + 触发压缩
 		s.asyncStoreAndCompress(ctx, req.UserID, req.GroupID, lastMsgContent, queryVec)
 
+		// 流式路径绕过 client.Chat 直连 chatModel，需手动上报用量
+		s.reportUsage(req, totalInput, totalOutput)
+
 		return &llm.ChatResponse{
 			Content:       segmenter.FullText(),
-			TokensUsed:    totalTokens,
+			TokensUsed:    totalInput + totalOutput,
+			InputTokens:   totalInput,
+			OutputTokens:  totalOutput,
 			InvolvedTools: invokedTools,
 		}, nil
 	}
@@ -293,25 +302,30 @@ func (s *ChatService) chatStreamWithToolLoop(
 		}
 	}
 
+	// 流式路径绕过 client.Chat 直连 chatModel，需手动上报用量
+	s.reportUsage(req, totalInput, totalOutput)
+
 	return &llm.ChatResponse{
 		Content:       segmenter.FullText(),
-		TokensUsed:    totalTokens,
+		TokensUsed:    totalInput + totalOutput,
+		InputTokens:   totalInput,
+		OutputTokens:  totalOutput,
 		InvolvedTools: invokedTools,
 	}, nil
 }
 
 // getStreamChatModel 获取用于流式对话的 chatModel。
 // 若模型支持工具调用且有注册工具，绑定工具后返回；否则返回 base model。
-func (s *ChatService) getStreamChatModel(einoClient *llm.EinoClient) (model.BaseChatModel, error) {
-	if s.toolReg != nil && len(s.toolReg.ToolInfos()) > 0 && einoClient.SupportsToolCalling() {
-		chatModel, err := einoClient.ChatWithTools(s.toolReg.ToolInfos())
+func (s *ChatService) getStreamChatModel(e llm.EinoCapable) (model.BaseChatModel, error) {
+	if s.toolReg != nil && len(s.toolReg.ToolInfos()) > 0 && e.SupportsToolCalling() {
+		chatModel, err := e.ChatWithTools(s.toolReg.ToolInfos())
 		if err != nil {
 			s.logger.Error("ai.ChatStream: bind tools failed, using base model", zap.Error(err))
-			return einoClient.BaseModel(), nil
+			return e.BaseModel(), nil
 		}
 		return chatModel, nil
 	}
-	return einoClient.BaseModel(), nil
+	return e.BaseModel(), nil
 }
 
 // chatStreamFallback 非流式客户端的降级路径。

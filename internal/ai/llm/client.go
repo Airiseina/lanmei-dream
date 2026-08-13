@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
 )
 
@@ -52,15 +53,32 @@ type ChatRequest struct {
 	UserName     string        `json:"user_name"`               // 用户昵称，供 prompt 组装使用
 	GroupName    string        `json:"group_name"`              // 群组名称，供 prompt 组装使用
 	GroupID      string        `json:"group_id"`                // 来源群（空=私聊），供 LOD 上下文按群隔离
+	Platform     string        `json:"platform,omitempty"`      // 消息平台（qq/wechat/telegram…），供计费统计
+	Scene        string        `json:"scene,omitempty"`         // 用量场景（chat/intent/compress/topic/vision），供计费统计
 	TopicContext *TopicContext `json:"topic_context,omitempty"` // 群聊话题上下文（nil = 私聊/无话题）
 }
 
 // ChatResponse 是对话服务的返回
 type ChatResponse struct {
 	Content       string             `json:"content"`
-	TokensUsed    int                `json:"tokens_used"`
+	TokensUsed    int                `json:"tokens_used"`              // 总 token（兼容旧字段）
+	InputTokens   int                `json:"input_tokens"`             // 输入 token（计费用）
+	OutputTokens  int                `json:"output_tokens"`            // 输出 token（计费用）
 	ToolCalls     []*schema.ToolCall `json:"tool_calls,omitempty"`     // LLM 返回的工具调用
 	InvolvedTools []string           `json:"involved_tools,omitempty"` // 本次对话中实际调用的工具名列表
+}
+
+// UsageRecord LLM 用量记录（由各采集点上报给计费模块）。
+type UsageRecord struct {
+	Provider     string
+	Model        string
+	Scene        string
+	UserID       int64
+	GroupID      string
+	Platform     string
+	InputTokens  int64
+	OutputTokens int64
+	TotalTokens  int64
 }
 
 // LLMClient 抽象大语言模型的对话能力。
@@ -68,6 +86,25 @@ type ChatResponse struct {
 type LLMClient interface {
 	// Chat 执行一次对话补全
 	Chat(ctx context.Context, req *ChatRequest) (*ChatResponse, error)
+}
+
+// EinoCapable 标记实现方为 EinoClient（或其代理），暴露 eino 专属能力：
+// 工具调用、BaseModel（流式直连）、provider/model 标识。
+// 调用方通过类型断言检查：
+//
+//	if ec, ok := client.(EinoCapable); ok { ... }
+type EinoCapable interface {
+	LLMClient
+	// SupportsToolCalling 检查底层模型是否支持工具调用
+	SupportsToolCalling() bool
+	// ChatWithTools 返回绑定了工具的模型实例
+	ChatWithTools(tools []*schema.ToolInfo) (model.BaseChatModel, error)
+	// BaseModel 返回底层 eino BaseChatModel
+	BaseModel() model.BaseChatModel
+	// ProviderName 返回当前 Provider 名称
+	ProviderName() string
+	// ModelName 返回当前模型名
+	ModelName() string
 }
 
 // StreamingLLMClient 是 LLMClient 的可选扩展接口，表示支持流式响应。

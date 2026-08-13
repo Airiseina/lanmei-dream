@@ -42,6 +42,19 @@ func (db *DB) Migrate(ctx context.Context, vectorDim int) error {
 		&model.KnowledgeChunk{},
 		&model.StickerLibrary{},
 		&model.BotAdmin{},
+		// 管理面板（Manager）专属表
+		&model.ManagerAdmin{},
+		&model.AuthCredential{},
+		&model.AuthSession{},
+		&model.LoginAttempt{},
+		&model.AuditLog{},
+		&model.ConfigRevision{},
+		&model.ConduitTrace{},
+		&model.NodeTraffic{},
+		&model.LLMProvider{},
+		&model.TokenUsage{},
+		&model.GroupConfig{},
+		&model.ScheduledJob{},
 	); err != nil {
 		return fmt.Errorf("migrate: %w", err)
 	}

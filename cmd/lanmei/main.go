@@ -24,6 +24,7 @@ import (
 	"github.com/DaWesen/lanmei-dream/internal/kb/provider/feishu"
 	"github.com/DaWesen/lanmei-dream/internal/kb/provider/local"
 	"github.com/DaWesen/lanmei-dream/internal/kb/provider/sheet"
+	"github.com/DaWesen/lanmei-dream/internal/manager"
 	pluginpkg "github.com/DaWesen/lanmei-dream/internal/plugin"
 	"github.com/DaWesen/lanmei-dream/internal/topic"
 	"go.uber.org/zap"
@@ -63,6 +64,7 @@ func main() {
 	var (
 		llmClient llm.LLMClient
 		embedder  embedding.Embedder
+		llmMgr    *llm.ProviderManager // 管理面板启用时承载热切换；禁用时为 nil
 	)
 
 	// ── LLM 客户端（eino，支持 OpenAI/DeepSeek/Qwen/Moonshot/Ark/Ollama）──
@@ -77,7 +79,26 @@ func main() {
 		if err != nil {
 			logger.Fatal("LLM 初始化失败", zap.Error(err))
 		}
-		llmClient = einoLLM
+		if cfg.Manager.Enabled {
+			// 管理面板启用：注册 config.toml 配置的模型为默认 Provider，
+			// 面板可在数据库 Provider 为空时继续使用；DB 有配置后由面板接管。
+			llmMgr = llm.NewProviderManager(logger)
+			if _, err := llmMgr.SetProviders([]*llm.Provider{{
+				Name:        "default",
+				BaseURL:     cfg.AI.LLMBaseURL,
+				APIKey:      cfg.AI.LLMAPIKey,
+				Model:       cfg.AI.LLMModel,
+				MaxTokens:   cfg.AI.LLMMaxTokens,
+				Temperature: cfg.AI.LLMTemperature,
+				Enabled:     true,
+				Priority:    0,
+			}}); err != nil {
+				logger.Warn("默认 LLM Provider 注册失败", zap.Error(err))
+			}
+			llmClient = llmMgr
+		} else {
+			llmClient = einoLLM
+		}
 		logger.Info("LLM 就绪", zap.String("base_url", cfg.AI.LLMBaseURL), zap.String("model", cfg.AI.LLMModel))
 	} else {
 		logger.Warn("LLM API Key 未配置，角色扮演不可用")
@@ -262,6 +283,41 @@ func main() {
 	// 插件可能注册了新的命令/工具，刷新意图分析器使其感知
 	b.RefreshIntentAnalyzer()
 
+	// ── 管理面板（内嵌，独立端口；config.manager.enabled=false 时跳过）──
+	var mgr *manager.Manager
+	if cfg.Manager.Enabled {
+		mgr, err = manager.New(&cfg.Manager, manager.Deps{
+			DB:        inf.DB,
+			Bot:       b,
+			LLMMgr:    llmMgr,
+			Logger:    logger,
+			Skills:    skillMgr,
+			Prompts:   promptMgr,
+			Knowledge: kbSvc,
+			Wasm:      wasmManager,
+			Commands:  cmdSys,
+		})
+		if err != nil {
+			logger.Fatal("管理面板初始化失败", zap.Error(err))
+		}
+		// 从数据库加载 Provider 到运行时（DB 为空时保留 config.toml 兜底）
+		if err := mgr.LoadProviders(ctx); err != nil {
+			logger.Warn("管理面板 LLM Provider 加载失败", zap.Error(err))
+		}
+		// 用量上报：ProviderManager（直连/流式）与 ChatService（工具/流式循环）统一接计费
+		hook := mgr.BillingHook()
+		if llmMgr != nil {
+			llmMgr.SetUsageHook(hook)
+		}
+		if chatSvc != nil {
+			chatSvc.SetUsageHook(hook)
+		}
+		if err := mgr.Start(ctx); err != nil {
+			logger.Fatal("管理面板启动失败", zap.Error(err))
+		}
+		logger.Info("管理面板就绪", zap.String("listen", cfg.Manager.ListenAddr))
+	}
+
 	go func() {
 		sigCh := make(chan os.Signal, 1)
 		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
@@ -272,6 +328,9 @@ func main() {
 			kbSvc.Close()
 		}
 		gwServer.Shutdown()
+		if mgr != nil {
+			_ = mgr.Stop()
+		}
 		cancel()
 	}()
 
