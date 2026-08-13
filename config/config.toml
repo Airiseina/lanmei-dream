@@ -55,6 +55,27 @@ music = true       # 网易云点歌插件
 sticker = true     # 自定义表情库插件
 
 # ============================================
+# 管理面板服务
+# 认证敏感配置（LANMEI_MANAGER_ADMIN_USERNAME / LANMEI_MANAGER_ADMIN_PASSWORD / LANMEI_MANAGER_SECRET_KEY）
+# 仅通过环境变量注入，不写入本文件。
+# ============================================
+[manager]
+enabled = false                    # 管理面板总开关
+listen_addr = "0.0.0.0:8090"       # 面板监听地址（生产建议绑定内网/VPN 网段）
+trace_retention_days = 7           # conduit_trace 保留天数
+access_token_ttl_minutes = 15      # 短期 Access Token 有效期（分钟）
+refresh_token_ttl_hours = 168      # 长期 Refresh Token 有效期（小时）
+enable_webauthn = true             # WebAuthn(passkey) 总开关
+# webauthn_rpid = "lanmei.example.com"  # passkey 要求域名；IP 部署留空则自动回退密码登录
+# webauthn_display_name = "Lanmei Manager"
+# webauthn_origins = ["https://lanmei.example.com"]
+rate_limit_per_minute = 20         # 登录类接口限流（次/分钟/IP）
+session_max_per_user = 10          # 单账号最大活跃会话数
+max_login_fails = 5                # 连续登录失败锁定阈值
+login_lock_minutes = 15            # 登录锁定分钟数
+# trusted_proxies = ["10.0.0.0/8", "192.168.0.0/16"]  # 位于反向代理后时配置
+
+# ============================================
 # Prompt 系统路径声明
 # ============================================
 [prompts]

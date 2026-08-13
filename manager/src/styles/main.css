@@ -1,0 +1,190 @@
+/* ─────────────────────────────────────────────
+   全局样式：语义化设计令牌（Design Tokens）+ 基础布局
+   配色策略：低饱和度（Vue 官网风格）——背景黑白灰层次 + 低饱和品牌蓝
+   主题切换：html[data-theme] 驱动本应用变量，
+             html[theme-mode] 驱动 TDesign 组件库暗色模式（二者同步设置）
+   ───────────────────────────────────────────── */
+
+/* ── Light 主题（低饱和度 · 暖灰白底） ── */
+:root {
+  /* 背景层级 */
+  --mgr-bg: #f6f6f7;            /* 页面背景 */
+  --mgr-bg-secondary: #eceaeC;  /* 次要背景（悬浮区） */
+  --mgr-bg-card: #ffffff;       /* 卡片/顶栏 */
+  --mgr-bg-hover: #f0f0f2;      /* 悬浮态 */
+  --mgr-bg-active: #e9e9ec;     /* 选中态 */
+
+  /* 边框/分隔 */
+  --mgr-border: #e3e3e6;
+  --mgr-border-strong: #d3d3d8;
+
+  /* 文本层级 */
+  --mgr-text: #303036;
+  --mgr-text-secondary: #6e6e75;
+  --mgr-text-muted: #9a9aa2;
+
+  /* 品牌主色（低饱和蓝） */
+  --mgr-primary: #3b6fd4;
+  --mgr-primary-hover: #5c89e0;
+  --mgr-primary-soft: rgba(59, 111, 212, 0.09);
+
+  /* 状态色（低饱和） */
+  --mgr-success: #3f9e6f;
+  --mgr-warning: #c98f3f;
+  --mgr-danger: #cf5d52;
+
+  /* 侧栏（浅色，双主题区分） */
+  --mgr-sidebar-bg: #fbfbfc;
+  --mgr-sidebar-text: #56565e;
+  --mgr-sidebar-text-active: #1d1d20;
+  --mgr-sidebar-active: rgba(59, 111, 212, 0.1);
+
+  /* 阴影 */
+  --mgr-shadow-sm: 0 1px 3px rgba(30, 30, 34, 0.06);
+  --mgr-shadow-md: 0 6px 20px rgba(30, 30, 34, 0.09);
+  --mgr-shadow-lg: 0 12px 40px rgba(30, 30, 34, 0.14);
+
+  /* 圆角 */
+  --mgr-radius-sm: 6px;
+  --mgr-radius: 10px;
+  --mgr-radius-lg: 16px;
+}
+
+/* ── Dark 主题（深黑 · 低饱和度） ── */
+:root[data-theme='dark'] {
+  --mgr-bg: #1d1d1f;
+  --mgr-bg-secondary: #242427;
+  --mgr-bg-card: #222226;
+  --mgr-bg-hover: #2a2a2d;
+  --mgr-bg-active: #323236;
+
+  --mgr-border: #3a3a3e;
+  --mgr-border-strong: #47474c;
+
+  --mgr-text: #e8e8ea;
+  --mgr-text-secondary: #9d9da3;
+  --mgr-text-muted: #6e6e73;
+
+  --mgr-primary: #6b9df3;
+  --mgr-primary-hover: #86b0f5;
+  --mgr-primary-soft: rgba(107, 157, 243, 0.14);
+
+  --mgr-success: #4cc38a;
+  --mgr-warning: #d9a05b;
+  --mgr-danger: #e06c63;
+
+  --mgr-sidebar-bg: linear-gradient(180deg, #19191c 0%, #141417 100%);
+  --mgr-sidebar-text: #9c9ca3;
+  --mgr-sidebar-text-active: #ffffff;
+  --mgr-sidebar-active: rgba(107, 157, 243, 0.22);
+
+  --mgr-shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.4);
+  --mgr-shadow-md: 0 6px 20px rgba(0, 0, 0, 0.45);
+  --mgr-shadow-lg: 0 12px 40px rgba(0, 0, 0, 0.55);
+}
+
+/* ── 基础重置 ── */
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background-color: var(--mgr-bg);
+  color: var(--mgr-text);
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
+    'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+  font-size: 14px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+  transition: background-color 0.25s ease, color 0.25s ease;
+}
+
+/* ── 页面容器 ── */
+.page {
+  padding: 20px;
+  max-width: 1400px;
+  margin: 0 auto;
+}
+
+.page-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 16px;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.page-title {
+  font-size: 18px;
+  font-weight: 600;
+  margin: 0;
+  letter-spacing: 0.2px;
+}
+
+.page-desc {
+  color: var(--mgr-text-secondary);
+  font-size: 13px;
+  margin-top: 4px;
+}
+
+/* 页头右侧搜索组：输入框与查询按钮同栏相邻排列 */
+.page-header .header-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* 通用间距 */
+.mb-16 {
+  margin-bottom: 16px;
+}
+
+/* ── 表单按钮间距 ──
+   TDesign 会移除最后一个表单项的 margin-bottom（.t-form__item:last-of-type），
+   导致表单提交/操作按钮与输入区贴合，此处统一留出垂直间隔。 */
+.t-form > .t-button {
+  margin-top: 12px;
+}
+.t-form__item + .t-button {
+  margin-top: 12px;
+}
+
+/* ── 表格单元格：操作按钮 / 并列标签间距 ── */
+.t-table td .t-button + .t-button {
+  margin-left: 8px;
+}
+.t-table td .t-tag + .t-tag {
+  margin-left: 6px;
+}
+
+/* ── TDesign 组件暗色适配补充 ── */
+:root[data-theme='dark'] {
+  .t-card {
+    background-color: var(--mgr-bg-card);
+  }
+}
+
+/* ── 滚动条美化 ── */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--mgr-border-strong);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--mgr-text-muted);
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}

@@ -27,11 +27,12 @@ import (
 //   - {{ .UserName }}        — 用户昵称
 //   - {{ .GroupName }}       — 群组名称
 type Manager struct {
-	rootDir   string                 // prompts/ 目录路径
-	config    *PromptsConfig         // 从 prompts.toml 解析的配置
-	fragments map[string]*Fragment   // ID → Fragment
-	assembly  string                 // 组装模板原文
-	skills    *skill.Manager         // Skill 管理器（可选）
+	rootDir    string               // prompts/ 目录路径
+	configPath string               // prompts.toml 路径（Reload/编辑回写用）
+	config     *PromptsConfig       // 从 prompts.toml 解析的配置
+	fragments  map[string]*Fragment // ID → Fragment
+	assembly   string               // 组装模板原文
+	skills     *skill.Manager       // Skill 管理器（可选）
 }
 
 // PromptsConfig 对应 prompts.toml 的结构
@@ -83,6 +84,7 @@ func (m *Manager) Load(configPath string) error {
 	if err != nil {
 		return fmt.Errorf("prompt: 读取 %s 失败: %w", configPath, err)
 	}
+	m.configPath = configPath
 
 	var cfg PromptsConfig
 	if err := toml.Unmarshal(raw, &cfg); err != nil {
@@ -207,4 +209,33 @@ func (m *Manager) Reload(configPath string) error {
 	m.assembly = ""
 	m.config = nil
 	return m.Load(configPath)
+}
+
+// FragmentContent 返回指定 Fragment 的已加载内容（供管理面板展示）。
+func (m *Manager) FragmentContent(id string) (string, bool) {
+	f, ok := m.fragments[id]
+	if !ok {
+		return "", false
+	}
+	return f.content, true
+}
+
+// UpdateFragment 更新指定 Fragment 内容：写回 Markdown 文件后热重载。
+// builtin 片段为只读，拒绝修改（避免覆盖工程自带的核心 System Prompt）。
+func (m *Manager) UpdateFragment(id, content string) error {
+	f, ok := m.fragments[id]
+	if !ok {
+		return fmt.Errorf("prompt: fragment %q 不存在", id)
+	}
+	if f.Builtin {
+		return fmt.Errorf("prompt: fragment %q 为 builtin 只读片段", id)
+	}
+	path := filepath.Join(m.rootDir, f.File)
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		return fmt.Errorf("prompt: 写入 %s 失败: %w", path, err)
+	}
+	if m.configPath == "" {
+		return fmt.Errorf("prompt: 未加载配置，无法热重载")
+	}
+	return m.Reload(m.configPath)
 }

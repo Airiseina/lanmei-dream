@@ -47,6 +47,7 @@ type ChatService struct {
 	toolReg    *tool.Registry
 	promptMgr  *prompt.Manager // Prompt 管理器（可选，为 nil 时使用 DefaultSystemPrompt）
 	knowledge  *kbpkg.Service  // 知识库系统（可选，为 nil 时跳过隐式召回）
+	usageHook  llm.UsageHook   // 用量上报回调（工具循环/流式路径专用；直连路径由 EinoClient 内部上报）
 	logger     *zap.Logger
 }
 
@@ -81,6 +82,35 @@ func (s *ChatService) SetKnowledge(svc *kbpkg.Service) {
 	s.knowledge = svc
 }
 
+// SetUsageHook 注入用量上报回调（工具循环/流式路径的用量由此上报）。
+// 直连路径（client.Chat 直接命中 EinoClient）由 EinoClient 内部 hook 上报，不会重复。
+func (s *ChatService) SetUsageHook(hook llm.UsageHook) {
+	s.usageHook = hook
+}
+
+// reportUsage 上报一次工具循环/流式路径的用量记录。
+// provider/model 取自当前客户端（EinoCapable 能力接口）。
+func (s *ChatService) reportUsage(req *llm.ChatRequest, input, output int) {
+	if s.usageHook == nil || (input <= 0 && output <= 0) {
+		return
+	}
+	provider, modelName := "", ""
+	if ec, ok := s.client.(llm.EinoCapable); ok {
+		provider, modelName = ec.ProviderName(), ec.ModelName()
+	}
+	s.usageHook(llm.UsageRecord{
+		Provider:     provider,
+		Model:        modelName,
+		Scene:        req.Scene,
+		UserID:       req.UserID,
+		GroupID:      req.GroupID,
+		Platform:     req.Platform,
+		InputTokens:  int64(input),
+		OutputTokens: int64(output),
+		TotalTokens:  int64(input + output),
+	})
+}
+
 // Compressor 暴露压缩器给外部调用
 func (s *ChatService) Compressor() *Compressor {
 	return s.compressor
@@ -107,7 +137,7 @@ func (s *ChatService) Chat(ctx context.Context, req *llm.ChatRequest) (*llm.Chat
 	}
 
 	// ── 工具调用判断 ──
-	einoClient, isEino := s.client.(*llm.EinoClient)
+	einoClient, isEino := s.client.(llm.EinoCapable)
 	if isEino && s.toolReg != nil && len(s.toolReg.ToolInfos()) > 0 && einoClient.SupportsToolCalling() {
 		return s.chatWithToolLoop(ctx, req, einoClient)
 	}
@@ -356,12 +386,12 @@ func (s *ChatService) assembleContext(ctx context.Context, req *llm.ChatRequest)
 // 参数：
 //   - ctx: 上下文，用于取消和超时控制
 //   - req: 对话请求，包含组装后的消息列表
-//   - einoClient: 支持 Function Calling 的 Eino 客户端
+//   - einoClient: 支持 Function Calling 的 Eino 客户端（或 ProviderManager 代理）
 //
 // 返回：
 //   - ChatResponse: 包含最终回复内容和累计 token 用量
 //   - error: 工具绑定失败、LLM 调用失败等错误
-func (s *ChatService) chatWithToolLoop(ctx context.Context, req *llm.ChatRequest, einoClient *llm.EinoClient) (*llm.ChatResponse, error) {
+func (s *ChatService) chatWithToolLoop(ctx context.Context, req *llm.ChatRequest, einoClient llm.EinoCapable) (*llm.ChatResponse, error) {
 	toolInfos := s.toolReg.ToolInfos()
 	chatModel, err := einoClient.ChatWithTools(toolInfos)
 	if err != nil {
@@ -391,7 +421,7 @@ func (s *ChatService) chatWithToolLoop(ctx context.Context, req *llm.ChatRequest
 	}
 
 	// 进入工具调用循环：LLM 生成 → 执行工具 → 回传结果 → 再次生成，直至完成
-	schemaMsgs, totalTokens, invokedTools, err := s.processToolCalls(ctx, chatModel, schemaMsgs)
+	schemaMsgs, totalInput, totalOutput, invokedTools, err := s.processToolCalls(ctx, chatModel, schemaMsgs)
 	if err != nil {
 		return nil, fmt.Errorf("chat: tool call loop: %w", err)
 	}
@@ -414,9 +444,14 @@ func (s *ChatService) chatWithToolLoop(ctx context.Context, req *llm.ChatRequest
 	// ── 异步：存记忆 + 触发压缩 ──
 	s.asyncStoreAndCompress(ctx, req.UserID, req.GroupID, req.Messages[len(req.Messages)-1].Content, nil)
 
+	// 工具循环路径绕过 client.Chat 直连 chatModel，需手动上报用量
+	s.reportUsage(req, totalInput, totalOutput)
+
 	return &llm.ChatResponse{
 		Content:       finalContent,
-		TokensUsed:    totalTokens,
+		TokensUsed:    totalInput + totalOutput,
+		InputTokens:   totalInput,
+		OutputTokens:  totalOutput,
 		InvolvedTools: invokedTools,
 	}, nil
 }
@@ -448,16 +483,18 @@ func (s *ChatService) chatWithToolLoop(ctx context.Context, req *llm.ChatRequest
 //
 // 返回：
 //   - []*schema.Message: 包含所有中间轮次消息的完整消息列表
-//   - int: 累计消耗的 token 总量
+//   - int: 累计消耗的输入 token 数
+//   - int: 累计消耗的输出 token 数
 //   - error: LLM 调用失败时的错误
-func (s *ChatService) processToolCalls(ctx context.Context, chatModel model.BaseChatModel, msgs []*schema.Message) ([]*schema.Message, int, []string, error) {
-	totalTokens := 0
+func (s *ChatService) processToolCalls(ctx context.Context, chatModel model.BaseChatModel, msgs []*schema.Message) ([]*schema.Message, int, int, []string, error) {
+	totalInput := 0
+	totalOutput := 0
 	var invokedTools []string
 	for round := 0; round < maxToolCallRounds; round++ {
 		// 调用 LLM 生成回复（可能包含工具调用请求）
 		resp, err := chatModel.Generate(ctx, msgs)
 		if err != nil {
-			return msgs, totalTokens, invokedTools, err
+			return msgs, totalInput, totalOutput, invokedTools, err
 		}
 		// 将 LLM 回复追加到消息列表，作为下一轮的上下文
 		// DeepSeek 等实现要求 assistant 消息必须携带 content 字段，而 go-openai 序列化
@@ -470,12 +507,13 @@ func (s *ChatService) processToolCalls(ctx context.Context, chatModel model.Base
 
 		// 累计 token 用量（用于计费和监控）
 		if resp.ResponseMeta != nil && resp.ResponseMeta.Usage != nil {
-			totalTokens += resp.ResponseMeta.Usage.TotalTokens
+			totalInput += resp.ResponseMeta.Usage.PromptTokens
+			totalOutput += resp.ResponseMeta.Usage.CompletionTokens
 		}
 
 		// 如果 LLM 没有请求任何工具调用，说明已经产出最终文本回复，循环结束
 		if len(resp.ToolCalls) == 0 {
-			return msgs, totalTokens, invokedTools, nil
+			return msgs, totalInput, totalOutput, invokedTools, nil
 		}
 
 		// 逐个执行 LLM 请求的工具调用
@@ -498,7 +536,7 @@ func (s *ChatService) processToolCalls(ctx context.Context, chatModel model.Base
 		}
 	}
 	// 达到最大轮次限制，强制退出循环
-	return msgs, totalTokens, invokedTools, nil
+	return msgs, totalInput, totalOutput, invokedTools, nil
 }
 
 // asyncStoreAndCompress 异步存记忆 + 触发压缩。

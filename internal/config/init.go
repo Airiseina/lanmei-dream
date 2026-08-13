@@ -76,6 +76,10 @@ func Init() (*Config, error) {
 		"LANMEI_MEDIA_BUCKET":     "bot.media.bucket",
 		"LANMEI_MEDIA_REGION":     "bot.media.region",
 		"LANMEI_TOPIC_ENABLED":    "bot.topic.enabled",
+		// 管理面板（docker-compose 经 nginx 托管前端时通过 env 启用）
+		"LANMEI_MANAGER_ENABLED":       "manager.enabled",
+		"LANMEI_MANAGER_LISTEN_ADDR":   "manager.listen_addr",
+		"LANMEI_MANAGER_WEBAUTHN_RPID": "manager.webauthn_rpid",
 	}
 	for envKey, cfgKey := range envToCfg {
 		if val := os.Getenv(envKey); val != "" {

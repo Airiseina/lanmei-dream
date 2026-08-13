@@ -1,0 +1,6 @@
+# 构建上下文排除（减少传输体积、避免本地产物/依赖混入镜像）
+node_modules
+dist
+.npm-cache
+.env
+*.log

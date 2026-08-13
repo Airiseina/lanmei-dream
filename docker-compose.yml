@@ -75,6 +75,13 @@ services:
       LANMEI_MEDIA_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:-lanmei}
       LANMEI_MEDIA_SECRET_KEY: ${RUSTFS_SECRET_KEY:-lanmei-secret}
       LANMEI_MEDIA_BUCKET: ${LANMEI_MEDIA_BUCKET:-lanmei-media}
+      # 管理面板：经 nginx（manager-web）托管前端并反代 /api，故启用内嵌 Fiber 服务
+      LANMEI_MANAGER_ENABLED: "true"
+      LANMEI_MANAGER_LISTEN_ADDR: "0.0.0.0:8090"
+      # 超管凭据与加密主密钥（仅环境变量，不落盘；缺失/过弱时 lanmei 启动失败）
+      LANMEI_MANAGER_ADMIN_USERNAME: ${LANMEI_MANAGER_ADMIN_USERNAME:-}
+      LANMEI_MANAGER_ADMIN_PASSWORD: ${LANMEI_MANAGER_ADMIN_PASSWORD:-}
+      LANMEI_MANAGER_SECRET_KEY: ${LANMEI_MANAGER_SECRET_KEY:-}
     volumes:
       # 配置文件目录（只读）：包含 config.toml 与 skills.toml 等运行时配置
       - ./config:/app/config:ro
@@ -93,6 +100,23 @@ services:
         condition: service_started
       ncm-api:
         condition: service_started
+
+  # ── 管理面板前端（nginx 托管静态资源，/api 反向代理到 lanmei:8090）──
+  # 访问入口：http://<host>:${MANAGER_WEB_PORT:-80}（前端与 /api 同源，CSRF 校验通过）
+  manager-web:
+    build:
+      context: ./manager
+    restart: unless-stopped
+    ports:
+      - "${MANAGER_WEB_PORT:-80}:80"
+    depends_on:
+      lanmei:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
 
   # ── Onebots 网关（统一 IM 平台适配，通过反向 WS 转发事件到蓝妹）──
   onebots:

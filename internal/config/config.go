@@ -15,6 +15,45 @@ type Config struct {
 	Prompts   PromptsConfig   `mapstructure:"prompts"`
 	Skills    SkillsConfig    `mapstructure:"skills"`
 	Knowledge KnowledgeConfig `mapstructure:"knowledge"`
+	Manager   ManagerConfig   `mapstructure:"manager"`
+}
+
+// ManagerConfig 管理面板服务配置。
+// 注意：认证相关的敏感配置（超级管理员账号/密码、加密主密钥）不在 toml 中，
+// 一律从环境变量读取（LANMEI_MANAGER_ADMIN_USERNAME / LANMEI_MANAGER_ADMIN_PASSWORD / LANMEI_MANAGER_SECRET_KEY），
+// 避免明文密钥落盘。
+type ManagerConfig struct {
+	// Enabled 管理面板总开关，默认 false
+	Enabled bool `mapstructure:"enabled"`
+	// ListenAddr 管理面板监听地址，如 "0.0.0.0:8090"
+	ListenAddr string `mapstructure:"listen_addr"`
+	// TraceRetentionDays conduit_trace 保留天数，默认 7
+	TraceRetentionDays int `mapstructure:"trace_retention_days"`
+	// AccessTokenTTLMinutes 短期 Access Token 有效期（分钟），默认 15
+	AccessTokenTTLMinutes int `mapstructure:"access_token_ttl_minutes"`
+	// RefreshTokenTTLHours 长期 Refresh Token 有效期（小时），默认 168（7 天）
+	RefreshTokenTTLHours int `mapstructure:"refresh_token_ttl_hours"`
+	// EnableWebAuthn WebAuthn（passkey）总开关，默认 true。
+	// 部署在 IP / 非 HTTPS 环境时浏览器不可用 passkey，登录自动回退密码，服务端不受影响。
+	EnableWebAuthn bool `mapstructure:"enable_webauthn"`
+	// WebAuthnRPID WebAuthn Relying Party ID（必须为域名，不含端口与协议）。
+	// 留空时服务端根据请求 Host 推断（IP 部署时会自动禁用 passkey 相关注册接口）。
+	WebAuthnRPID string `mapstructure:"webauthn_rpid"`
+	// WebAuthnDisplayName WebAuthn 展示名（默认 "Lanmei Manager"）
+	WebAuthnDisplayName string `mapstructure:"webauthn_display_name"`
+	// WebAuthnOrigins 允许的 WebAuthn 来源（完整 origin，如 https://lanmei.example.com）。
+	// 留空时使用 RPID 推断。
+	WebAuthnOrigins []string `mapstructure:"webauthn_origins"`
+	// RateLimitPerMinute 登录类接口每 IP 每分钟最大请求数，默认 20
+	RateLimitPerMinute int `mapstructure:"rate_limit_per_minute"`
+	// SessionMaxPerUser 单账号最大活跃会话数（超出后最旧会话被吊销），默认 10
+	SessionMaxPerUser int `mapstructure:"session_max_per_user"`
+	// MaxLoginFails 连续登录失败锁定阈值，默认 5
+	MaxLoginFails int `mapstructure:"max_login_fails"`
+	// LoginLockMinutes 登录锁定分钟数，默认 15
+	LoginLockMinutes int `mapstructure:"login_lock_minutes"`
+	// TrustedProxies 信任的反向代理网段（获取真实客户端 IP），空则不信任任何代理
+	TrustedProxies []string `mapstructure:"trusted_proxies"`
 }
 
 // PluginConfig 插件系统配置
