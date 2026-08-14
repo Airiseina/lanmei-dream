@@ -32,6 +32,7 @@ type Provider struct {
 	embedder       embedding.Embedder // 可为 nil（向量列与 vector 模式降级）
 	fuzzyThreshold float64
 	docsDir        string
+	skipCSVHeader  bool // 是否跳过 CSV 首行表头（默认 true）
 	logger         *zap.Logger
 }
 
@@ -53,6 +54,7 @@ func New(_ context.Context, kbb *kbpkg.KnowledgeBase, cfg map[string]any, deps k
 		embedder:       deps.Embedder,
 		fuzzyThreshold: threshold,
 		docsDir:        kbpkg.ConfigString(cfg, "docs_dir", ""),
+		skipCSVHeader:  kbpkg.ConfigBool(cfg, "csv_skip_header", true),
 		logger:         deps.Logger,
 	}, nil
 }
