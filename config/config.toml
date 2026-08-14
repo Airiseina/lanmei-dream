@@ -108,14 +108,19 @@ time = 0.5                          # 时间召回权重
 [[knowledge.bases]]
 id = "main"
 name = "主知识库"
-description = "本地文件知识库，docs_dir 下的 Markdown 自动同步"
+description = "本地文件知识库，docs_dir 下的 Markdown / CSV 自动同步"
 provider = "local"
 enabled = true
 recall_limit = 5                    # 单模式召回上限
 
 [knowledge.bases.config]
-docs_dir = "./docs"                 # Markdown 文件目录（相对程序运行目录）
+docs_dir = "./docs"                 # 知识文件目录（相对程序运行目录），支持 .md 与 .csv
 fuzzy_threshold = 0.1               # 模糊召回最低相似度阈值
+# CSV 规则表说明：
+#   与飞书表格结构同构：A 列=关键词、B 列=回复（C 列匹配形式忽略），每行一条知识。
+#   CSV 放入 docs_dir（如 docs/rules.csv）后启动或"重新同步"即自动摄入，
+#   检索命中后由 LLM 组织回答（即"AI检索"行为）。
+csv_skip_header = true              # 是否跳过 CSV 首行表头
 
 # ── 飞书知识库（Wiki，应用身份访问）──
 # 凭据支持 "env:VAR_NAME" 语法从环境变量读取，避免敏感信息入库

@@ -2,12 +2,14 @@ package local
 
 import (
 	"context"
+	"encoding/csv"
 	"encoding/json"
 	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -22,21 +24,40 @@ import (
 // llmSourcePrefix kb_add 工具写入行的 source_id 前缀（文件同步删除时保护此类行）。
 const llmSourcePrefix = "llm:"
 
+// fileRowCSV CSV 数据行的 source_id 后缀分隔符：相对路径#行号。
+const fileRowSep = "#"
+
 var (
 	frontMatterRe = regexp.MustCompile(`(?s)^---\s*\n(.*?)\n---\s*\n`)
 	tagsRe        = regexp.MustCompile(`(?m)^\s*tags\s*:\s*\[(.*?)\]`)
 )
 
-// fileEntry 一个待摄入的 Markdown 文件。
+// fileEntry 一个待摄入的知识文件条目。
+// Markdown 文件整文件为一个分块（row=-1）；CSV 文件按行拆分（row>=0）。
 type fileEntry struct {
 	path string // 绝对路径
 	rel  string // 相对 docs_dir 路径（/ 分隔）
+	row  int    // CSV 数据行号（0 起）；-1 表示整文件（Markdown）
+	// CSV 行内容（Markdown 文件为空）
+	keyword string // A 列：关键词（作为分块标题）
+	reply   string // B 列：回复内容（作为分块内容主体）
 }
 
-// Sync 实现 kb.Syncer：将 docs_dir 下的 Markdown 文件同步为知识分块（幂等）。
+// sourceID 返回分块的外部源唯一标识（(knowledge_base_id, source_id) 幂等键）。
+// Markdown 用相对路径；CSV 行用 "相对路径#行号"，保证行级独立、行内内容变更可识别。
+func (e fileEntry) sourceID() string {
+	if e.row < 0 {
+		return e.rel
+	}
+	return e.rel + fileRowSep + strconv.Itoa(e.row)
+}
+
+// Sync 实现 kb.Syncer：将 docs_dir 下的 Markdown/CSV 文件同步为知识分块（幂等）。
 //
-//   - 内容未变化的文件跳过（不重复嵌入）；
-//   - 已删除的文件从库中移除；
+//   - Markdown：整文件为一个分块（解析标题/front-matter）；
+//   - CSV：按行拆分（A 列=关键词、B 列=回复，每行一个分块，可跳过表头）；
+//   - 内容未变化的分块跳过（不重复嵌入）；
+//   - 已删除的文件/行从库中移除；
 //   - source_id 以 "llm:" 开头的行（kb_add 工具录入）不受文件同步影响。
 func (p *Provider) Sync(ctx context.Context) error {
 	if p.docsDir == "" {
@@ -55,12 +76,9 @@ func (p *Provider) Sync(ctx context.Context) error {
 		return fmt.Errorf("kb local: docs_dir 不是目录: %s", p.docsDir)
 	}
 
-	files, err := walkMarkdown(p.docsDir)
-	if err != nil {
-		return fmt.Errorf("kb local: 扫描 docs_dir: %w", err)
-	}
+	files := p.walkFiles(p.docsDir)
 
-	// 已存在的分块（source_id -> content），用于跳过未变化文件
+	// 已存在的分块（source_id -> content），用于跳过未变化条目
 	existing := map[string]string{}
 	{
 		var rows []model.KnowledgeChunk
@@ -77,16 +95,15 @@ func (p *Provider) Sync(ctx context.Context) error {
 
 	upserts := make([]model.KnowledgeChunk, 0, len(files))
 	for _, f := range files {
-		text, err := os.ReadFile(f.path)
-		if err != nil {
-			p.logger.Warn("kb local: 读取文件失败，跳过", zap.String("file", f.rel), zap.Error(err))
-			continue
+		sourceID := f.sourceID()
+		title, content, ok := p.renderEntry(f)
+		if !ok {
+			continue // 读取/解析失败已记录日志
 		}
-		content := string(text)
-		if existing[f.rel] == content {
+		if existing[sourceID] == content {
 			continue // 内容未变化，跳过（避免重复嵌入）
 		}
-		row, ok := p.buildChunk(ctx, f.rel, content)
+		row, ok := p.buildChunk(ctx, sourceID, title, content, f.rel)
 		if !ok {
 			continue // 嵌入失败已记录日志
 		}
@@ -101,7 +118,7 @@ func (p *Provider) Sync(ctx context.Context) error {
 			zap.String("kb", p.kb.ID), zap.Int("changed", len(upserts)), zap.Int("total", len(files)))
 	}
 
-	// 删除目录中已不存在的文件（保护 llm: 工具录入行）
+	// 删除目录中已不存在的文件/行（保护 llm: 工具录入行）
 	if err := p.deleteMissing(ctx, files); err != nil {
 		return fmt.Errorf("kb local: 清理失效分块: %w", err)
 	}
@@ -110,7 +127,7 @@ func (p *Provider) Sync(ctx context.Context) error {
 
 // Store 实现 kb.Ingester：写入/更新一条分块（按 SourceID 幂等）。
 func (p *Provider) Store(ctx context.Context, chunk *kbpkg.Chunk) error {
-	row, ok := p.buildChunk(ctx, chunk.ID, chunk.Content)
+	row, ok := p.buildChunk(ctx, chunk.ID, chunk.Title, chunk.Content, chunk.ID)
 	if !ok {
 		return fmt.Errorf("kb local: 知识录入嵌入失败")
 	}
@@ -128,9 +145,16 @@ func (p *Provider) Store(ctx context.Context, chunk *kbpkg.Chunk) error {
 }
 
 // buildChunk 由内容构造数据库行（解析标题/front-matter + 向量化）。
-// 返回 ok=false 表示该文件应跳过（读取/嵌入失败，已记录日志）。
-func (p *Provider) buildChunk(ctx context.Context, sourceID, content string) (model.KnowledgeChunk, bool) {
-	title, meta := parseMarkdown(content, sourceID)
+// title 非空时直接采用（CSV 行的关键词）；为空则解析 Markdown 标题。
+// metaSource 用于生成 meta["source"]（Markdown 传相对路径，CSV 传文件相对路径）。
+// 返回 ok=false 表示该条目应跳过（读取/嵌入失败，已记录日志）。
+func (p *Provider) buildChunk(ctx context.Context, sourceID, title, content, metaSource string) (model.KnowledgeChunk, bool) {
+	var meta map[string]any
+	if title == "" {
+		title, meta = parseMarkdown(content, metaSource)
+	} else {
+		meta = map[string]any{"source": "file:" + filepath.ToSlash(metaSource)}
+	}
 
 	var emb pgvector.Vector
 	if p.embedder != nil {
@@ -161,6 +185,27 @@ func (p *Provider) buildChunk(ctx context.Context, sourceID, content string) (mo
 	}, true
 }
 
+// renderEntry 将文件条目渲染为 (标题, 内容)。
+//   - Markdown：整文件原文（标题由 buildChunk 内部解析）；
+//   - CSV 行：内容 = "关键词：回复"，保证关键词语义参与向量/模糊检索。
+//
+// ok=false 表示读取/解析失败（已记录日志，调用方跳过）。
+func (p *Provider) renderEntry(f fileEntry) (string, string, bool) {
+	if f.row < 0 {
+		text, err := os.ReadFile(f.path)
+		if err != nil {
+			p.logger.Warn("kb local: 读取文件失败，跳过", zap.String("file", f.rel), zap.Error(err))
+			return "", "", false
+		}
+		return "", string(text), true
+	}
+	content := f.reply
+	if f.keyword != "" {
+		content = f.keyword + "：" + f.reply
+	}
+	return f.keyword, content, true
+}
+
 // upsertChunks 按 (knowledge_base_id, source_id) 唯一约束 upsert。
 func (p *Provider) upsertChunks(ctx context.Context, rows []model.KnowledgeChunk) error {
 	return p.orm.WithContext(ctx).Clauses(clause.OnConflict{
@@ -171,7 +216,7 @@ func (p *Provider) upsertChunks(ctx context.Context, rows []model.KnowledgeChunk
 	}).Create(&rows).Error
 }
 
-// deleteMissing 删除目录中已不存在的文件分块（source_id 不以 "llm:" 开头）。
+// deleteMissing 删除目录中已不存在的文件/行分块（source_id 不以 "llm:" 开头）。
 func (p *Provider) deleteMissing(ctx context.Context, files []fileEntry) error {
 	q := p.orm.WithContext(ctx).
 		Where("knowledge_base_id = ?", p.kb.ID).
@@ -182,32 +227,102 @@ func (p *Provider) deleteMissing(ctx context.Context, files []fileEntry) error {
 	}
 	current := make([]string, 0, len(files))
 	for _, f := range files {
-		current = append(current, f.rel)
+		current = append(current, f.sourceID())
 	}
 	return q.Where("source_id NOT IN ?", current).Delete(&model.KnowledgeChunk{}).Error
 }
 
-// walkMarkdown 递归收集 docs_dir 下所有 .md 文件。
-func walkMarkdown(root string) ([]fileEntry, error) {
+// walkFiles 递归收集 docs_dir 下的知识文件条目：
+//   - .md 文件 → 整文件一个条目（row=-1）；
+//   - .csv 文件 → 按行拆分为多个条目（row=0,1,...）。
+//
+// 单个 CSV 解析失败时记录告警并跳过该文件，不中断整体扫描。
+func (p *Provider) walkFiles(root string) []fileEntry {
 	var files []fileEntry
-	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+	_ = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
-			return err
+			p.logger.Warn("kb local: 遍历 docs_dir 出错", zap.String("path", path), zap.Error(err))
+			return nil
 		}
 		if d.IsDir() {
 			return nil
 		}
-		if !strings.EqualFold(filepath.Ext(path), ".md") {
+		ext := strings.ToLower(filepath.Ext(path))
+		if ext != ".md" && ext != ".csv" {
 			return nil
 		}
 		rel, err := filepath.Rel(root, path)
 		if err != nil {
-			return err
+			p.logger.Warn("kb local: 计算相对路径失败，跳过", zap.String("path", path), zap.Error(err))
+			return nil
 		}
-		files = append(files, fileEntry{path: path, rel: filepath.ToSlash(rel)})
+		rel = filepath.ToSlash(rel)
+
+		if ext == ".md" {
+			files = append(files, fileEntry{path: path, rel: rel, row: -1})
+			return nil
+		}
+
+		rows, err := parseCSVFile(path, rel, p.skipCSVHeader)
+		if err != nil {
+			p.logger.Warn("kb local: 解析 CSV 失败，跳过", zap.String("file", rel), zap.Error(err))
+			return nil
+		}
+		files = append(files, rows...)
 		return nil
 	})
-	return files, err
+	return files
+}
+
+// parseCSVFile 解析 CSV 文件为逐行知识条目（与飞书表格结构同构）：
+//
+//		| 关键词(A) | 回复(B) | 匹配形式(C，忽略) |
+//
+//	  - 兼容 UTF-8 BOM；默认跳过首行表头（skipHeader）；
+//	  - 空行跳过；行号从 0 起，作为 source_id 的后缀保证行级唯一。
+func parseCSVFile(path, rel string, skipHeader bool) ([]fileEntry, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("kb local: 打开 CSV %s: %w", rel, err)
+	}
+	defer f.Close()
+
+	reader := csv.NewReader(f)
+	reader.FieldsPerRecord = -1 // 容错：列数不一致不报错
+	reader.LazyQuotes = true    // 容错：引号不严格匹配的单元格
+
+	records, err := reader.ReadAll()
+	if err != nil {
+		return nil, fmt.Errorf("kb local: 解析 CSV %s: %w", rel, err)
+	}
+
+	var entries []fileEntry
+	start := 0
+	if skipHeader && len(records) > 0 {
+		start = 1
+	}
+	for i := start; i < len(records); i++ {
+		rec := records[i]
+		keyword := ""
+		reply := ""
+		if len(rec) > 0 {
+			keyword = strings.TrimSpace(strings.TrimPrefix(rec[0], "\ufeff"))
+		}
+		if len(rec) > 1 {
+			reply = strings.TrimSpace(rec[1])
+		}
+		if keyword == "" && reply == "" {
+			continue // 空行跳过
+		}
+		entries = append(entries, fileEntry{
+			path:    path,
+			rel:     rel,
+			row:     len(entries),
+			keyword: keyword,
+			reply:   reply,
+		})
+	}
+	return entries, nil
 }
 
 // parseMarkdown 解析 Markdown 的标题与 front-matter 元数据。
