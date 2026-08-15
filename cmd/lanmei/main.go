@@ -215,6 +215,14 @@ func main() {
 	}); err != nil {
 		logger.Fatal("注册帮助命令失败", zap.Error(err))
 	}
+	// /help 别名：与 /帮助 同义，降低新用户使用门槛
+	if err := cmdSys.Register(command.Command{
+		Name:        "help",
+		Description: "显示可用命令",
+		Handler:     cmdSys.HelpHandler,
+	}); err != nil {
+		logger.Fatal("注册 help 命令失败", zap.Error(err))
+	}
 
 	// ── 视觉理解服务（多模态图片描述，可选）──
 	var visionSvc *ai.VisionService
