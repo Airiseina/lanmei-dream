@@ -56,6 +56,10 @@ type ChatRequest struct {
 	Platform     string        `json:"platform,omitempty"`      // 消息平台（qq/wechat/telegram…），供计费统计
 	Scene        string        `json:"scene,omitempty"`         // 用量场景（chat/intent/compress/topic/vision），供计费统计
 	TopicContext *TopicContext `json:"topic_context,omitempty"` // 群聊话题上下文（nil = 私聊/无话题）
+	// MaxTokens 本次请求的输出 token 上限（nil 时沿用 client 全局配置）。
+	// 对推理型模型尤其重要：上限越大模型"思考"越久、响应越慢，
+	// 短输出场景（意图分类、海龟汤出题/判定）应显式设小值控制耗时。
+	MaxTokens *int `json:"max_tokens,omitempty"`
 }
 
 // ChatResponse 是对话服务的返回

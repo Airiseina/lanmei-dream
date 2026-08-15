@@ -109,7 +109,13 @@ func (c *EinoClient) ChatWithTools(tools []*schema.ToolInfo) (model.BaseChatMode
 func (c *EinoClient) Chat(ctx context.Context, req *ChatRequest) (*ChatResponse, error) {
 	msgs := ToSchemaMessages(req.Messages)
 
-	resp, err := c.model.Generate(ctx, msgs)
+	var opts []model.Option
+	if req.MaxTokens != nil {
+		// 按请求覆盖输出上限（推理模型对 max_tokens 敏感，短输出场景必须显式设小值）
+		opts = append(opts, model.WithMaxTokens(*req.MaxTokens))
+	}
+
+	resp, err := c.model.Generate(ctx, msgs, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("llm: eino generate: %w", err)
 	}
