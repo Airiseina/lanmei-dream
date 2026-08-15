@@ -60,6 +60,11 @@ type ChatRequest struct {
 	// 对推理型模型尤其重要：上限越大模型"思考"越久、响应越慢，
 	// 短输出场景（意图分类、海龟汤出题/判定）应显式设小值控制耗时。
 	MaxTokens *int `json:"max_tokens,omitempty"`
+	// ReasoningEffort 本次请求的推理强度（"low"/"medium"/"high"，nil 时沿用默认）。
+	// 推理型模型（如 deepseek-v4-flash）在默认强度下会长时间"思考"甚至把输出预算
+	// 全部花在 reasoning 上导致 content 为空；结构化短输出场景（海龟汤 JSON）应设 "low"，
+	// 关闭过度思考，响应可降至秒级。
+	ReasoningEffort *string `json:"reasoning_effort,omitempty"`
 }
 
 // ChatResponse 是对话服务的返回

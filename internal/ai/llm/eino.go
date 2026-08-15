@@ -114,6 +114,10 @@ func (c *EinoClient) Chat(ctx context.Context, req *ChatRequest) (*ChatResponse,
 		// 按请求覆盖输出上限（推理模型对 max_tokens 敏感，短输出场景必须显式设小值）
 		opts = append(opts, model.WithMaxTokens(*req.MaxTokens))
 	}
+	if req.ReasoningEffort != nil {
+		// 按请求覆盖推理强度（"low" 让推理模型快速收敛，避免思考耗尽预算导致 content 为空）
+		opts = append(opts, openai.WithReasoningEffort(openai.ReasoningEffortLevel(*req.ReasoningEffort)))
+	}
 
 	resp, err := c.model.Generate(ctx, msgs, opts...)
 	if err != nil {

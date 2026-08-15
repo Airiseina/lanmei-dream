@@ -172,7 +172,7 @@ type turtleQA struct {
 type turtleGame struct {
 	SoupFace      string     `json:"soup_face"`      // 汤面（公开谜面）
 	SoupBase      string     `json:"soup_base"`      // 汤底（答案，隐藏）
-	Hints         string     `json:"hints"`          // 判定要点（内部参考，不公开）
+	Hints         []string   `json:"hints"`          // 判定要点（内部参考，不公开）
 	QuestionCount int        `json:"question_count"` // 已提问次数
 	Creator       string     `json:"creator"`        // 开局人
 	CreatedAt     int64      `json:"created_at"`     // 开局时间戳
@@ -229,9 +229,9 @@ func saveGame(kv *database.PluginKVStore, ctx context.Context, groupID, userID s
 
 // turtleGeneration LLM 出题结果
 type turtleGeneration struct {
-	SoupFace string `json:"soup_face"`
-	SoupBase string `json:"soup_base"`
-	Hints    string `json:"hints"`
+	SoupFace string   `json:"soup_face"`
+	SoupBase string   `json:"soup_base"`
+	Hints    []string `json:"hints"` // 判定要点列表（模型输出数组）
 }
 
 // turtleJudgement LLM 判定结果（提问）
@@ -248,6 +248,9 @@ type turtleGuessResult struct {
 
 // intPtr 返回 int 的指针（ChatRequest.MaxTokens 为 *int，nil 表示沿用全局配置）。
 func intPtr(v int) *int { return &v }
+
+// strPtr 返回 string 的指针（ChatRequest.ReasoningEffort 为 *string）。
+func strPtr(v string) *string { return &v }
 
 // chatJSON 调用 LLM 并解析 JSON 响应（容错：剥离 markdown 代码块围栏）。
 // timeout > 0 时为 LLM 调用设置独立超时：LLM 慢/故障时快速降级返回，
@@ -267,7 +270,8 @@ func chatJSON(ctx context.Context, client llm.LLMClient, system, user string, ou
 			{Role: llm.RoleSystem, Content: system},
 			{Role: llm.RoleUser, Content: user},
 		},
-		MaxTokens: intPtr(turtleSoupMaxTokens),
+		MaxTokens:       intPtr(turtleSoupMaxTokens),
+		ReasoningEffort: strPtr(turtleSoupReasoningEffort),
 	})
 	if err != nil {
 		return fmt.Errorf("LLM 调用失败: %w", err)
@@ -286,9 +290,9 @@ func generateSoup(ctx context.Context, client llm.LLMClient, timeout time.Durati
 	const system = `你是一个海龟汤（情境推理谜题）出题人。请生成一个经典风格的海龟汤谜题：
 - 汤面（soup_face）：简短、离奇、让人困惑的情境描述（1-3 句话），只陈述现象，不含任何解释
 - 汤底（soup_base）：完整合理的真相（1-3 句话），能自洽解释汤面
-- 判定要点（hints）：供主持人回答"是/否/无关"时参考的关键事实（严禁出现完整答案）
+- 判定要点（hints）：供主持人回答"是/否/无关"时参考的关键事实列表（2-4 条，严禁出现完整答案）
 要求：情境不得涉及血腥、暴力、色情、违法或不适内容，适合校园群聊；谜题要有趣且逻辑自洽。
-仅输出 JSON，不要其他内容：{"soup_face":"...","soup_base":"...","hints":"..."}`
+仅输出 JSON，不要其他内容：{"soup_face":"...","soup_base":"...","hints":["...","..."]}`
 	resp := &turtleGeneration{}
 	if err := chatJSON(ctx, client, system, "请生成一局海龟汤。", resp, timeout); err != nil {
 		return nil, err
@@ -299,7 +303,7 @@ func generateSoup(ctx context.Context, client llm.LLMClient, timeout time.Durati
 	return &turtleGame{
 		SoupFace:  strings.TrimSpace(resp.SoupFace),
 		SoupBase:  strings.TrimSpace(resp.SoupBase),
-		Hints:     strings.TrimSpace(resp.Hints),
+		Hints:     resp.Hints,
 		CreatedAt: time.Now().Unix(),
 	}, nil
 }
@@ -310,7 +314,7 @@ func judgeQuestion(ctx context.Context, client llm.LLMClient, g *turtleGame, que
 	sb.WriteString("你正在主持一个海龟汤（情境推理）游戏，只回答 是/否/无关。\n\n")
 	sb.WriteString("汤面：" + g.SoupFace + "\n")
 	sb.WriteString("汤底：" + g.SoupBase + "\n")
-	sb.WriteString("判定要点：" + g.Hints + "\n")
+	sb.WriteString("判定要点：" + strings.Join(g.Hints, "；") + "\n")
 	if len(g.QAPairs) > 0 {
 		sb.WriteString("\n玩家已提问（历史）：\n")
 		for i, qa := range g.QAPairs {
@@ -382,6 +386,11 @@ const streamTimeout = 120 * time.Second
 // 推理模型对 max_tokens 敏感（上限越大思考越久、响应越慢），
 // 出题/判定只需几百 token 的 JSON，设 1024 可让模型收敛、显著提速。
 const turtleSoupMaxTokens = 1024
+
+// turtleSoupReasoningEffort 海龟汤 LLM 调用的推理强度。
+// deepseek-v4-flash 等推理模型默认强度下会长时间"思考"，甚至把输出预算全部
+// 花在 reasoning 上导致 content 为空；设 "low" 关闭过度思考，响应降至秒级。
+const turtleSoupReasoningEffort = "low"
 
 func (pass *turtleSoupPass) Execute(ctx *conduit.MessageContext) error {
 	msg := strings.TrimSpace(ctx.RawMsg)
