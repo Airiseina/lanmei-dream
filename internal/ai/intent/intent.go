@@ -50,10 +50,11 @@ const (
 //   - MentionRole：提及的语言学方式（见 topic 包 MentionRole，字符串表示）
 //   - MentionConfidence：提及判断的置信度（0~1）
 type Result struct {
-	Intent      Intent  `json:"intent"`     // 意图类型
-	CommandName string  `json:"command"`    // 当 Intent=command 时，命中的命令名
-	ToolName    string  `json:"tool"`       // 当 Intent=tool 时，命中的工具名
-	Confidence  float64 `json:"confidence"` // 意图置信度 0~1
+	Intent      Intent   `json:"intent"`     // 意图类型
+	CommandName string   `json:"command"`    // 当 Intent=command 时，命中的命令名
+	CommandArgs []string `json:"args"`       // 当 Intent=command 时，从消息中提取的命令参数（如"发个Go的表情"→["Go"]）
+	ToolName    string   `json:"tool"`       // 当 Intent=tool 时，命中的工具名
+	Confidence  float64  `json:"confidence"` // 意图置信度 0~1
 
 	IsTalkingToBot    bool    `json:"is_talking_to_bot,omitempty"`  // 群聊：是否在跟机器人说话
 	MentionRole       string  `json:"mention_role,omitempty"`       // 群聊：提及角色（topic.MentionRole）
@@ -266,12 +267,13 @@ func (a *Analyzer) buildPrompt(judgeCtx *JudgeContext) string {
 	sb.WriteString(`
 ## 输出格式
 仅输出 JSON，不要其他内容：
-{"intent":"chat|command|tool|ignore","command":"命令名（仅 intent=command 时填写）","tool":"工具名（仅 intent=tool 时填写）","confidence":0.95,"is_talking_to_bot":true,"mention_role":"at|vocative|subject|imperative_object|relative_clause|conditional|topic_marker|affection|relay|none","mention_confidence":0.9}
+{"intent":"chat|command|tool|ignore","command":"命令名（仅 intent=command 时填写）","args":["命令参数1","命令参数2"]（仅 intent=command 且有参数时填写，无参数留空数组）,"tool":"工具名（仅 intent=tool 时填写）","confidence":0.95,"is_talking_to_bot":true,"mention_role":"at|vocative|subject|imperative_object|relative_clause|conditional|topic_marker|affection|relay|none","mention_confidence":0.9}
 （私聊无群聊上下文时，is_talking_to_bot / mention_role / mention_confidence 字段省略即可）
 
 ## 示例
 用户: "你好呀" → {"intent":"chat","command":"","tool":"","confidence":0.98}
-用户: "帮我签到" → {"intent":"command","command":"签到","tool":"","confidence":0.95}
+用户: "帮我签到" → {"intent":"command","command":"签到","args":[],"tool":"","confidence":0.95}
+用户: "发个Go的表情" → {"intent":"command","command":"发表情","args":["Go"],"tool":"","confidence":0.95}
 用户: "今天天气怎么样" → {"intent":"tool","command":"","tool":"weather","confidence":0.9}
 用户: "[动画表情]" → {"intent":"ignore","command":"","tool":"","confidence":0.9}
 群聊 用户: "蓝妹在吗" → {"intent":"chat","command":"","tool":"","confidence":0.95,"is_talking_to_bot":true,"mention_role":"vocative","mention_confidence":0.98}

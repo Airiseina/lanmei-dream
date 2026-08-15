@@ -69,7 +69,7 @@ func (p *StickerPlugin) Info() pluginpkg.PluginInfo {
 		Tools: []pluginpkg.ToolDef{
 			{
 				Name:        "pick_sticker",
-				Description: "根据情绪/语境从表情库挑选一张表情，返回图片URL；请在回复中直接输出该URL",
+				Description: "根据情绪/语境从表情库挑选一张表情，返回图片URL；请在回复中把该URL作为唯一内容原样输出，不要用反引号/代码块包裹，也不要编造其他图片URL",
 				Parameters: schema.NewParamsOneOfByParams(map[string]*schema.ParameterInfo{
 					"emotion": {
 						Type:     schema.String,
@@ -184,9 +184,16 @@ func isSendStickerCommand(ctx *conduit.MessageContext) bool {
 // ============================================================
 
 const (
-	blackboardIsSuperUser = "bot.is_super_user" // bool 当前用户是否超管
-	blackboardImageURLs   = "bot.image_urls"    // []string 消息中图片段 url 列表
+	blackboardIsSuperUser    = "bot.is_super_user"   // bool 当前用户是否超管
+	blackboardImageURLs      = "bot.image_urls"      // []string 消息中图片段 url 列表
+	blackboardCommandReentry = "bot.command.reentry" // bool 命令重入标记（意图路由/斜杠命令经插件 handler 重入引擎）
 )
+
+// isCommandReentry 判断当前消息是否为插件命令重入（意图路由或斜杠命令触发的插件命令）。
+func isCommandReentry(ctx *conduit.MessageContext) bool {
+	b, _ := ctx.Extra[blackboardCommandReentry].(bool)
+	return b
+}
 
 // ============================================================
 // Pass 实现：添加表情入库
@@ -322,8 +329,16 @@ type stickerSendPass struct {
 func (pass *stickerSendPass) Execute(ctx *conduit.MessageContext) error {
 	keyword := strings.TrimSpace(strings.TrimPrefix(ctx.RawMsg, "/发表情"))
 
-	// 无参数：列出表情库
+	// 无参数：手动 /发表情 列出表情库；
+	// 意图路由触发但 LLM 未提取到标签参数时（如"发个表情"），给引导而非列列表。
 	if keyword == "" {
+		if isCommandReentry(ctx) {
+			conduit.AppendOutput(ctx, &conduit.Message{
+				UserID: ctx.UserID, GroupID: ctx.GroupID, IsGroup: ctx.IsGroup,
+				Content: "想发哪个表情？跟我说「发个XX的表情」就行，或者用 /发表情 XX（如 /发表情 Go）",
+			})
+			return nil
+		}
 		pass.listLibrary(ctx)
 		return nil
 	}
