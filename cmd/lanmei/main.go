@@ -284,6 +284,7 @@ func main() {
 	bizReg.SetNCMURL(cfg.Plugin.NCMURL)
 	bizReg.SetMusicSendMode(cfg.Plugin.MusicSendMode)
 	bizReg.SetObjectStore(inf.ObjectStore)
+	bizReg.SetLLMClient(llmClient)
 	if err := bizReg.RegisterBuiltins(); err != nil {
 		logger.Fatal("内置业务插件注册失败", zap.Error(err))
 	}
