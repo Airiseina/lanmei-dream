@@ -74,17 +74,27 @@ func (p *Provider) searchVector(ctx context.Context, req *kbpkg.RecallRequest) (
 }
 
 // searchFuzzy 模糊召回：pg_trgm similarity 大于阈值的倒排索引检索，按相似度降序。
+//
+// 额外支持「包含命中」：查询串直接出现在标题/内容中（如 2 字符英文缩写 "cy"/"kq"，
+// 无法形成 trigram、相似度恒为 0），也强制召回并置顶，弥补 pg_trgm 对短词的盲区。
 func (p *Provider) searchFuzzy(ctx context.Context, req *kbpkg.RecallRequest) ([]kbpkg.ScoredChunk, error) {
 	where, whereArgs := p.filterSQL(req.Filter)
 
 	rows := []*modelRow{}
 	err := p.orm.WithContext(ctx).Raw(
-		`SELECT k.*, similarity(k.content, ?) AS score
+		`SELECT k.*,
+		    CASE WHEN k.title LIKE '%'||?||'%' OR k.content LIKE '%'||?||'%'
+		         THEN 1.0 ELSE similarity(k.content, ?) END AS score
 		 FROM knowledge_chunks k
-		 WHERE k.knowledge_base_id = ? AND similarity(k.content, ?) >= ?`+where+`
-		 ORDER BY similarity(k.content, ?) DESC
+		 WHERE k.knowledge_base_id = ?
+		   AND (similarity(k.content, ?) >= ?
+		        OR k.title LIKE '%'||?||'%'
+		        OR k.content LIKE '%'||?||'%')`+where+`
+		 ORDER BY score DESC
 		 LIMIT ?`,
-		append([]any{req.Query, p.kb.ID, req.Query, p.fuzzyThreshold}, append(whereArgs, req.Query, req.Limit)...)...,
+		append([]any{req.Query, req.Query, req.Query, p.kb.ID,
+			req.Query, p.fuzzyThreshold, req.Query, req.Query},
+			append(whereArgs, req.Limit)...)...,
 	).Scan(&rows).Error
 	if err != nil {
 		return nil, fmt.Errorf("kb local: 模糊召回: %w", err)
