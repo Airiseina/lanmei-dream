@@ -754,7 +754,7 @@ func (b *Bot) flushOutput(ctx *conduit.MessageContext, msg *gateway.NormalizedMe
 	// 图片消息无法携带引用段，不建立锚点，后续文本再补。
 	anchorDone := false
 	for _, out := range ctx.Output {
-		if isImageURL(out.Content) {
+		if extractImageURL(out.Content) != "" {
 			sentSticker = true
 			b.sendReply(msg, out.Content, replyOpts{})
 			continue
@@ -840,7 +840,7 @@ func (b *Bot) streamSegments(ctx *conduit.MessageContext, msg *gateway.Normalize
 	var lastSentAt time.Time
 	for segment := range segCh {
 		// 本轮已输出图片 URL（LLM 调 pick_sticker 等）则标记，收尾不再补发随机表情
-		if isImageURL(segment) {
+		if extractImageURL(segment) != "" {
 			sentSticker = true
 		}
 		// 首段无延迟（LLM 生成期间已"打字"完毕）；后续段落等待「距上次发送」的
@@ -956,9 +956,8 @@ func (b *Bot) sendReply(msg *gateway.NormalizedMessage, text string, opts replyO
 	// 直接发送代码原文，避免把 ``` 符号原样发给用户。
 	text = stripCodeFences(text)
 
-	if isImageURL(text) {
+	if file := extractImageURL(text); file != "" {
 		// 纯 URL → 图片消息（走上游富媒体发送体系）
-		file := strings.TrimSpace(text)
 		// 内网 rustfs 预签名 URL：外部 IM 客户端无法解析容器内网主机名，
 		// 由 bot 下载对象内容转 base64 后发送（失败时按原 URL 降级）。
 		if b.objectStore != nil {
@@ -1151,4 +1150,19 @@ func isImageURL(text string) bool {
 		return false
 	}
 	return !strings.ContainsAny(t, " \t\n\r")
+}
+
+// extractImageURL 从回复文本中提取图片 URL。
+// LLM 常把工具返回的 URL 用 markdown 反引号包裹（inline code，如 `http://...`），
+// 直接按纯文本发送会破坏图片段（NapCat 收不到图片）；此处剥离反引号与首尾空白后，
+// 若为纯 http(s) URL 则返回清洗后的 URL，否则返回空串。
+func extractImageURL(text string) string {
+	t := strings.TrimSpace(text)
+	// 剥离 markdown inline code 包裹（开头的 ` 与结尾的 `）
+	t = strings.Trim(t, "`")
+	t = strings.TrimSpace(t)
+	if !isImageURL(t) {
+		return ""
+	}
+	return t
 }

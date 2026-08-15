@@ -130,8 +130,10 @@ func (p *IntentCommandExecPass) Execute(ctx *conduit.MessageContext) error {
 	}
 
 	// 将命令信息写入 MessageContext，复用 ExecuteCommandPass
+	// 参数透传 LLM 从消息中提取的命令参数（如"发个Go的表情"→["Go"]），
+	// 使意图路由触发的命令带参执行，而非固定空参数。
 	conduit.Set(ctx, commandNameKey, result.CommandName)
-	conduit.Set(ctx, commandArgsKey, []string{})
+	conduit.Set(ctx, commandArgsKey, result.CommandArgs)
 	conduit.Set(ctx, commandHandlerKey, cmd.Handler)
 
 	return (&ExecuteCommandPass{}).Execute(ctx)
