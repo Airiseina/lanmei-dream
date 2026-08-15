@@ -106,17 +106,32 @@ func main() {
 
 	// ── Embedder 客户端 ──
 	if cfg.AI.EmbeddingAPIKey != "" {
-		einoEmb, err := embedding.NewEinoEmbedder(ctx, &embedding.EinoOptions{
+		embOpts := &embedding.EinoOptions{
 			BaseURL:   cfg.AI.EmbeddingBaseURL,
 			APIKey:    cfg.AI.EmbeddingAPIKey,
 			Model:     cfg.AI.EmbeddingModel,
 			Dimension: cfg.AI.EmbeddingDim,
-		})
-		if err != nil {
-			logger.Fatal("Embedder 初始化失败", zap.Error(err))
 		}
-		embedder = einoEmb
-		logger.Info("Embedder 就绪", zap.String("base_url", cfg.AI.EmbeddingBaseURL), zap.String("model", cfg.AI.EmbeddingModel), zap.Int("dim", cfg.AI.EmbeddingDim))
+		// 火山方舟 doubao-embedding-vision 系列：标准 OpenAI /embeddings 端点不支持其
+		// 多模态格式，走专用实现（POST /embeddings/multimodal，input=[{type,text}]）。
+		if strings.Contains(cfg.AI.EmbeddingBaseURL, "volces.com") || strings.HasPrefix(cfg.AI.EmbeddingModel, "doubao-embedding") {
+			volcEmb, err := embedding.NewVolcEmbedder(embOpts)
+			if err != nil {
+				logger.Fatal("Embedder 初始化失败", zap.Error(err))
+			}
+			embedder = volcEmb
+			logger.Info("VolcEngine Embedder 就绪",
+				zap.String("base_url", cfg.AI.EmbeddingBaseURL),
+				zap.String("model", cfg.AI.EmbeddingModel),
+				zap.Int("dim", cfg.AI.EmbeddingDim))
+		} else {
+			einoEmb, err := embedding.NewEinoEmbedder(ctx, embOpts)
+			if err != nil {
+				logger.Fatal("Embedder 初始化失败", zap.Error(err))
+			}
+			embedder = einoEmb
+			logger.Info("Embedder 就绪", zap.String("base_url", cfg.AI.EmbeddingBaseURL), zap.String("model", cfg.AI.EmbeddingModel), zap.Int("dim", cfg.AI.EmbeddingDim))
+		}
 	} else {
 		logger.Warn("Embedding API Key 未配置，RAG 检索不可用")
 	}
