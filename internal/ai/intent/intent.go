@@ -17,6 +17,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/DaWesen/lanmei-dream/internal/ai/llm"
 )
@@ -88,8 +89,9 @@ type JudgeContext struct {
 //   - Analyzer 不执行命令或工具，只负责分类——执行由上层路由逻辑完成
 type Analyzer struct {
 	llmClient llm.LLMClient
-	commands  []CommandDef // 可用命令列表（注入到 prompt 中供 LLM 匹配）
-	tools     []ToolDef    // 可用工具列表（注入到 prompt 中供 LLM 匹配）
+	commands  []CommandDef  // 可用命令列表（注入到 prompt 中供 LLM 匹配）
+	tools     []ToolDef     // 可用工具列表（注入到 prompt 中供 LLM 匹配）
+	timeout   time.Duration // 单次 LLM 调用超时（<=0 表示不设独立超时，沿用父上下文）
 }
 
 // CommandDef 描述一个可用命令，用于构建意图分析 prompt。
@@ -112,11 +114,15 @@ type ToolDef struct {
 //   - llmClient: LLM 客户端，为 nil 时 Analyze 降级返回 IntentChat
 //   - commands: 可用命令定义列表
 //   - tools: 可用工具定义列表
-func NewAnalyzer(llmClient llm.LLMClient, commands []CommandDef, tools []ToolDef) *Analyzer {
+//   - timeout: 单次 LLM 调用超时（<=0 表示不设独立超时，沿用父上下文）。
+//     意图分析只是路由前置步骤，不应吃满整条消息的处理预算；
+//     给独立短超时可在 LLM 故障时快速降级，避免后续对话管线失去剩余时间。
+func NewAnalyzer(llmClient llm.LLMClient, commands []CommandDef, tools []ToolDef, timeout time.Duration) *Analyzer {
 	return &Analyzer{
 		llmClient: llmClient,
 		commands:  commands,
 		tools:     tools,
+		timeout:   timeout,
 	}
 }
 
@@ -164,7 +170,16 @@ func (a *Analyzer) Analyze(ctx context.Context, userMsg string, judgeCtx *JudgeC
 		user = formatJudgeUser(userMsg, judgeCtx.Recent)
 	}
 
-	resp, err := a.llmClient.Chat(ctx, &llm.ChatRequest{
+	// 独立短超时：意图分析不应吃满消息处理预算（父 ctx 可能为消息级 20s 超时）。
+	// 超时后快速失败并降级为 chat，保证后续对话管线仍有剩余时间可用。
+	llmCtx := ctx
+	cancel := func() {}
+	if a.timeout > 0 {
+		llmCtx, cancel = context.WithTimeout(ctx, a.timeout)
+		defer cancel()
+	}
+
+	resp, err := a.llmClient.Chat(llmCtx, &llm.ChatRequest{
 		Messages: []llm.Message{
 			{Role: llm.RoleSystem, Content: prompt},
 			{Role: llm.RoleUser, Content: user},

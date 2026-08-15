@@ -101,6 +101,8 @@ type PluginBuiltinsConfig struct {
 	Music bool `mapstructure:"music"`
 	// Sticker 自定义表情库插件
 	Sticker bool `mapstructure:"sticker"`
+	// TurtleSoup 海龟汤文字游戏插件
+	TurtleSoup bool `mapstructure:"turtle_soup"`
 }
 
 // DatabaseConfig 数据库配置
@@ -137,6 +139,11 @@ type BotConfig struct {
 	Stream     StreamConfig  `mapstructure:"stream"`
 	Media      MediaConfig   `mapstructure:"media"`
 	Topic      TopicConfig   `mapstructure:"topic"`
+	// IntentTimeoutSeconds 意图分析 LLM 调用的独立超时（秒）。
+	// 意图分析只是消息路由前置步骤，不应吃满整条消息的处理预算；
+	// LLM 故障时快速降级，避免后续对话管线失去剩余时间、触发"迷糊"兜底。
+	// 0 表示不设独立超时（沿用消息级超时，默认 20s）。
+	IntentTimeoutSeconds int `mapstructure:"intent_timeout_seconds"`
 }
 
 // MediaConfig 多媒体处理配置（RustFS 对象存储 + 视觉理解）
