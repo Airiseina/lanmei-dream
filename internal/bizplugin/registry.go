@@ -2,6 +2,7 @@ package bizplugin
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/DaWesen/lanmei-dream/internal/ai/llm"
 	"github.com/DaWesen/lanmei-dream/internal/config"
@@ -25,13 +26,14 @@ import (
 //   - 插件私有业务数据通过受限 KV 存储（PluginContext.KV，PostgreSQL 持久化）读写，
 //     内置插件不直接持有裸数据库。
 type BusinessRegistry struct {
-	cfg           *config.PluginBuiltinsConfig // 内置插件开关配置
-	registry      *pluginpkg.Registry          // 插件注册表
-	ncmURL        string                       // 网易云音乐 API 地址（点歌插件使用）
-	musicSendMode string                       // 点歌发送方式：auto/card/link
-	store         *media.ObjectStore           // RustFS 对象存储（表情库插件使用，未配置时为 nil）
-	llmClient     llm.LLMClient                // LLM 客户端（海龟汤插件出题/判定使用，未配置时为 nil）
-	logger        *zap.Logger
+	cfg               *config.PluginBuiltinsConfig // 内置插件开关配置
+	registry          *pluginpkg.Registry          // 插件注册表
+	ncmURL            string                       // 网易云音乐 API 地址（点歌插件使用）
+	musicSendMode     string                       // 点歌发送方式：auto/card/link
+	store             *media.ObjectStore           // RustFS 对象存储（表情库插件使用，未配置时为 nil）
+	llmClient         llm.LLMClient                // LLM 客户端（海龟汤插件出题/判定使用，未配置时为 nil）
+	turtleSoupTimeout time.Duration                // 海龟汤出题/判定 LLM 调用独立超时（<=0 不限制）
+	logger            *zap.Logger
 }
 
 // NewBusinessRegistry 创建内置业务插件注册表。
@@ -61,6 +63,11 @@ func (r *BusinessRegistry) SetObjectStore(store *media.ObjectStore) {
 // SetLLMClient 设置 LLM 客户端（海龟汤插件依赖；未配置时该插件命令提示不可用）。
 func (r *BusinessRegistry) SetLLMClient(client llm.LLMClient) {
 	r.llmClient = client
+}
+
+// SetTurtleSoupTimeout 设置海龟汤出题/判定 LLM 调用的独立超时（<=0 不限制）。
+func (r *BusinessRegistry) SetTurtleSoupTimeout(timeout time.Duration) {
+	r.turtleSoupTimeout = timeout
 }
 
 // RegisterBuiltins 按配置注册所有内置业务插件。
@@ -158,7 +165,7 @@ func (r *BusinessRegistry) RegisterBuiltins() error {
 	}
 
 	// ── 海龟汤文字游戏插件 ──
-	if err := register(builtins.TurtleSoup, "turtle_soup", NewTurtleSoupPlugin(r.llmClient, logger)); err != nil {
+	if err := register(builtins.TurtleSoup, "turtle_soup", NewTurtleSoupPlugin(r.llmClient, logger, r.turtleSoupTimeout)); err != nil {
 		return err
 	}
 

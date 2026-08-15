@@ -6,6 +6,7 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/DaWesen/lanmei-dream/internal/ai"
 	"github.com/DaWesen/lanmei-dream/internal/ai/embedding"
@@ -285,6 +286,8 @@ func main() {
 	bizReg.SetMusicSendMode(cfg.Plugin.MusicSendMode)
 	bizReg.SetObjectStore(inf.ObjectStore)
 	bizReg.SetLLMClient(llmClient)
+	// 海龟汤出题/判定 LLM 独立超时（默认 15s）：LLM 慢时快速降级回"汤煮糊了"，不耗尽消息预算
+	bizReg.SetTurtleSoupTimeout(time.Duration(cfg.Bot.TurtleSoupTimeoutSeconds) * time.Second)
 	if err := bizReg.RegisterBuiltins(); err != nil {
 		logger.Fatal("内置业务插件注册失败", zap.Error(err))
 	}

@@ -45,12 +45,15 @@ type TurtleSoupPlugin struct {
 	llmClient llm.LLMClient
 	kv        *database.PluginKVStore
 	logger    *zap.Logger
+	// timeout 出题/判定 LLM 调用的独立超时（<=0 不设独立超时，沿用消息级预算）。
+	// 命令管线受消息级超时约束，给独立上限可避免 LLM 慢时耗尽预算触发"迷糊"兜底。
+	timeout time.Duration
 }
 
 // NewTurtleSoupPlugin 创建海龟汤插件。llmClient 为 nil 时出题/判定不可用，
-// 命令会提示配置缺失。
-func NewTurtleSoupPlugin(llmClient llm.LLMClient, logger *zap.Logger) *TurtleSoupPlugin {
-	return &TurtleSoupPlugin{llmClient: llmClient, logger: logger}
+// 命令会提示配置缺失；timeout 为出题/判定 LLM 调用的独立超时（<=0 不限制）。
+func NewTurtleSoupPlugin(llmClient llm.LLMClient, logger *zap.Logger, timeout time.Duration) *TurtleSoupPlugin {
+	return &TurtleSoupPlugin{llmClient: llmClient, logger: logger, timeout: timeout}
 }
 
 // Info 返回海龟汤插件元信息。
@@ -75,7 +78,7 @@ func (p *TurtleSoupPlugin) OnInit(ctx *pluginpkg.PluginContext) error {
 	p.kv = ctx.KV
 
 	passID := pluginpkg.PassID("turtle_soup", "main")
-	pass := &turtleSoupPass{llmClient: p.llmClient, kv: p.kv, logger: p.logger}
+	pass := &turtleSoupPass{llmClient: p.llmClient, kv: p.kv, logger: p.logger, timeout: p.timeout}
 	if err := ctx.Engine.RegisterPass(passID, pass); err != nil {
 		return fmt.Errorf("register turtle_soup pass: %w", err)
 	}
@@ -243,11 +246,19 @@ type turtleGuessResult struct {
 }
 
 // chatJSON 调用 LLM 并解析 JSON 响应（容错：剥离 markdown 代码块围栏）。
-func chatJSON(ctx context.Context, client llm.LLMClient, system, user string, out any) error {
+// timeout > 0 时为 LLM 调用设置独立超时：LLM 慢/故障时快速降级返回，
+// 避免耗尽消息级预算（20s）触发"迷糊"兜底；<=0 则沿用传入 ctx。
+func chatJSON(ctx context.Context, client llm.LLMClient, system, user string, out any, timeout time.Duration) error {
 	if client == nil {
 		return fmt.Errorf("LLM 不可用")
 	}
-	resp, err := client.Chat(ctx, &llm.ChatRequest{
+	llmCtx := ctx
+	cancel := func() {}
+	if timeout > 0 {
+		llmCtx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
+	}
+	resp, err := client.Chat(llmCtx, &llm.ChatRequest{
 		Messages: []llm.Message{
 			{Role: llm.RoleSystem, Content: system},
 			{Role: llm.RoleUser, Content: user},
@@ -265,8 +276,8 @@ func chatJSON(ctx context.Context, client llm.LLMClient, system, user string, ou
 	return json.Unmarshal([]byte(raw), out)
 }
 
-// generateSoup 让 LLM 生成一局海龟汤。
-func generateSoup(ctx context.Context, client llm.LLMClient) (*turtleGame, error) {
+// generateSoup 让 LLM 生成一局海龟汤。timeout 为 LLM 调用独立超时（<=0 不限制）。
+func generateSoup(ctx context.Context, client llm.LLMClient, timeout time.Duration) (*turtleGame, error) {
 	const system = `你是一个海龟汤（情境推理谜题）出题人。请生成一个经典风格的海龟汤谜题：
 - 汤面（soup_face）：简短、离奇、让人困惑的情境描述（1-3 句话），只陈述现象，不含任何解释
 - 汤底（soup_base）：完整合理的真相（1-3 句话），能自洽解释汤面
@@ -274,7 +285,7 @@ func generateSoup(ctx context.Context, client llm.LLMClient) (*turtleGame, error
 要求：情境不得涉及血腥、暴力、色情、违法或不适内容，适合校园群聊；谜题要有趣且逻辑自洽。
 仅输出 JSON，不要其他内容：{"soup_face":"...","soup_base":"...","hints":"..."}`
 	resp := &turtleGeneration{}
-	if err := chatJSON(ctx, client, system, "请生成一局海龟汤。", resp); err != nil {
+	if err := chatJSON(ctx, client, system, "请生成一局海龟汤。", resp, timeout); err != nil {
 		return nil, err
 	}
 	if strings.TrimSpace(resp.SoupFace) == "" || strings.TrimSpace(resp.SoupBase) == "" {
@@ -288,8 +299,8 @@ func generateSoup(ctx context.Context, client llm.LLMClient) (*turtleGame, error
 	}, nil
 }
 
-// judgeQuestion 让 LLM 判定提问的答案是 是/否/无关。
-func judgeQuestion(ctx context.Context, client llm.LLMClient, g *turtleGame, question string) (string, error) {
+// judgeQuestion 让 LLM 判定提问的答案是 是/否/无关。timeout 为 LLM 调用独立超时。
+func judgeQuestion(ctx context.Context, client llm.LLMClient, g *turtleGame, question string, timeout time.Duration) (string, error) {
 	var sb strings.Builder
 	sb.WriteString("你正在主持一个海龟汤（情境推理）游戏，只回答 是/否/无关。\n\n")
 	sb.WriteString("汤面：" + g.SoupFace + "\n")
@@ -309,7 +320,7 @@ func judgeQuestion(ctx context.Context, client llm.LLMClient, g *turtleGame, que
 可附一句不超过 15 字的补充提示（comment），不要直接透露汤底。
 仅输出 JSON：{"answer":"是","comment":"..."}`)
 	resp := &turtleJudgement{}
-	if err := chatJSON(ctx, client, "你是海龟汤主持人，回答必须严格基于汤底事实。", sb.String(), resp); err != nil {
+	if err := chatJSON(ctx, client, "你是海龟汤主持人，回答必须严格基于汤底事实。", sb.String(), resp, timeout); err != nil {
 		return "", err
 	}
 	switch resp.Answer {
@@ -322,12 +333,12 @@ func judgeQuestion(ctx context.Context, client llm.LLMClient, g *turtleGame, que
 	return strings.TrimSpace(resp.Answer + " " + resp.Comment), nil
 }
 
-// judgeGuess 让 LLM 判定玩家的猜测是否命中汤底。
-func judgeGuess(ctx context.Context, client llm.LLMClient, g *turtleGame, guess string) (bool, string, error) {
+// judgeGuess 让 LLM 判定玩家的猜测是否命中汤底。timeout 为 LLM 调用独立超时。
+func judgeGuess(ctx context.Context, client llm.LLMClient, g *turtleGame, guess string, timeout time.Duration) (bool, string, error) {
 	system := "你是海龟汤主持人，判断玩家的猜测是否命中了汤底的核心真相（抓住关键事实即可，不必逐字一致）。"
 	user := fmt.Sprintf("汤底：%s\n\n玩家猜测：%s\n\n仅输出 JSON：{\"correct\":true,\"comment\":\"...\"}", g.SoupBase, guess)
 	resp := &turtleGuessResult{}
-	if err := chatJSON(ctx, client, system, user, resp); err != nil {
+	if err := chatJSON(ctx, client, system, user, resp, timeout); err != nil {
 		return false, "", err
 	}
 	return resp.Correct, strings.TrimSpace(resp.Comment), nil
@@ -342,6 +353,7 @@ type turtleSoupPass struct {
 	llmClient llm.LLMClient
 	kv        *database.PluginKVStore
 	logger    *zap.Logger
+	timeout   time.Duration // 出题/判定 LLM 调用独立超时（<=0 不限制）
 }
 
 func (pass *turtleSoupPass) Execute(ctx *conduit.MessageContext) error {
@@ -380,7 +392,7 @@ func (pass *turtleSoupPass) open(ctx *conduit.MessageContext) error {
 	}
 
 	pass.reply(ctx, "正在煮汤，稍等一下…")
-	game, err := generateSoup(ctx.Ctx, pass.llmClient)
+	game, err := generateSoup(ctx.Ctx, pass.llmClient, pass.timeout)
 	if err != nil {
 		pass.logger.Warn("turtle_soup: 出题失败", zap.Error(err))
 		pass.reply(ctx, "汤煮糊了，稍后再试一次吧 (￣ω￣;)")
@@ -414,7 +426,7 @@ func (pass *turtleSoupPass) ask(ctx *conduit.MessageContext, question string) er
 		return nil
 	}
 
-	answer, err := judgeQuestion(ctx.Ctx, pass.llmClient, game, question)
+	answer, err := judgeQuestion(ctx.Ctx, pass.llmClient, game, question, pass.timeout)
 	if err != nil {
 		pass.logger.Warn("turtle_soup: 判定失败", zap.Error(err))
 		pass.reply(ctx, "蓝妹走神了，再问一次吧 (￣ω￣;)")
@@ -444,7 +456,7 @@ func (pass *turtleSoupPass) guess(ctx *conduit.MessageContext, guess string) err
 		return nil
 	}
 
-	correct, comment, err := judgeGuess(ctx.Ctx, pass.llmClient, game, guess)
+	correct, comment, err := judgeGuess(ctx.Ctx, pass.llmClient, game, guess, pass.timeout)
 	if err != nil {
 		pass.logger.Warn("turtle_soup: 猜答案判定失败", zap.Error(err))
 		pass.reply(ctx, "蓝妹走神了，再猜一次吧 (￣ω￣;)")
