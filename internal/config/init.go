@@ -49,27 +49,28 @@ func Init() (*Config, error) {
 	//（如 llm_api_key, super_users），这个映射是 Viper 内部 (cfgKey → envVar)
 	// 的单向变换，不可逆。
 	envToCfg := map[string]string{
-		"LANMEI_DATABASE_URL":                "database.url",
-		"LANMEI_REDIS_ADDR":                  "redis.addr",
-		"LANMEI_BOT_NICKNAME":                "bot.nickname",
-		"LANMEI_BOT_SUPER_USERS":             "bot.super_users",
-		"LANMEI_BOT_GATEWAY_LISTEN_ADDR":     "bot.gateway.listen_addr",
-		"LANMEI_BOT_GATEWAY_ACCESS_TOKEN":    "bot.gateway.access_token",
-		"LANMEI_BOT_INTENT_TIMEOUT_SECONDS":  "bot.intent_timeout_seconds",
-		"LANMEI_AI_LLM_API_KEY":              "ai.llm_api_key",
-		"LANMEI_AI_LLM_BASE_URL":             "ai.llm_base_url",
-		"LANMEI_AI_LLM_MODEL":                "ai.llm_model",
-		"LANMEI_AI_LLM_MAX_TOKENS":           "ai.llm_max_tokens",
-		"LANMEI_AI_LLM_TEMPERATURE":          "ai.llm_temperature",
-		"LANMEI_AI_EMBEDDING_API_KEY":        "ai.embedding_api_key",
-		"LANMEI_AI_EMBEDDING_BASE_URL":       "ai.embedding_base_url",
-		"LANMEI_AI_EMBEDDING_MODEL":          "ai.embedding_model",
-		"LANMEI_AI_EMBEDDING_DIM":            "ai.embedding_dim",
-		"LANMEI_PLUGIN_ROOT_DIR":             "plugin.root_dir",
-		"LANMEI_PLUGIN_NCM_URL":              "plugin.ncm_url",
-		"LANMEI_PLUGIN_MUSIC_SEND_MODE":      "plugin.music_send_mode",
-		"LANMEI_KNOWLEDGE_ENABLED":           "knowledge.enabled",
-		"LANMEI_KNOWLEDGE_AUTO_RECALL_LIMIT": "knowledge.auto_recall_limit",
+		"LANMEI_DATABASE_URL":                    "database.url",
+		"LANMEI_REDIS_ADDR":                      "redis.addr",
+		"LANMEI_BOT_NICKNAME":                    "bot.nickname",
+		"LANMEI_BOT_SUPER_USERS":                 "bot.super_users",
+		"LANMEI_BOT_GATEWAY_LISTEN_ADDR":         "bot.gateway.listen_addr",
+		"LANMEI_BOT_GATEWAY_ACCESS_TOKEN":        "bot.gateway.access_token",
+		"LANMEI_BOT_INTENT_TIMEOUT_SECONDS":      "bot.intent_timeout_seconds",
+		"LANMEI_BOT_TURTLE_SOUP_TIMEOUT_SECONDS": "bot.turtle_soup_timeout_seconds",
+		"LANMEI_AI_LLM_API_KEY":                  "ai.llm_api_key",
+		"LANMEI_AI_LLM_BASE_URL":                 "ai.llm_base_url",
+		"LANMEI_AI_LLM_MODEL":                    "ai.llm_model",
+		"LANMEI_AI_LLM_MAX_TOKENS":               "ai.llm_max_tokens",
+		"LANMEI_AI_LLM_TEMPERATURE":              "ai.llm_temperature",
+		"LANMEI_AI_EMBEDDING_API_KEY":            "ai.embedding_api_key",
+		"LANMEI_AI_EMBEDDING_BASE_URL":           "ai.embedding_base_url",
+		"LANMEI_AI_EMBEDDING_MODEL":              "ai.embedding_model",
+		"LANMEI_AI_EMBEDDING_DIM":                "ai.embedding_dim",
+		"LANMEI_PLUGIN_ROOT_DIR":                 "plugin.root_dir",
+		"LANMEI_PLUGIN_NCM_URL":                  "plugin.ncm_url",
+		"LANMEI_PLUGIN_MUSIC_SEND_MODE":          "plugin.music_send_mode",
+		"LANMEI_KNOWLEDGE_ENABLED":               "knowledge.enabled",
+		"LANMEI_KNOWLEDGE_AUTO_RECALL_LIMIT":     "knowledge.auto_recall_limit",
 		// 多媒体（RustFS）与机器人行为配置
 		"LANMEI_MEDIA_ENDPOINT":   "bot.media.endpoint",
 		"LANMEI_MEDIA_ACCESS_KEY": "bot.media.access_key",
@@ -130,11 +131,12 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("bot.nickname", "蓝妹")
 	v.SetDefault("bot.super_users", "")
 	v.SetDefault("bot.gateway.listen_addr", "0.0.0.0:8080")
-	v.SetDefault("bot.intent_timeout_seconds", 8)    // 意图分析独立超时 8s，LLM 故障时快速降级，避免吃满消息预算
-	v.SetDefault("bot.stream.typing_speed_ms", 150)  // 150ms/字，模拟打字速度
-	v.SetDefault("bot.stream.min_interval_ms", 1000) // 最小 1 秒
-	v.SetDefault("bot.stream.max_interval_ms", 5000) // 最大 5 秒（长消息段间隔上限，避免过久等待）
-	v.SetDefault("bot.stream.jitter_pct", 0.25)      // ±25% 抖动
+	v.SetDefault("bot.intent_timeout_seconds", 8)       // 意图分析独立超时 8s，LLM 故障时快速降级，避免吃满消息预算
+	v.SetDefault("bot.turtle_soup_timeout_seconds", 15) // 海龟汤出题/判定 LLM 独立超时 15s，超时回"汤煮糊了"而非迷糊兜底
+	v.SetDefault("bot.stream.typing_speed_ms", 150)     // 150ms/字，模拟打字速度
+	v.SetDefault("bot.stream.min_interval_ms", 1000)    // 最小 1 秒
+	v.SetDefault("bot.stream.max_interval_ms", 5000)    // 最大 5 秒（长消息段间隔上限，避免过久等待）
+	v.SetDefault("bot.stream.jitter_pct", 0.25)         // ±25% 抖动
 
 	// 多媒体（RustFS）默认值
 	v.SetDefault("bot.media.endpoint", "http://localhost:9000")
