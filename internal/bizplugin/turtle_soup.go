@@ -249,8 +249,8 @@ type turtleGuessResult struct {
 // intPtr 返回 int 的指针（ChatRequest.MaxTokens 为 *int，nil 表示沿用全局配置）。
 func intPtr(v int) *int { return &v }
 
-// strPtr 返回 string 的指针（ChatRequest.ReasoningEffort 为 *string）。
-func strPtr(v string) *string { return &v }
+// boolPtr 返回 bool 的指针（ChatRequest.DisableThinking 为 *bool）。
+func boolPtr(v bool) *bool { return &v }
 
 // chatJSON 调用 LLM 并解析 JSON 响应（容错：剥离 markdown 代码块围栏）。
 // timeout > 0 时为 LLM 调用设置独立超时：LLM 慢/故障时快速降级返回，
@@ -271,7 +271,7 @@ func chatJSON(ctx context.Context, client llm.LLMClient, system, user string, ou
 			{Role: llm.RoleUser, Content: user},
 		},
 		MaxTokens:       intPtr(turtleSoupMaxTokens),
-		ReasoningEffort: strPtr(turtleSoupReasoningEffort),
+		DisableThinking: boolPtr(true),
 	})
 	if err != nil {
 		return fmt.Errorf("LLM 调用失败: %w", err)
@@ -386,11 +386,6 @@ const streamTimeout = 120 * time.Second
 // 推理模型对 max_tokens 敏感（上限越大思考越久、响应越慢），
 // 出题/判定只需几百 token 的 JSON，设 1024 可让模型收敛、显著提速。
 const turtleSoupMaxTokens = 1024
-
-// turtleSoupReasoningEffort 海龟汤 LLM 调用的推理强度。
-// deepseek-v4-flash 等推理模型默认强度下会长时间"思考"，甚至把输出预算全部
-// 花在 reasoning 上导致 content 为空；设 "low" 关闭过度思考，响应降至秒级。
-const turtleSoupReasoningEffort = "low"
 
 func (pass *turtleSoupPass) Execute(ctx *conduit.MessageContext) error {
 	msg := strings.TrimSpace(ctx.RawMsg)

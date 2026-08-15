@@ -114,9 +114,12 @@ func (c *EinoClient) Chat(ctx context.Context, req *ChatRequest) (*ChatResponse,
 		// 按请求覆盖输出上限（推理模型对 max_tokens 敏感，短输出场景必须显式设小值）
 		opts = append(opts, model.WithMaxTokens(*req.MaxTokens))
 	}
-	if req.ReasoningEffort != nil {
-		// 按请求覆盖推理强度（"low" 让推理模型快速收敛，避免思考耗尽预算导致 content 为空）
-		opts = append(opts, openai.WithReasoningEffort(openai.ReasoningEffortLevel(*req.ReasoningEffort)))
+	if req.DisableThinking != nil && *req.DisableThinking {
+		// DeepSeek 等推理模型通过 thinking={"type":"disabled"} 关闭思考，
+		// 经 eino 的 ExtraFields 透传（OpenAI 兼容扩展字段）
+		opts = append(opts, openai.WithExtraFields(map[string]any{
+			"thinking": map[string]any{"type": "disabled"},
+		}))
 	}
 
 	resp, err := c.model.Generate(ctx, msgs, opts...)
