@@ -53,6 +53,7 @@ ping = true        # 连通性测试插件
 github_card = true # GitHub 链接卡片插件
 music = true       # 网易云点歌插件
 sticker = true     # 自定义表情库插件
+turtle_soup = true # 海龟汤文字游戏插件
 
 # ============================================
 # 管理面板服务
