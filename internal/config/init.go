@@ -55,6 +55,7 @@ func Init() (*Config, error) {
 		"LANMEI_BOT_SUPER_USERS":             "bot.super_users",
 		"LANMEI_BOT_GATEWAY_LISTEN_ADDR":     "bot.gateway.listen_addr",
 		"LANMEI_BOT_GATEWAY_ACCESS_TOKEN":    "bot.gateway.access_token",
+		"LANMEI_BOT_INTENT_TIMEOUT_SECONDS":  "bot.intent_timeout_seconds",
 		"LANMEI_AI_LLM_API_KEY":              "ai.llm_api_key",
 		"LANMEI_AI_LLM_BASE_URL":             "ai.llm_base_url",
 		"LANMEI_AI_LLM_MODEL":                "ai.llm_model",
@@ -129,6 +130,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("bot.nickname", "蓝妹")
 	v.SetDefault("bot.super_users", "")
 	v.SetDefault("bot.gateway.listen_addr", "0.0.0.0:8080")
+	v.SetDefault("bot.intent_timeout_seconds", 8)    // 意图分析独立超时 8s，LLM 故障时快速降级，避免吃满消息预算
 	v.SetDefault("bot.stream.typing_speed_ms", 150)  // 150ms/字，模拟打字速度
 	v.SetDefault("bot.stream.min_interval_ms", 1000) // 最小 1 秒
 	v.SetDefault("bot.stream.max_interval_ms", 5000) // 最大 5 秒（长消息段间隔上限，避免过久等待）
@@ -147,6 +149,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("plugin.builtins.welcome", true)
 	v.SetDefault("plugin.builtins.poke", true)
 	v.SetDefault("plugin.builtins.three_g", true)
+	v.SetDefault("plugin.builtins.turtle_soup", true)
 
 	// 群聊 topic 系统默认值
 	v.SetDefault("bot.topic.enabled", true)
