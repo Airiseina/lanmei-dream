@@ -144,9 +144,9 @@ type BotConfig struct {
 	// LLM 故障时快速降级，避免后续对话管线失去剩余时间、触发"迷糊"兜底。
 	// 0 表示不设独立超时（沿用消息级超时，默认 20s）。
 	IntentTimeoutSeconds int `mapstructure:"intent_timeout_seconds"`
-	// TurtleSoupTimeoutSeconds 海龟汤插件出题/判定的 LLM 独立超时（秒）。
-	// 命令管线同样受消息级超时约束，LLM 慢时给独立上限可快速降级
-	//（回"汤煮糊了"），避免耗尽预算触发"迷糊"兜底。0 表示不设独立超时。
+	// TurtleSoupTimeoutSeconds 海龟汤出题/判定的异步任务最长等待（秒）。
+	// 命令到达后立即回复提示并挂起管线，LLM 在后台 goroutine 以独立 context 执行，
+	// 不受消息级超时约束；本值是其上限（默认 120s），<=0 时用固定 120s。
 	TurtleSoupTimeoutSeconds int `mapstructure:"turtle_soup_timeout_seconds"`
 }
 
