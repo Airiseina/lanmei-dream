@@ -259,9 +259,12 @@ func New(cfg *config.BotConfig, cmdSys *command.System, chatSvc *ai.ChatService,
 	)
 
 	// ── 构建意图分析器（LLM 不可用时自动降级为 IntentChat）──
+	// intentTimeout：意图分析独立短超时（默认 8s），LLM 故障时快速降级，
+	// 避免吃满整条消息的 20s 预算触发"迷糊"兜底回复。
+	intentTimeout := time.Duration(cfg.IntentTimeoutSeconds) * time.Second
 	cmdDefs := BuildIntentCommands(cmdSys)
 	toolDefs := BuildIntentTools(toolReg)
-	analyzer := intent.NewAnalyzer(llmClient, cmdDefs, toolDefs)
+	analyzer := intent.NewAnalyzer(llmClient, cmdDefs, toolDefs, intentTimeout)
 
 	// ── 注册 Pass 与管线 ──
 	// 核心管线全部以"动态管线"（PassID 引用）注册：
