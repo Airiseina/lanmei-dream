@@ -48,14 +48,18 @@ type TopicContext struct {
 
 // ChatRequest 是一次对话请求的入参
 type ChatRequest struct {
-	Messages     []Message     `json:"messages"`
-	UserID       int64         `json:"user_id"`
-	UserName     string        `json:"user_name"`               // 用户昵称，供 prompt 组装使用
-	GroupName    string        `json:"group_name"`              // 群组名称，供 prompt 组装使用
-	GroupID      string        `json:"group_id"`                // 来源群（空=私聊），供 LOD 上下文按群隔离
-	Platform     string        `json:"platform,omitempty"`      // 消息平台（qq/wechat/telegram…），供计费统计
-	Scene        string        `json:"scene,omitempty"`         // 用量场景（chat/intent/compress/topic/vision），供计费统计
-	TopicContext *TopicContext `json:"topic_context,omitempty"` // 群聊话题上下文（nil = 私聊/无话题）
+	Messages  []Message `json:"messages"`
+	UserID    int64     `json:"user_id"`
+	UserName  string    `json:"user_name"`          // 用户昵称，供 prompt 组装使用
+	GroupName string    `json:"group_name"`         // 群组名称，供 prompt 组装使用
+	GroupID   string    `json:"group_id"`           // 来源群（空=私聊），供 LOD 上下文按群隔离
+	Platform  string    `json:"platform,omitempty"` // 消息平台（qq/wechat/telegram…），供计费统计
+	// PlatformUserID 发送者平台用户 ID 字符串（conduit MessageContext.UserID 同源，
+	// 如 QQ 号 "123456"）。供工具调用循环注入 CallerIdentity，工具据此查询
+	// 以平台 ID 为键的业务数据（如签到积分 KV）；与 UserID（数据库自增 int64）不同源。
+	PlatformUserID string        `json:"platform_user_id,omitempty"`
+	Scene          string        `json:"scene,omitempty"`         // 用量场景（chat/intent/compress/topic/vision），供计费统计
+	TopicContext   *TopicContext `json:"topic_context,omitempty"` // 群聊话题上下文（nil = 私聊/无话题）
 	// MaxTokens 本次请求的输出 token 上限（nil 时沿用 client 全局配置）。
 	// 对推理型模型尤其重要：上限越大模型"思考"越久、响应越慢，
 	// 短输出场景（意图分类、海龟汤出题/判定）应显式设小值控制耗时。

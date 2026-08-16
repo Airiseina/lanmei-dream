@@ -65,10 +65,10 @@ func (p *TurtleSoupPlugin) Info() pluginpkg.PluginInfo {
 		Description: "海龟汤情境推理文字游戏（/开汤 开局，/问 提问，/猜 猜答案，/认输 揭晓）",
 		Version:     "1.0.0",
 		Commands: []pluginpkg.CommandDef{
-			{Name: "开汤", Description: "开始一局海龟汤（一个群同时只能开一局）"},
-			{Name: "问", Description: "向汤面提问，蓝妹回答 是/否/无关，格式：/问 问题"},
-			{Name: "猜", Description: "猜汤底，格式：/猜 答案"},
-			{Name: "认输", Description: "放弃本局并揭晓汤底"},
+			{Name: "开汤", Description: "开始一局海龟汤（一个群同时只能开一局）", Order: 100},
+			{Name: "问", Description: "向汤面提问，蓝妹回答 是/否/无关，格式：/问 问题", Order: 110},
+			{Name: "猜", Description: "猜汤底，格式：/猜 答案", Order: 120},
+			{Name: "认输", Description: "放弃本局并揭晓汤底", Order: 130},
 		},
 		SubtreeID: pluginpkg.SubtreeID("turtle_soup"),
 	}

@@ -48,7 +48,7 @@ func (p *BaLogoPlugin) Info() pluginpkg.PluginInfo {
 		Description: "生成蔚蓝档案风格LOGO",
 		Version:     "1.0.0",
 		Commands: []pluginpkg.CommandDef{
-			{Name: "balogo", Description: "生成蔚蓝档案风格LOGO，格式：/balogo 左文字 右文字"},
+			{Name: "balogo", Description: "生成蔚蓝档案风格LOGO，格式：/balogo 左文字 右文字", Order: 10},
 		},
 		SubtreeID: pluginpkg.SubtreeID("balogo"),
 		Tools: []pluginpkg.ToolDef{
