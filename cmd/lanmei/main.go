@@ -213,6 +213,7 @@ func main() {
 		Name:        "帮助",
 		Description: "显示可用命令",
 		Handler:     cmdSys.HelpHandler,
+		Order:       51, // 紧跟 /help（50）之后
 	}); err != nil {
 		logger.Fatal("注册帮助命令失败", zap.Error(err))
 	}
@@ -221,6 +222,7 @@ func main() {
 		Name:        "help",
 		Description: "显示可用命令",
 		Handler:     cmdSys.HelpHandler,
+		Order:       50,
 	}); err != nil {
 		logger.Fatal("注册 help 命令失败", zap.Error(err))
 	}

@@ -62,8 +62,8 @@ func (p *StickerPlugin) Info() pluginpkg.PluginInfo {
 		Description: "自定义表情收藏与按语义发送",
 		Version:     "1.0.0",
 		Commands: []pluginpkg.CommandDef{
-			{Name: "添加表情", Description: "收藏消息中的图片为表情（仅管理员），格式：/添加表情 标签1 标签2"},
-			{Name: "发表情", Description: "发送匹配标签的表情，格式：/发表情 标签；无参数时列出表情库"},
+			{Name: "添加表情", Description: "收藏消息中的图片为表情（仅管理员），格式：/添加表情 标签1 标签2", Order: 170},
+			{Name: "发表情", Description: "发送匹配标签的表情，格式：/发表情 标签", Order: 80},
 		},
 		SubtreeID: pluginpkg.SubtreeID("sticker"),
 		Tools: []pluginpkg.ToolDef{

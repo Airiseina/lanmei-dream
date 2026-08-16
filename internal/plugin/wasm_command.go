@@ -20,6 +20,7 @@ func NewWasmInstallCommand(ctx context.Context, installer wasmInstaller) command
 	return command.Command{
 		Name:        "插件",
 		Description: "从公网 HTTPS 直链安装 Wasm 插件（仅管理员）",
+		Order:       150,
 		Handler: func(commandCtx *command.Context) error {
 			parts := strings.Fields(commandCtx.Message)
 			if len(parts) != 3 || parts[1] != "安装" {

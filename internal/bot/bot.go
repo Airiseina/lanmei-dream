@@ -480,11 +480,13 @@ func (b *Bot) registerAdminCommands() {
 		Name:        "admin",
 		Description: "管理员帮助（仅超管），列出可用管理员命令",
 		Handler:     b.handleAdminHelp,
+		Order:       140,
 	})
 	_ = b.cmdSys.Register(command.Command{
 		Name:        "添加管理员",
 		Description: "添加管理员（仅超管），格式：/添加管理员 [平台:]用户ID，如 /添加管理员 qq:123456",
 		Handler:     b.handleAddAdmin,
+		Order:       160,
 	})
 }
 

@@ -61,7 +61,7 @@ func (p *MusicPlugin) Info() pluginpkg.PluginInfo {
 		Description: "搜索网易云音乐并点歌",
 		Version:     "1.0.0",
 		Commands: []pluginpkg.CommandDef{
-			{Name: "music", Description: "搜索网易云音乐，格式：/music 歌曲名"},
+			{Name: "music", Description: "搜索网易云音乐，格式：/music 歌曲名", Order: 20},
 		},
 		SubtreeID: pluginpkg.SubtreeID("music"),
 		Tools: []pluginpkg.ToolDef{
