@@ -118,12 +118,13 @@ func (p *RoleplayStreamPass) runStream(
 	defer close(segCh)
 
 	req := &llm.ChatRequest{
-		Messages:     []llm.Message{{Role: llm.RoleUser, Content: userMsg}},
-		UserID:       userID,
-		UserName:     nickname,
-		GroupName:    groupID,
-		GroupID:      groupID,
-		TopicContext: topicCtx,
+		Messages:       []llm.Message{{Role: llm.RoleUser, Content: userMsg}},
+		UserID:         userID,
+		UserName:       nickname,
+		GroupName:      groupID,
+		GroupID:        groupID,
+		PlatformUserID: senderID, // 平台用户 ID（conduit ctx.UserID），供工具调用身份注入
+		TopicContext:   topicCtx,
 	}
 
 	// 记录流式生成耗时与内容长度，便于排查"决策回复但无消息"类问题
@@ -156,12 +157,13 @@ func (p *RoleplayStreamPass) runStream(
 	if strings.TrimSpace(resp.Content) == "" {
 		p.Logger.Warn("roleplay: LLM 返回空响应，重试一次", zap.String("user", senderID))
 		retryReq := &llm.ChatRequest{
-			Messages:     []llm.Message{{Role: llm.RoleUser, Content: userMsg}},
-			UserID:       userID,
-			UserName:     nickname,
-			GroupName:    groupID,
-			GroupID:      groupID,
-			TopicContext: topicCtx,
+			Messages:       []llm.Message{{Role: llm.RoleUser, Content: userMsg}},
+			UserID:         userID,
+			UserName:       nickname,
+			GroupName:      groupID,
+			GroupID:        groupID,
+			PlatformUserID: senderID,
+			TopicContext:   topicCtx,
 		}
 		retryCtx, retryCancel := context.WithTimeout(context.Background(), 30*time.Second)
 		retryResp, retryErr := p.Chat.ChatStream(retryCtx, retryReq, segCh)

@@ -121,6 +121,18 @@ func (s *ChatService) ToolRegistry() *tool.Registry {
 	return s.toolReg
 }
 
+// withCaller 将请求携带的平台身份注入 ctx（供工具 handler 识别"当前是谁在对话"）。
+// 未携带 PlatformUserID 时原样返回（旧调用方/测试路径，行为与现状一致）。
+func (s *ChatService) withCaller(ctx context.Context, req *llm.ChatRequest) context.Context {
+	if req.PlatformUserID == "" {
+		return ctx
+	}
+	return tool.WithCaller(ctx, tool.CallerIdentity{
+		Platform:       req.Platform,
+		PlatformUserID: req.PlatformUserID,
+	})
+}
+
 // Chat 执行一次完整对话：
 //  1. 按 LOD 多级上下文组装（L2→L1→L0，token 预算控制）
 //  2. RAG 检索长期记忆
@@ -392,6 +404,8 @@ func (s *ChatService) assembleContext(ctx context.Context, req *llm.ChatRequest)
 //   - ChatResponse: 包含最终回复内容和累计 token 用量
 //   - error: 工具绑定失败、LLM 调用失败等错误
 func (s *ChatService) chatWithToolLoop(ctx context.Context, req *llm.ChatRequest, einoClient llm.EinoCapable) (*llm.ChatResponse, error) {
+	// 注入调用者平台身份，工具 handler 通过 tool.CallerFrom 读取
+	ctx = s.withCaller(ctx, req)
 	toolInfos := s.toolReg.ToolInfos()
 	chatModel, err := einoClient.ChatWithTools(toolInfos)
 	if err != nil {
