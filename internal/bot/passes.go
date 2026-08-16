@@ -201,6 +201,7 @@ func (p *ExecuteCommandPass) Execute(ctx *conduit.MessageContext) error {
 	}
 
 	var replies []string
+	var replySegments []map[string]any
 	cmdCtx := &command.Context{
 		Platform:       platformFromCtx(ctx),
 		PlatformUserID: platformUserIDFromCtx(ctx),
@@ -210,6 +211,7 @@ func (p *ExecuteCommandPass) Execute(ctx *conduit.MessageContext) error {
 		CommandArgs:    argsRaw,
 		Message:        ctx.RawMsg,
 		Reply:          func(s string) { replies = append(replies, s) },
+		ReplySegments:  func(segments []map[string]any) { replySegments = segments },
 		SelfID:         SelfIDFromCtx(ctx),
 		AtTargets:      AtTargetsFromCtx(ctx),
 		Nickname:       nicknameFromCtx(ctx),
@@ -221,6 +223,10 @@ func (p *ExecuteCommandPass) Execute(ctx *conduit.MessageContext) error {
 
 	if err := handlerRaw(cmdCtx); err != nil {
 		return err
+	}
+	if len(replySegments) > 0 {
+		// 原生段优先级高于文本输出，与 Bot.flushOutput 的发送规则一致。
+		conduit.Set(ctx, KeySendSegments, replySegments)
 	}
 
 	for _, r := range replies {

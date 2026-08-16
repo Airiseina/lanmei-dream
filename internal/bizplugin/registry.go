@@ -169,5 +169,20 @@ func (r *BusinessRegistry) RegisterBuiltins() error {
 		return err
 	}
 
+	// ── 随机小游戏插件（猜拳、骰子）──
+	if err := register(builtins.RandomGames, "random_games", NewRandomGamesPlugin()); err != nil {
+		return err
+	}
+
+	// ── 猜数字游戏插件 ──
+	if err := register(builtins.GuessNumber, "guess_number", NewGuessNumberPlugin()); err != nil {
+		return err
+	}
+
+	// ── 每日一句插件 ──
+	if err := register(builtins.DailyQuote, "daily_quote", NewDailyQuotePlugin(logger)); err != nil {
+		return err
+	}
+
 	return nil
 }

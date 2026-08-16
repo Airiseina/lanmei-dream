@@ -599,6 +599,11 @@ func (r *Registry) makeCommandHandler(p Plugin, cmd CommandDef) func(ctx *comman
 		if err != nil {
 			return fmt.Errorf("plugin %q command %q process failed: %w", pluginID, cmd.Name, err)
 		}
+		// 同步 Process 不触发消息级 ResponseCallback，因此插件写入子上下文的
+		// OneBot 原生段必须显式回传。否则自然语言触发的 rps/dice/at 等段会丢失。
+		if segments, ok := conduit.Get[[]map[string]any](result, "bot.send.segments"); ok && len(segments) > 0 && cmdCtx.ReplySegments != nil {
+			cmdCtx.ReplySegments(segments)
+		}
 		for _, msg := range result.Output {
 			cmdCtx.Reply(msg.Content)
 		}
