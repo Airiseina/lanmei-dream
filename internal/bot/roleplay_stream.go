@@ -183,6 +183,24 @@ func (p *RoleplayStreamPass) runStream(
 		}
 	}
 
+	// 表情提示词计数器：统计 Bot 在本群/私聊中发出的自然语言（LLM 触发）回复数。
+	// 本轮回复实际调用了 pick_sticker（回复携带表情）→ 清零重新计数，否则累加。
+	if p.Chat != nil {
+		scope := replyScopeFor(groupID, senderID)
+		sentSticker := false
+		for _, t := range resp.InvolvedTools {
+			if t == "pick_sticker" {
+				sentSticker = true
+				break
+			}
+		}
+		if sentSticker {
+			p.Chat.ResetReplyCount(scope)
+		} else {
+			p.Chat.IncReplyCount(scope)
+		}
+	}
+
 	// 保存对话记录（L0 原始记录，后续由 Compressor 自动压缩）
 	// 使用 context.Background() 因为 streamCtx 可能已接近超时
 	bgCtx := context.Background()
@@ -216,6 +234,15 @@ func respContentLen(resp *llm.ChatResponse) int {
 		return 0
 	}
 	return utf8.RuneCountInString(resp.Content)
+}
+
+// replyScopeFor 计算表情计数的作用域：群聊用 groupID，私聊用 "dm:"+平台用户ID。
+// 与 ai 包内 assembleContext 注入提示词时的作用域保持一致。
+func replyScopeFor(groupID, platformUserID string) string {
+	if groupID != "" {
+		return groupID
+	}
+	return "dm:" + platformUserID
 }
 
 // ── RoleplaySegmentPass：流式段落交付 ──
