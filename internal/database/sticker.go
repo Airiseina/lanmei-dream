@@ -2,6 +2,7 @@ package database
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 
@@ -98,4 +99,55 @@ func (db *DB) GetStickerByObjectKey(ctx context.Context, objectKey string) (*mod
 		return nil, fmt.Errorf("database: get sticker by object key: %w", err)
 	}
 	return &sticker, nil
+}
+
+// DeleteStickersByTag 按单个标签精确删除表情记录，并返回被删除的记录。
+// Tags 虽以 TEXT 保存，但内容始终为 JSON 字符串数组；转 jsonb 后用 @> 做数组包含判断，
+// 不使用 ILIKE，避免删除“耍帅气”等仅包含关键词但标签并不相等的表情。
+func (db *DB) DeleteStickersByTag(ctx context.Context, tag string) ([]model.StickerLibrary, error) {
+	if db.Orm == nil {
+		return nil, errors.New("database: orm is nil")
+	}
+	if tag == "" {
+		return nil, nil
+	}
+	tagJSON, err := json.Marshal([]string{tag})
+	if err != nil {
+		return nil, fmt.Errorf("database: encode sticker tag %q: %w", tag, err)
+	}
+
+	var stickers []model.StickerLibrary
+	err = db.Orm.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("tags::jsonb @> ?::jsonb", string(tagJSON)).Find(&stickers).Error; err != nil {
+			return err
+		}
+		if len(stickers) == 0 {
+			return nil
+		}
+		ids := make([]uint, 0, len(stickers))
+		for _, sticker := range stickers {
+			ids = append(ids, sticker.ID)
+		}
+		return tx.Where("id IN ?", ids).Delete(&model.StickerLibrary{}).Error
+	})
+	if err != nil {
+		return nil, fmt.Errorf("database: delete stickers by tag %q: %w", tag, err)
+	}
+	return stickers, nil
+}
+
+// IsMediaObjectReferenced 判断对象键是否仍被媒体缓存表引用。
+// 表情记录删除后若这里返回 true，调用方必须保留 RustFS 对象。
+func (db *DB) IsMediaObjectReferenced(ctx context.Context, objectKey string) (bool, error) {
+	if db.Orm == nil {
+		return false, errors.New("database: orm is nil")
+	}
+	var count int64
+	if err := db.Orm.WithContext(ctx).
+		Model(&model.MediaFile{}).
+		Where("object_key = ?", objectKey).
+		Count(&count).Error; err != nil {
+		return false, fmt.Errorf("database: check media object reference %q: %w", objectKey, err)
+	}
+	return count > 0, nil
 }

@@ -26,6 +26,7 @@ import (
 //   - Get：按 key 下载对象内容
 //   - Head：判断对象是否已存在（缓存命中判定）
 //   - Presign：生成临时只读 URL，供视觉理解与发送图片使用
+//   - Delete：按对象键删除不再被业务记录引用的对象
 //
 // 设计要点：
 //   - 内容寻址 key 保证同一张图片只落一份对象，重复下载零成本；
@@ -206,6 +207,21 @@ func (s *ObjectStore) Head(ctx context.Context, key string) (bool, error) {
 		return false, nil
 	}
 	return false, fmt.Errorf("media: 检查 %s 失败: %w", key, err)
+}
+
+// Delete 删除指定对象。S3 DeleteObject 对不存在的键保持幂等。
+// 调用方负责在删除前确认该内容寻址对象没有被其他业务记录引用。
+func (s *ObjectStore) Delete(ctx context.Context, key string) error {
+	if strings.TrimSpace(key) == "" {
+		return errors.New("media: 删除对象键为空")
+	}
+	if _, err := s.client.DeleteObject(ctx, &s3.DeleteObjectInput{
+		Bucket: aws.String(s.bucket),
+		Key:    aws.String(key),
+	}); err != nil {
+		return fmt.Errorf("media: 删除 %s 失败: %w", key, err)
+	}
+	return nil
 }
 
 // Presign 生成临时只读下载 URL，用于视觉理解与发送图片。
