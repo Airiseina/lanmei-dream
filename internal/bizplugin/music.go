@@ -24,8 +24,8 @@ import (
 //
 // 功能：
 //   - /music 歌曲名 → 搜索网易云音乐，展示前 3 首结果
-//   - 用户回复序号（1/2/3）→ 播放所选歌曲
-//   - 会话 60 秒后自动过期
+//   - 用户回复序号（1/2/3，可 @机器人 或直接发）→ 播放所选歌曲（仅当事人可触发）
+//   - 会话 20 秒后自动过期
 //   - 会话按群+用户隔离
 //
 // 行为树：
@@ -150,21 +150,19 @@ func isMusicCommand(ctx *conduit.MessageContext) bool {
 // isMusicSelect 返回一个条件函数，判断消息是否为点歌序号选择（1/2/3）且存在活跃会话。
 // 使用闭包捕获 StateStore 以检查会话。
 //
-// 防误触规则：
-//   - 群聊必须 @ 机器人（RawMsg 含 "@"）才视为选择，纯数字对话不会误触发；
-//   - 私聊直接发序号即可（无 @ 场景）；
+// 触发规则：
+//   - 群聊与私聊均可直接发序号（1/2/3）触发，无需 @ 机器人；
+//   - 会话按群+用户隔离（musicSessionKey），仅发起点歌的当事人能触发，
+//     非当事人因无活跃会话而不会误触发；
 //   - 会话 20s 内有效（musicSessionTTL）。
 func isMusicSelect(store conduit.StateStore) func(*conduit.MessageContext) bool {
 	return func(ctx *conduit.MessageContext) bool {
 		raw := strings.TrimSpace(ctx.RawMsg)
-		if ctx.IsGroup && !strings.Contains(raw, "@") {
-			return false
-		}
 		sel := extractSelection(raw)
 		if sel != "1" && sel != "2" && sel != "3" {
 			return false
 		}
-		// 检查是否存在活跃会话
+		// 检查是否存在活跃会话（会话按群+用户隔离：仅当事人可触发）
 		sessionKey := musicSessionKey(ctx.GroupID, ctx.UserID)
 		data, err := store.Get(ctx.Ctx, sessionKey)
 		if err != nil || data == "" {

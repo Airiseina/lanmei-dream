@@ -23,24 +23,27 @@ import (
 // ============================================================
 
 // StickerPlugin 实现自定义表情的收藏与发送：
-//   - /添加表情 <标签>（兼容旧命令 /收表情）：超管收藏消息中的图片（上传 RustFS + 写 sticker_library）
-//   - /发表情 <标签>：按标签发送一张表情；无参数时列出表情库
+//   - /添加表情 <标签>（兼容旧命令 /收表情）：管理员（普通管理员 + 超管）收藏消息中的图片（上传 RustFS + 写 sticker_library）
+//   - /发表情 <标签>：按标签发送一张表情；无参数时发送一张随机表情（默认行为）
+//   - /表情列表：仅管理员（普通管理员 + 超管）可查看表情库清单（必须是 /表情列表 完整命令）
 //   - pick_sticker 工具：LLM 按语义（情绪/语境）检索表情库，返回可发送的图片 URL
 //
 // 行为树：
 //
 //	subtree.sticker → Selector(
 //	  Sequence(isCollectStickerCommand, Action("pipeline.plugin.sticker.collect")),
+//	  Sequence(isListStickerCommand,    Action("pipeline.plugin.sticker.list")),
 //	  Sequence(isSendStickerCommand,    Action("pipeline.plugin.sticker.send")),
 //	)
 //
 // 管线：
 //
 //	pipeline.plugin.sticker.collect → [stickerCollectPass]
+//	pipeline.plugin.sticker.list    → [stickerListPass]
 //	pipeline.plugin.sticker.send    → [stickerSendPass]
 //
 // 数据来源约定（"不导包"）：
-//   - 超管标记：黑板 "bot.is_super_user"（bot 层注入）
+//   - 管理员标记：黑板 "bot.is_super_user"（bot 层注入，普通管理员与超管统一标记）
 //   - 消息图片：黑板 "bot.image_urls"（bot 层注入的图片段 url 列表）
 type StickerPlugin struct {
 	db     *database.DB
@@ -63,7 +66,8 @@ func (p *StickerPlugin) Info() pluginpkg.PluginInfo {
 		Version:     "1.0.0",
 		Commands: []pluginpkg.CommandDef{
 			{Name: "添加表情", Description: "收藏消息中的图片为表情（仅管理员），格式：/添加表情 标签1 标签2", Order: 170},
-			{Name: "发表情", Description: "发送匹配标签的表情，格式：/发表情 标签", Order: 80},
+			{Name: "发表情", Description: "发送匹配标签的表情；无参数时发送随机表情，格式：/发表情 标签", Order: 80},
+			{Name: "表情列表", Description: "查看表情库清单（仅管理员），格式：/表情列表", Order: 90},
 		},
 		SubtreeID: pluginpkg.SubtreeID("sticker"),
 		Tools: []pluginpkg.ToolDef{
@@ -103,6 +107,13 @@ func (p *StickerPlugin) OnInit(ctx *pluginpkg.PluginContext) error {
 	}
 	ctx.Registry.TrackPass("sticker", sendPassID)
 
+	listPassID := pluginpkg.PassID("sticker", "list")
+	listPass := &stickerListPass{db: p.db, logger: p.logger}
+	if err := ctx.Engine.RegisterPass(listPassID, listPass); err != nil {
+		return fmt.Errorf("register sticker list pass: %w", err)
+	}
+	ctx.Registry.TrackPass("sticker", listPassID)
+
 	// 注册管线
 	collectPipelineID := pluginpkg.PipelineID("sticker", "collect")
 	if err := ctx.Engine.RegisterPipeline(conduit.NewPipelineFromIDs(collectPipelineID, collectPassID)); err != nil {
@@ -116,11 +127,21 @@ func (p *StickerPlugin) OnInit(ctx *pluginpkg.PluginContext) error {
 	}
 	ctx.Registry.TrackPipeline("sticker", sendPipelineID)
 
-	// 注册行为树子树：添加表情 / 发表情 命令路由
+	listPipelineID := pluginpkg.PipelineID("sticker", "list")
+	if err := ctx.Engine.RegisterPipeline(conduit.NewPipelineFromIDs(listPipelineID, listPassID)); err != nil {
+		return fmt.Errorf("register sticker list pipeline: %w", err)
+	}
+	ctx.Registry.TrackPipeline("sticker", listPipelineID)
+
+	// 注册行为树子树：添加表情 / 表情列表 / 发表情 命令路由
 	subtree := conduit.NewSelector(
 		conduit.NewSequence(
 			conduit.NewCondition(isCollectStickerCommand),
 			conduit.NewAction(collectPipelineID),
+		),
+		conduit.NewSequence(
+			conduit.NewCondition(isListStickerCommand),
+			conduit.NewAction(listPipelineID),
 		),
 		conduit.NewSequence(
 			conduit.NewCondition(isSendStickerCommand),
@@ -179,21 +200,21 @@ func isSendStickerCommand(ctx *conduit.MessageContext) bool {
 	return strings.HasPrefix(strings.TrimSpace(ctx.RawMsg), "/发表情")
 }
 
+// isListStickerCommand 判断消息是否为 /表情列表 命令。
+// 必须完整匹配 "/表情列表"（trim 后相等），不接受前缀/多余参数，
+// 避免 /表情列表XXX 之类的变体误入该分支。
+func isListStickerCommand(ctx *conduit.MessageContext) bool {
+	return strings.TrimSpace(ctx.RawMsg) == "/表情列表"
+}
+
 // ============================================================
 // 黑板键（bot 层注入，插件按"不导包"约定用字符串字面量）
 // ============================================================
 
 const (
-	blackboardIsSuperUser    = "bot.is_super_user"   // bool 当前用户是否超管
-	blackboardImageURLs      = "bot.image_urls"      // []string 消息中图片段 url 列表
-	blackboardCommandReentry = "bot.command.reentry" // bool 命令重入标记（意图路由/斜杠命令经插件 handler 重入引擎）
+	blackboardIsSuperUser = "bot.is_super_user" // bool 当前用户是否超管（普通管理员与超管统一注入）
+	blackboardImageURLs   = "bot.image_urls"    // []string 消息中图片段 url 列表
 )
-
-// isCommandReentry 判断当前消息是否为插件命令重入（意图路由或斜杠命令触发的插件命令）。
-func isCommandReentry(ctx *conduit.MessageContext) bool {
-	b, _ := ctx.Extra[blackboardCommandReentry].(bool)
-	return b
-}
 
 // ============================================================
 // Pass 实现：添加表情入库
@@ -316,10 +337,10 @@ func (pass *stickerCollectPass) Execute(ctx *conduit.MessageContext) error {
 }
 
 // ============================================================
-// Pass 实现：发表情（发送 / 列表）
+// Pass 实现：发表情（发送）
 // ============================================================
 
-// stickerSendPass 发送表情：/发表情 标签 → 检索并发送一张；/发表情（无参）→ 列出表情库。
+// stickerSendPass 发送表情：/发表情 标签 → 检索并发送一张；/发表情（无参）→ 发送一张随机表情（默认行为）。
 type stickerSendPass struct {
 	db     *database.DB
 	store  *media.ObjectStore
@@ -329,17 +350,10 @@ type stickerSendPass struct {
 func (pass *stickerSendPass) Execute(ctx *conduit.MessageContext) error {
 	keyword := strings.TrimSpace(strings.TrimPrefix(ctx.RawMsg, "/发表情"))
 
-	// 无参数：手动 /发表情 列出表情库；
-	// 意图路由触发但 LLM 未提取到标签参数时（如"发个表情"），给引导而非列列表。
+	// 无参数（手动 /发表情 或意图路由触发但未提取到标签）：
+	// 默认发送一张随机表情，不再列出表情库（列表改由仅管理员的 /表情列表 提供）。
 	if keyword == "" {
-		if isCommandReentry(ctx) {
-			conduit.AppendOutput(ctx, &conduit.Message{
-				UserID: ctx.UserID, GroupID: ctx.GroupID, IsGroup: ctx.IsGroup,
-				Content: "想发哪个表情？跟我说「发个XX的表情」就行，或者用 /发表情 XX（如 /发表情 Go）",
-			})
-			return nil
-		}
-		pass.listLibrary(ctx)
+		pass.sendRandom(ctx)
 		return nil
 	}
 
@@ -356,7 +370,7 @@ func (pass *stickerSendPass) Execute(ctx *conduit.MessageContext) error {
 	if len(stickers) == 0 {
 		conduit.AppendOutput(ctx, &conduit.Message{
 			UserID: ctx.UserID, GroupID: ctx.GroupID, IsGroup: ctx.IsGroup,
-			Content: fmt.Sprintf("表情库里没有匹配「%s」的表情，用 /发表情 看看有哪些吧", keyword),
+			Content: fmt.Sprintf("表情库里没有匹配「%s」的表情，用 /表情列表 看看有哪些吧", keyword),
 		})
 		return nil
 	}
@@ -386,8 +400,69 @@ func (pass *stickerSendPass) Execute(ctx *conduit.MessageContext) error {
 	return nil
 }
 
-// listLibrary 输出表情库清单（ID + 标签）。
-func (pass *stickerSendPass) listLibrary(ctx *conduit.MessageContext) {
+// sendRandom 无参数时的默认行为：从表情库随机取一张发送。
+// 库为空、存储未配置或取图失败时给出对应提示。
+func (pass *stickerSendPass) sendRandom(ctx *conduit.MessageContext) {
+	if pass.db == nil || pass.store == nil {
+		conduit.AppendOutput(ctx, &conduit.Message{
+			UserID: ctx.UserID, GroupID: ctx.GroupID, IsGroup: ctx.IsGroup,
+			Content: "表情存储未配置（RustFS 不可用），无法发送",
+		})
+		return
+	}
+	sticker, err := pass.db.RandomSticker(ctx.Ctx)
+	if err != nil {
+		pass.logger.Error("sticker: 随机取表情失败", zap.Error(err))
+		conduit.AppendOutput(ctx, &conduit.Message{
+			UserID: ctx.UserID, GroupID: ctx.GroupID, IsGroup: ctx.IsGroup,
+			Content: "表情获取失败，请稍后重试",
+		})
+		return
+	}
+	if sticker == nil {
+		conduit.AppendOutput(ctx, &conduit.Message{
+			UserID: ctx.UserID, GroupID: ctx.GroupID, IsGroup: ctx.IsGroup,
+			Content: "表情库还是空的，发张图配上 /添加表情 标签 来收藏吧",
+		})
+		return
+	}
+	presignedURL, err := pass.store.Presign(ctx.Ctx, sticker.ObjectKey, 10*time.Minute)
+	if err != nil {
+		pass.logger.Error("sticker: 随机表情 URL 生成失败", zap.Uint("id", sticker.ID), zap.Error(err))
+		conduit.AppendOutput(ctx, &conduit.Message{
+			UserID: ctx.UserID, GroupID: ctx.GroupID, IsGroup: ctx.IsGroup,
+			Content: "表情发送失败，请稍后重试",
+		})
+		return
+	}
+	// 纯 URL 输出 → bot 层识别为图片段发送
+	conduit.AppendOutput(ctx, &conduit.Message{
+		UserID: ctx.UserID, GroupID: ctx.GroupID, IsGroup: ctx.IsGroup,
+		Content: presignedURL,
+	})
+}
+
+// ============================================================
+// Pass 实现：表情列表（仅管理员）
+// ============================================================
+
+// stickerListPass 查看表情库清单：校验管理员（普通管理员 + 超管）→ 输出列表。
+type stickerListPass struct {
+	db     *database.DB
+	logger *zap.Logger
+}
+
+func (pass *stickerListPass) Execute(ctx *conduit.MessageContext) error {
+	// 管理员校验：bot 层将普通管理员与超管统一注入 bot.is_super_user
+	isAdmin, _ := ctx.Extra[blackboardIsSuperUser].(bool)
+	if !isAdmin {
+		conduit.AppendOutput(ctx, &conduit.Message{
+			UserID: ctx.UserID, GroupID: ctx.GroupID, IsGroup: ctx.IsGroup,
+			Content: "只有管理员能查看表情列表哦~",
+		})
+		return nil
+	}
+
 	stickers, err := pass.db.ListStickers(ctx.Ctx, 20)
 	if err != nil {
 		pass.logger.Error("sticker: 列表查询失败", zap.Error(err))
@@ -395,14 +470,14 @@ func (pass *stickerSendPass) listLibrary(ctx *conduit.MessageContext) {
 			UserID: ctx.UserID, GroupID: ctx.GroupID, IsGroup: ctx.IsGroup,
 			Content: "表情库查询失败，请稍后重试",
 		})
-		return
+		return nil
 	}
 	if len(stickers) == 0 {
 		conduit.AppendOutput(ctx, &conduit.Message{
 			UserID: ctx.UserID, GroupID: ctx.GroupID, IsGroup: ctx.IsGroup,
 			Content: "表情库还是空的，发张图配上 /添加表情 标签 来收藏吧",
 		})
-		return
+		return nil
 	}
 
 	var b strings.Builder
@@ -418,6 +493,7 @@ func (pass *stickerSendPass) listLibrary(ctx *conduit.MessageContext) {
 		UserID: ctx.UserID, GroupID: ctx.GroupID, IsGroup: ctx.IsGroup,
 		Content: strings.TrimRight(b.String(), "\n"),
 	})
+	return nil
 }
 
 // ============================================================

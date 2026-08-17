@@ -50,6 +50,7 @@ type Bot struct {
 	stickerInjector StickerEmotionInjector         // 硬性表情规则注入器（表情库插件，nil 表示未启用）
 	stickerCount    int                            // 已回复消息计数（硬性表情规则）
 	stickerTarget   int                            // 触发阈值（10~20 随机，0 表示首次回复前未初始化）
+	stickerCounter  *ai.ReplyCounter               // 表情提示词计数器（与 ChatService 共享；nil 表示未启用）
 	objectStore     *media.ObjectStore             // RustFS 对象存储（nil 时内网图片转 base64 发送不可用）
 	logger          *zap.Logger
 
@@ -184,6 +185,11 @@ func (b *Bot) SetStickerInjector(inj StickerEmotionInjector) {
 	b.stickerTarget = 0
 }
 
+// SetStickerCounter 注入表情提示词计数器（与 ChatService 共享同一实例，表情库插件注册完成后由 main 调用）。
+func (b *Bot) SetStickerCounter(c *ai.ReplyCounter) {
+	b.stickerCounter = c
+}
+
 // maybeInjectSticker 硬性表情规则：每回复 10~20 条消息后，附带一张随机表情。
 // 只在普通消息回复时计数（事件/通知不计）；触发后阈值在 10~20 间重新随机。
 // turnSentSticker 为本轮是否已发出图片（LLM 输出 URL / 插件段 / 命令发图）：
@@ -211,6 +217,10 @@ func (b *Bot) maybeInjectSticker(msg *gateway.NormalizedMessage, turnSentSticker
 	// 纯 URL 输出 → reply 识别为图片段发送（与 LLM 输出 URL 同一路径）
 	if url := b.stickerInjector.Pick(context.Background()); url != "" {
 		b.reply(msg, url)
+		// 同步清零表情提示词计数：硬性规则已补发一张表情，提示词"距上次发表情的对话间隔"归零
+		if b.stickerCounter != nil {
+			b.stickerCounter.Reset(replyScopeFor(msg.GroupID, msg.UserID))
+		}
 	}
 }
 
