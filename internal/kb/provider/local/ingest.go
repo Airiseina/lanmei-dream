@@ -24,6 +24,10 @@ import (
 // llmSourcePrefix kb_add 工具写入行的 source_id 前缀（文件同步删除时保护此类行）。
 const llmSourcePrefix = "llm:"
 
+// maxTitleRunes Title 列 varchar(256) 上限对应的字符数（PostgreSQL 按字符计数）。
+// CSV 关键词可能超长，截断避免整批 upsert 因 value too long 失败。
+const maxTitleRunes = 256
+
 // fileRowCSV CSV 数据行的 source_id 后缀分隔符：相对路径#行号。
 const fileRowSep = "#"
 
@@ -154,6 +158,13 @@ func (p *Provider) buildChunk(ctx context.Context, sourceID, title, content, met
 		title, meta = parseMarkdown(content, metaSource)
 	} else {
 		meta = map[string]any{"source": "file:" + filepath.ToSlash(metaSource)}
+	}
+
+	// Title 列 varchar(256) 上限防御：CSV 关键词超长时按字符截断，
+	// 避免整批 upsert 因 value too long for type character varying(256) 失败
+	// （截断仅影响展示，content 仍保留完整"关键词：回复"，不影响检索）。
+	if r := []rune(title); len(r) > maxTitleRunes {
+		title = string(r[:maxTitleRunes])
 	}
 
 	var emb pgvector.Vector
