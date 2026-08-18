@@ -105,7 +105,7 @@ type PluginBuiltinsConfig struct {
 	TurtleSoup bool `mapstructure:"turtle_soup"`
 	// RandomGames 随机小游戏插件（猜拳、骰子）
 	RandomGames bool `mapstructure:"random_games"`
-	// GuessNumber 猜数字游戏插件
+	// GuessNumber 编程答题游戏插件
 	GuessNumber bool `mapstructure:"guess_number"`
 	// DailyQuote 每日一句插件
 	DailyQuote bool `mapstructure:"daily_quote"`

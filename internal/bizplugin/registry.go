@@ -174,7 +174,7 @@ func (r *BusinessRegistry) RegisterBuiltins() error {
 		return err
 	}
 
-	// ── 猜数字游戏插件 ──
+	// ── 编程答题游戏插件──
 	if err := register(builtins.GuessNumber, "guess_number", NewGuessNumberPlugin()); err != nil {
 		return err
 	}
