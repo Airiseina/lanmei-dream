@@ -1,0 +1,392 @@
+[
+  {
+    "id": "c-001",
+    "prompt": "C 程序使用 printf 前，通常需要包含哪个头文件？",
+    "options": [
+      "\u003cstdio.h\u003e",
+      "\u003cstring.h\u003e",
+      "\u003cmath.h\u003e",
+      "\u003cstdlib.h\u003e"
+    ],
+    "answer_index": 0,
+    "explanation": "printf 声明在标准输入输出头文件 stdio.h 中。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "c-002",
+    "prompt": "C 中哪一项可以输出整数变量 age 的值？",
+    "options": [
+      "print(age);",
+      "printf(\"%d\", age);",
+      "cout \u003c\u003c age;",
+      "fmt.Println(age);"
+    ],
+    "answer_index": 1,
+    "explanation": "printf 的 %d 格式说明符可输出 int 值。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "c-003",
+    "prompt": "标准 C 程序入口通常写成哪一项？",
+    "options": [
+      "void start()",
+      "func main()",
+      "int main(void)",
+      "def main():"
+    ],
+    "answer_index": 2,
+    "explanation": "int main(void) 是不接收参数时的标准入口写法之一。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "c-004",
+    "prompt": "C 中大多数简单语句末尾使用什么符号？",
+    "options": [
+      "冒号",
+      "逗号",
+      "句号",
+      "分号"
+    ],
+    "answer_index": 3,
+    "explanation": "C 的声明、赋值和函数调用等语句通常以分号结束。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "c-005",
+    "prompt": "若 int numbers[3] = {10, 20, 30};，第一个元素是哪个？",
+    "options": [
+      "numbers[0]",
+      "numbers[1]",
+      "numbers.first",
+      "numbers(0)"
+    ],
+    "answer_index": 0,
+    "explanation": "C 数组下标从 0 开始。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "c-006",
+    "prompt": "C 中表示逻辑“并且”的运算符是哪一个？",
+    "options": [
+      "||",
+      "\u0026\u0026",
+      "\u0026=",
+      "!"
+    ],
+    "answer_index": 1,
+    "explanation": "\u0026\u0026 是逻辑与运算符。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "c-007",
+    "prompt": "已有 int x = 10;，哪个表达式可以取得 x 的地址？",
+    "options": [
+      "*x",
+      "@x",
+      "\u0026x",
+      "#x"
+    ],
+    "answer_index": 2,
+    "explanation": "一元运算符 \u0026 用于取得对象的地址。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "c-008",
+    "prompt": "下面哪一项声明了一个指向 int 的指针 p？",
+    "options": [
+      "pointer\u003cint\u003e p;",
+      "int \u0026p;",
+      "ptr int p;",
+      "int *p;"
+    ],
+    "answer_index": 3,
+    "explanation": "int *p 声明 p 为指向 int 的指针。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "c-009",
+    "prompt": "C 中通常使用哪种类型保存单个字符？",
+    "options": [
+      "char",
+      "string",
+      "text",
+      "byte[]"
+    ],
+    "answer_index": 0,
+    "explanation": "char 用于保存一个字符值。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "c-010",
+    "prompt": "下面循环会依次输出什么？\nfor (int i = 1; i \u003c= 3; i++) {\n    printf(\"%d\", i);\n}",
+    "options": [
+      "012",
+      "123",
+      "1234",
+      "321"
+    ],
+    "answer_index": 1,
+    "explanation": "i 从 1 增加到 3，依次输出 123。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "c-011",
+    "prompt": "执行 int result = 7 / 2; 后，result 的值是多少？",
+    "options": [
+      "3",
+      "3.5",
+      "4",
+      "2"
+    ],
+    "answer_index": 0,
+    "explanation": "两个 int 相除会进行整数除法，小数部分被舍去，因此结果为 3。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "c-012",
+    "prompt": "已有 int age;，哪一项可以用 scanf 读取 age？",
+    "options": [
+      "scanf(\"%d\", age);",
+      "scanf(\"%d\", \u0026age);",
+      "scanf(age, \"%d\");",
+      "read(\u0026age);"
+    ],
+    "answer_index": 1,
+    "explanation": "scanf 使用 %d 读取 int，并需要传入变量 age 的地址 \u0026age。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "c-013",
+    "prompt": "在声明 int values[4]; 的同一作用域中，哪一项可计算数组元素个数？",
+    "options": [
+      "sizeof(values)",
+      "length(values)",
+      "sizeof(values) / sizeof(values[0])",
+      "values.size"
+    ],
+    "answer_index": 2,
+    "explanation": "整个数组的字节数除以一个元素的字节数，可以得到元素个数。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "c-014",
+    "prompt": "包含 \u003cstring.h\u003e 后，strlen(\"cat\") 的结果是什么？",
+    "options": [
+      "4",
+      "2",
+      "取决于平台",
+      "3"
+    ],
+    "answer_index": 3,
+    "explanation": "strlen 返回终止空字符之前的字符数量，因此结果为 3。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "c-015",
+    "prompt": "包含 \u003cstring.h\u003e 后，strcmp(a, b) 返回什么值表示两个字符串内容相同？",
+    "options": [
+      "0",
+      "1",
+      "-1",
+      "true"
+    ],
+    "answer_index": 0,
+    "explanation": "strcmp 在两个字符串内容相同时返回 0。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "c-016",
+    "prompt": "C 中常用哪个宏表示空指针常量？",
+    "options": [
+      "None",
+      "NULL",
+      "nil",
+      "empty"
+    ],
+    "answer_index": 1,
+    "explanation": "NULL 是标准头文件中定义的空指针常量宏。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "c-017",
+    "prompt": "已有 int value = 8; int *p = \u0026value;，哪个表达式取得 p 指向的值？",
+    "options": [
+      "\u0026p",
+      "p.value",
+      "*p",
+      "p-\u003evalue"
+    ],
+    "answer_index": 2,
+    "explanation": "一元 * 运算符解引用指针，得到它指向的对象。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "c-018",
+    "prompt": "哪一项定义了一个接收两个 int 并返回 int 的 add 函数？",
+    "options": [
+      "func add(a, b int) int",
+      "def add(a, b):",
+      "function int add(a, b)",
+      "int add(int a, int b) { return a + b; }"
+    ],
+    "answer_index": 3,
+    "explanation": "C 函数定义需要写返回类型、函数名、带类型的参数和函数体。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "c-019",
+    "prompt": "哪一项声明了不能通过变量名 maxCount 修改的整数？",
+    "options": [
+      "const int maxCount = 10;",
+      "fixed int maxCount = 10;",
+      "readonly maxCount = 10;",
+      "int constant maxCount = 10;"
+    ],
+    "answer_index": 0,
+    "explanation": "const 修饰的对象不能通过该变量名再次修改。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "c-020",
+    "prompt": "使用 malloc 和 free 通常需要包含哪个标准头文件？",
+    "options": [
+      "\u003cstdio.h\u003e",
+      "\u003cstdlib.h\u003e",
+      "\u003cstring.h\u003e",
+      "\u003cmemory.h\u003e"
+    ],
+    "answer_index": 1,
+    "explanation": "malloc 和 free 声明在 stdlib.h 中。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "c-021",
+    "prompt": "由 int *p = malloc(sizeof(int)); 获得的内存不再使用时，应调用什么？",
+    "options": [
+      "delete p;",
+      "release(p);",
+      "free(p);",
+      "clear(p);"
+    ],
+    "answer_index": 2,
+    "explanation": "malloc 分配的内存应使用 free 释放。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "c-022",
+    "prompt": "哪一项定义了包含 int age; 成员的结构体 Student？",
+    "options": [
+      "class Student { int age; };",
+      "record Student (int age);",
+      "Student = { age: int };",
+      "struct Student { int age; };"
+    ],
+    "answer_index": 3,
+    "explanation": "C 使用 struct 关键字定义结构体。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "c-023",
+    "prompt": "typedef unsigned int uint; 的作用是什么？",
+    "options": [
+      "为 unsigned int 创建别名 uint",
+      "声明一个名为 uint 的变量",
+      "把 uint 转换为 int",
+      "定义一个函数"
+    ],
+    "answer_index": 0,
+    "explanation": "typedef 可以为已有类型创建新的类型别名。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "c-024",
+    "prompt": "哪一项创建了内容为 Hi、且可修改内容的字符数组 text？",
+    "options": [
+      "char text = \"Hi\";",
+      "char text[] = \"Hi\";",
+      "string text = \"Hi\";",
+      "char[] text = \"Hi\";"
+    ],
+    "answer_index": 1,
+    "explanation": "char text[] = \"Hi\" 会创建包含 H、i 和终止空字符的可修改数组。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "c-025",
+    "prompt": "在 switch 的 case 中，哪个关键字常用于避免继续执行后续 case？",
+    "options": [
+      "stop",
+      "exit",
+      "break",
+      "next"
+    ],
+    "answer_index": 2,
+    "explanation": "break 会结束当前 switch，避免继续落入后续 case。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "c-026",
+    "prompt": "哪种循环即使条件一开始为假，也会先执行一次循环体？",
+    "options": [
+      "for",
+      "while",
+      "foreach",
+      "do ... while"
+    ],
+    "answer_index": 3,
+    "explanation": "do ... while 在循环体执行后才检查条件，因此至少执行一次。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "c-027",
+    "prompt": "哪一项使用预处理器定义了值为 100 的宏 MAX_SIZE？",
+    "options": [
+      "#define MAX_SIZE 100",
+      "const MAX_SIZE = 100",
+      "macro MAX_SIZE 100",
+      "#set MAX_SIZE 100"
+    ],
+    "answer_index": 0,
+    "explanation": "#define 指令可以定义对象式宏。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "c-028",
+    "prompt": "C 的条件运算符（三元运算符）使用哪组符号？",
+    "options": [
+      "if : else",
+      "? :",
+      "=\u003e :",
+      "?? ::"
+    ],
+    "answer_index": 1,
+    "explanation": "条件表达式写作 条件 ? 真值 : 假值。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "c-029",
+    "prompt": "循环中的 continue 语句通常会做什么？",
+    "options": [
+      "结束整个程序",
+      "退出当前函数",
+      "跳过本次循环剩余部分并进入下一次迭代",
+      "重新开始整个程序"
+    ],
+    "answer_index": 2,
+    "explanation": "continue 跳过当前迭代剩余语句，继续下一次循环。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "c-030",
+    "prompt": "在 main 函数末尾执行 return 0; 通常表示什么？",
+    "options": [
+      "输出数字 0",
+      "程序暂停",
+      "重新运行 main",
+      "程序正常结束"
+    ],
+    "answer_index": 3,
+    "explanation": "main 返回 0 通常向运行环境表示程序成功结束。",
+    "difficulty": "easy"
+  }
+]

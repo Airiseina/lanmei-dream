@@ -26,12 +26,13 @@ WORKDIR /app
 
 COPY --from=builder /lanmei /app/lanmei
 
-# ── 运行时资源：config / prompts / skills 默认打包进镜像 ──
+# ── 运行时资源：config / prompts / skills / quizdata 默认打包进镜像 ──
 # 目录内均为非敏感配置（密钥走环境变量），作为裸镜像自包含兜底；
 # 使用 docker-compose 部署时会被只读挂载（./config:ro 等）覆盖。
 COPY --from=builder /app/config /app/config
 COPY --from=builder /app/prompts /app/prompts
 COPY --from=builder /app/skills /app/skills
+COPY --from=builder /app/quizdata /app/quizdata
 
 # 环境变量通过 docker-compose / .env 注入，不硬编码
 ENV TZ=Asia/Shanghai

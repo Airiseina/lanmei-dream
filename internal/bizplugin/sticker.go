@@ -24,6 +24,7 @@ import (
 
 // StickerPlugin 实现自定义表情的收藏与发送：
 //   - /添加表情 <标签>（兼容旧命令 /收表情）：管理员（普通管理员 + 超管）收藏消息中的图片（上传 RustFS + 写 sticker_library）
+//   - /删除表情 <标签>：管理员按精确标签删除表情及未被共享引用的 RustFS 对象
 //   - /发表情 <标签>：按标签发送一张表情；无参数时发送一张随机表情（默认行为）
 //   - /表情列表：仅管理员（普通管理员 + 超管）可查看表情库清单（必须是 /表情列表 完整命令）
 //   - pick_sticker 工具：LLM 按语义（情绪/语境）检索表情库，返回可发送的图片 URL
@@ -32,6 +33,7 @@ import (
 //
 //	subtree.sticker → Selector(
 //	  Sequence(isCollectStickerCommand, Action("pipeline.plugin.sticker.collect")),
+//	  Sequence(isDeleteStickerCommand,  Action("pipeline.plugin.sticker.delete")),
 //	  Sequence(isListStickerCommand,    Action("pipeline.plugin.sticker.list")),
 //	  Sequence(isSendStickerCommand,    Action("pipeline.plugin.sticker.send")),
 //	)
@@ -39,6 +41,7 @@ import (
 // 管线：
 //
 //	pipeline.plugin.sticker.collect → [stickerCollectPass]
+//	pipeline.plugin.sticker.delete  → [stickerDeletePass]
 //	pipeline.plugin.sticker.list    → [stickerListPass]
 //	pipeline.plugin.sticker.send    → [stickerSendPass]
 //
@@ -51,7 +54,7 @@ type StickerPlugin struct {
 	logger *zap.Logger
 }
 
-// NewStickerPlugin 创建表情库插件。store 为 nil 时收藏功能不可用（检索仅返回库内记录）。
+// NewStickerPlugin 创建表情库插件。store 为 nil 时收藏、删除和发送功能不可用（仍可查询库内记录）。
 // db 与 logger 在 OnInit 阶段从 PluginContext 注入。
 func NewStickerPlugin(store *media.ObjectStore, logger *zap.Logger) *StickerPlugin {
 	return &StickerPlugin{store: store, logger: logger}
@@ -62,10 +65,11 @@ func (p *StickerPlugin) Info() pluginpkg.PluginInfo {
 	return pluginpkg.PluginInfo{
 		ID:          "sticker",
 		Name:        "表情库",
-		Description: "自定义表情收藏与按语义发送",
-		Version:     "1.0.0",
+		Description: "自定义表情收藏、按标签管理与按语义发送",
+		Version:     "1.1.0",
 		Commands: []pluginpkg.CommandDef{
 			{Name: "添加表情", Description: "收藏消息中的图片为表情（仅管理员），格式：/添加表情 标签1 标签2", Order: 170},
+			{Name: "删除表情", Description: "按精确标签删除表情（仅管理员且只接受显式斜杠命令），格式：/删除表情 标签", Order: 180},
 			{Name: "发表情", Description: "发送匹配标签的表情；无参数时发送随机表情，格式：/发表情 标签", Order: 80},
 			{Name: "表情列表", Description: "查看表情库清单（仅管理员），格式：/表情列表", Order: 90},
 		},
@@ -100,6 +104,13 @@ func (p *StickerPlugin) OnInit(ctx *pluginpkg.PluginContext) error {
 	}
 	ctx.Registry.TrackPass("sticker", collectPassID)
 
+	deletePassID := pluginpkg.PassID("sticker", "delete")
+	deletePass := &stickerDeletePass{db: p.db, store: p.store, logger: p.logger}
+	if err := ctx.Engine.RegisterPass(deletePassID, deletePass); err != nil {
+		return fmt.Errorf("register sticker delete pass: %w", err)
+	}
+	ctx.Registry.TrackPass("sticker", deletePassID)
+
 	sendPassID := pluginpkg.PassID("sticker", "send")
 	sendPass := &stickerSendPass{db: p.db, store: p.store, logger: p.logger}
 	if err := ctx.Engine.RegisterPass(sendPassID, sendPass); err != nil {
@@ -121,6 +132,12 @@ func (p *StickerPlugin) OnInit(ctx *pluginpkg.PluginContext) error {
 	}
 	ctx.Registry.TrackPipeline("sticker", collectPipelineID)
 
+	deletePipelineID := pluginpkg.PipelineID("sticker", "delete")
+	if err := ctx.Engine.RegisterPipeline(conduit.NewPipelineFromIDs(deletePipelineID, deletePassID)); err != nil {
+		return fmt.Errorf("register sticker delete pipeline: %w", err)
+	}
+	ctx.Registry.TrackPipeline("sticker", deletePipelineID)
+
 	sendPipelineID := pluginpkg.PipelineID("sticker", "send")
 	if err := ctx.Engine.RegisterPipeline(conduit.NewPipelineFromIDs(sendPipelineID, sendPassID)); err != nil {
 		return fmt.Errorf("register sticker send pipeline: %w", err)
@@ -133,11 +150,15 @@ func (p *StickerPlugin) OnInit(ctx *pluginpkg.PluginContext) error {
 	}
 	ctx.Registry.TrackPipeline("sticker", listPipelineID)
 
-	// 注册行为树子树：添加表情 / 表情列表 / 发表情 命令路由
+	// 注册行为树子树：添加表情 / 删除表情 / 表情列表 / 发表情 命令路由
 	subtree := conduit.NewSelector(
 		conduit.NewSequence(
 			conduit.NewCondition(isCollectStickerCommand),
 			conduit.NewAction(collectPipelineID),
+		),
+		conduit.NewSequence(
+			conduit.NewCondition(isDeleteStickerCommand),
+			conduit.NewAction(deletePipelineID),
 		),
 		conduit.NewSequence(
 			conduit.NewCondition(isListStickerCommand),
@@ -195,6 +216,12 @@ func isCollectStickerCommand(ctx *conduit.MessageContext) bool {
 	return hasStickerCollectPrefix(ctx.RawMsg)
 }
 
+// isDeleteStickerCommand 判断消息是否为删除表情命令，并要求命令名边界完整。
+func isDeleteStickerCommand(ctx *conduit.MessageContext) bool {
+	msg := strings.TrimSpace(ctx.RawMsg)
+	return msg == "/删除表情" || strings.HasPrefix(msg, "/删除表情 ") || strings.HasPrefix(msg, "/删除表情\t")
+}
+
 // isSendStickerCommand 判断消息是否为发表情命令。
 func isSendStickerCommand(ctx *conduit.MessageContext) bool {
 	return strings.HasPrefix(strings.TrimSpace(ctx.RawMsg), "/发表情")
@@ -212,9 +239,17 @@ func isListStickerCommand(ctx *conduit.MessageContext) bool {
 // ============================================================
 
 const (
-	blackboardIsSuperUser = "bot.is_super_user" // bool 当前用户是否超管（普通管理员与超管统一注入）
-	blackboardImageURLs   = "bot.image_urls"    // []string 消息中图片段 url 列表
+	// 项目会把配置超管与 bot_admin 动态 Bot 管理员合并到同一集合后注入此标记。
+	blackboardIsSuperUser    = "bot.is_super_user"   // bool 当前用户是否超管
+	blackboardImageURLs      = "bot.image_urls"      // []string 消息中图片段 url 列表
+	blackboardCommandReentry = "bot.command.reentry" // bool 命令重入标记（意图路由/斜杠命令经插件 handler 重入引擎）
 )
+
+// isCommandReentry 判断当前消息是否为插件命令重入（意图路由或斜杠命令触发的插件命令）。
+func isCommandReentry(ctx *conduit.MessageContext) bool {
+	b, _ := ctx.Extra[blackboardCommandReentry].(bool)
+	return b
+}
 
 // ============================================================
 // Pass 实现：添加表情入库
@@ -334,6 +369,93 @@ func (pass *stickerCollectPass) Execute(ctx *conduit.MessageContext) error {
 		Content: fmt.Sprintf("已收藏表情 ✅ 标签：%s", strings.Join(tags, " / ")),
 	})
 	return nil
+}
+
+// ============================================================
+// Pass 实现：按标签删除表情
+// ============================================================
+
+// stickerDeletePass 仅允许 Bot 管理员或超级管理员通过显式斜杠命令，
+// 按一个完整标签删除所有匹配表情，并清理未被媒体缓存共享引用的 RustFS 对象。
+type stickerDeletePass struct {
+	db     *database.DB
+	store  *media.ObjectStore
+	logger *zap.Logger
+}
+
+func (pass *stickerDeletePass) Execute(ctx *conduit.MessageContext) error {
+	// 删除属于破坏性管理员操作，不允许由 LLM 自然语言意图间接触发。
+	if isCommandReentry(ctx) {
+		pass.reply(ctx, "删除表情必须使用明确的管理员命令：/删除表情 <标签>")
+		return nil
+	}
+
+	isAdmin, _ := ctx.Extra[blackboardIsSuperUser].(bool)
+	if !isAdmin {
+		pass.reply(ctx, "只有 Bot 管理员或超级管理员才能删除表情哦~")
+		return nil
+	}
+
+	raw := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(ctx.RawMsg), "/删除表情"))
+	tags := strings.Fields(raw)
+	if len(tags) != 1 {
+		pass.reply(ctx, "格式错误！用法：/删除表情 <标签>，例如：/删除表情 耍帅")
+		return nil
+	}
+	if pass.db == nil {
+		pass.reply(ctx, "数据库不可用，无法删除表情")
+		return nil
+	}
+	if pass.store == nil {
+		pass.reply(ctx, "表情存储未配置（RustFS 不可用），无法安全删除")
+		return nil
+	}
+
+	tag := tags[0]
+	deleted, err := pass.db.DeleteStickersByTag(ctx.Ctx, tag)
+	if err != nil {
+		pass.logger.Error("sticker: 按标签删除数据库记录失败", zap.String("tag", tag), zap.Error(err))
+		pass.reply(ctx, "表情删除失败，请稍后重试")
+		return nil
+	}
+	if len(deleted) == 0 {
+		pass.reply(ctx, fmt.Sprintf("没有找到标签为「%s」的表情", tag))
+		return nil
+	}
+
+	seenObjectKeys := make(map[string]struct{}, len(deleted))
+	for _, sticker := range deleted {
+		if _, seen := seenObjectKeys[sticker.ObjectKey]; seen {
+			continue
+		}
+		seenObjectKeys[sticker.ObjectKey] = struct{}{}
+
+		referenced, err := pass.db.IsMediaObjectReferenced(ctx.Ctx, sticker.ObjectKey)
+		if err != nil {
+			pass.logger.Warn("sticker: 检查共享对象引用失败，保留 RustFS 对象",
+				zap.Uint("id", sticker.ID), zap.String("object_key", sticker.ObjectKey), zap.Error(err))
+			continue
+		}
+		if referenced {
+			continue
+		}
+		if err := pass.store.Delete(ctx.Ctx, sticker.ObjectKey); err != nil {
+			pass.logger.Warn("sticker: RustFS 对象清理失败",
+				zap.Uint("id", sticker.ID), zap.String("object_key", sticker.ObjectKey), zap.Error(err))
+		}
+	}
+
+	pass.reply(ctx, fmt.Sprintf("已删除标签「%s」下的 %d 张表情", tag, len(deleted)))
+	return nil
+}
+
+func (pass *stickerDeletePass) reply(ctx *conduit.MessageContext, content string) {
+	conduit.AppendOutput(ctx, &conduit.Message{
+		UserID:  ctx.UserID,
+		GroupID: ctx.GroupID,
+		IsGroup: ctx.IsGroup,
+		Content: content,
+	})
 }
 
 // ============================================================

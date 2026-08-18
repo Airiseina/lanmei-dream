@@ -17,6 +17,11 @@ type Context struct {
 	CommandArgs    []string // 命令参数
 	Message        string   // 原始消息
 	Reply          func(string)
+	// ReplySegments 回传 OneBot 原生消息段；主要用于插件命令经自然语言意图
+	// 重入行为树后，将子消息上下文中的 at/rps/dice 等段传回原始消息。
+	ReplySegments func([]map[string]any)
+	// SuppressRequesterAt 禁止 Bot 为本次命令文本回复自动添加 @请求者。
+	SuppressRequesterAt func()
 
 	// ── 消息上下文（插件命令重入引擎时用于还原完整上下文）──
 	SelfID    string   // 机器人自身平台 ID

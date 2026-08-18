@@ -1,0 +1,392 @@
+[
+  {
+    "id": "python-001",
+    "prompt": "Python 3 中哪一项可以输出文字 Hello？",
+    "options": [
+      "echo \"Hello\"",
+      "print(\"Hello\")",
+      "fmt.Println(\"Hello\")",
+      "System.out.println(\"Hello\")"
+    ],
+    "answer_index": 1,
+    "explanation": "Python 3 使用 print 函数输出内容。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "python-002",
+    "prompt": "Python 主要用什么来表示 if、for、函数等代码块的范围？",
+    "options": [
+      "花括号",
+      "圆括号",
+      "缩进",
+      "分号"
+    ],
+    "answer_index": 2,
+    "explanation": "Python 通常在冒号后使用一致的缩进组织代码块。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "python-003",
+    "prompt": "下面哪一项是 Python 列表？",
+    "options": [
+      "(1, 2, 3)",
+      "{1, 2, 3}",
+      "\u003c1, 2, 3\u003e",
+      "[1, 2, 3]"
+    ],
+    "answer_index": 3,
+    "explanation": "Python 列表使用方括号，例如 [1, 2, 3]。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "python-004",
+    "prompt": "list(range(3)) 的结果是什么？",
+    "options": [
+      "[0, 1, 2]",
+      "[1, 2, 3]",
+      "[0, 1, 2, 3]",
+      "[3]"
+    ],
+    "answer_index": 0,
+    "explanation": "range(3) 从 0 开始，在到达 3 前停止。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "python-005",
+    "prompt": "Python 中比较两个值是否相等，应使用哪个运算符？",
+    "options": [
+      "=",
+      "==",
+      "===",
+      ":="
+    ],
+    "answer_index": 1,
+    "explanation": "== 用于比较，= 用于赋值。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "python-006",
+    "prompt": "Python 使用哪个关键字定义函数？",
+    "options": [
+      "func",
+      "function",
+      "def",
+      "fn"
+    ],
+    "answer_index": 2,
+    "explanation": "Python 函数定义以 def 关键字开始。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "python-007",
+    "prompt": "Python 单行注释通常以哪个符号开头？",
+    "options": [
+      "//",
+      "--",
+      ";",
+      "#"
+    ],
+    "answer_index": 3,
+    "explanation": "# 后面的内容会被视为单行注释。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "python-008",
+    "prompt": "len([\"a\", \"b\", \"c\"]) 的结果是什么？",
+    "options": [
+      "3",
+      "2",
+      "4",
+      "0"
+    ],
+    "answer_index": 0,
+    "explanation": "列表中有三个元素，所以 len 返回 3。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "python-009",
+    "prompt": "下面哪一项是包含 name 键的 Python 字典？",
+    "options": [
+      "[\"name\", \"Lanmei\"]",
+      "{\"name\": \"Lanmei\"}",
+      "(\"name\" = \"Lanmei\")",
+      "\u003c\"name\": \"Lanmei\"\u003e"
+    ],
+    "answer_index": 1,
+    "explanation": "字典使用花括号，并用冒号分隔键和值。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "python-010",
+    "prompt": "已有 numbers = [1, 2]，怎样把 3 添加到列表末尾？",
+    "options": [
+      "numbers.add(3)",
+      "numbers.push(3)",
+      "numbers.append(3)",
+      "append(numbers, 3)"
+    ],
+    "answer_index": 2,
+    "explanation": "列表的 append 方法会在末尾添加一个元素。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "python-011",
+    "prompt": "Python 表达式 7 // 2 的结果是什么？",
+    "options": [
+      "3",
+      "3.5",
+      "4",
+      "2"
+    ],
+    "answer_index": 0,
+    "explanation": "// 表示向下取整除法，7 // 2 的结果是 3。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "python-012",
+    "prompt": "Python 3 的 input() 默认返回什么类型的值？",
+    "options": [
+      "int",
+      "str",
+      "float",
+      "bool"
+    ],
+    "answer_index": 1,
+    "explanation": "input() 读取的内容默认是字符串，需要时可再转换类型。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "python-013",
+    "prompt": "下面哪个是 Python 中正确的布尔真值？",
+    "options": [
+      "true",
+      "TRUE",
+      "True",
+      "yes"
+    ],
+    "answer_index": 2,
+    "explanation": "Python 的布尔值写作 True 和 False，首字母需要大写。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "python-014",
+    "prompt": "怎样判断字符串 name 是否在列表 names 中？",
+    "options": [
+      "contains(names, name)",
+      "name inside names",
+      "names.has(name)",
+      "name in names"
+    ],
+    "answer_index": 3,
+    "explanation": "in 运算符用于判断一个值是否属于容器。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "python-015",
+    "prompt": "Python 中表示逻辑“并且”的关键字是什么？",
+    "options": [
+      "and",
+      "\u0026\u0026",
+      "AND",
+      "with"
+    ],
+    "answer_index": 0,
+    "explanation": "Python 使用 and 表示逻辑与。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "python-016",
+    "prompt": "下面哪一项创建了一个元组？",
+    "options": [
+      "[1, 2]",
+      "(1, 2)",
+      "{1, 2}",
+      "\u003c1, 2\u003e"
+    ],
+    "answer_index": 1,
+    "explanation": "元组通常使用圆括号书写，例如 (1, 2)。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "python-017",
+    "prompt": "len({1, 1, 2}) 的结果是什么？",
+    "options": [
+      "3",
+      "1",
+      "2",
+      "0"
+    ],
+    "answer_index": 2,
+    "explanation": "集合会去除重复元素，因此集合中只有 1 和 2 两个元素。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "python-018",
+    "prompt": "已有 person = {\"name\": \"Lanmei\"}，怎样取得 name 对应的值？",
+    "options": [
+      "person.name",
+      "person(name)",
+      "person-\u003ename",
+      "person[\"name\"]"
+    ],
+    "answer_index": 3,
+    "explanation": "字典可以使用方括号和键读取对应的值。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "python-019",
+    "prompt": "已有 name = \"蓝妹\"，哪一项是包含该变量值的 f-string？",
+    "options": [
+      "f\"你好，{name}\"",
+      "\"你好，${name}\"",
+      "format\"你好，name\"",
+      "f(\"你好\", name)"
+    ],
+    "answer_index": 0,
+    "explanation": "f-string 在字符串前加 f，并在花括号中写表达式。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "python-020",
+    "prompt": "Python 中通常使用哪组关键字捕获并处理异常？",
+    "options": [
+      "catch / throw",
+      "try / except",
+      "begin / rescue",
+      "check / error"
+    ],
+    "answer_index": 1,
+    "explanation": "可能出错的代码写在 try 中，异常处理写在 except 中。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "python-021",
+    "prompt": "执行 import math 后，哪一项可以计算 9 的平方根？",
+    "options": [
+      "sqrt.math(9)",
+      "math.root(9)",
+      "math.sqrt(9)",
+      "root(9)"
+    ],
+    "answer_index": 2,
+    "explanation": "math 模块中的 sqrt 函数用于计算平方根。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "python-022",
+    "prompt": "已有 values = [10, 20, 30]，哪个表达式取得最后一个元素？",
+    "options": [
+      "values[3]",
+      "values[last]",
+      "values.last()",
+      "values[-1]"
+    ],
+    "answer_index": 3,
+    "explanation": "Python 序列的下标 -1 表示最后一个元素。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "python-023",
+    "prompt": "已有 values = [0, 1, 2, 3]，values[1:3] 的结果是什么？",
+    "options": [
+      "[1, 2]",
+      "[1, 2, 3]",
+      "[0, 1, 2]",
+      "[2, 3]"
+    ],
+    "answer_index": 0,
+    "explanation": "切片包含起始下标 1，不包含结束下标 3，因此得到 [1, 2]。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "python-024",
+    "prompt": "哪一项可以依次遍历列表 items 中的元素？",
+    "options": [
+      "for (item : items):",
+      "for item in items:",
+      "foreach item items:",
+      "loop item from items:"
+    ],
+    "answer_index": 1,
+    "explanation": "Python 使用 for 变量 in 可迭代对象: 的形式遍历元素。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "python-025",
+    "prompt": "哪个关键字用于在条件为真时重复执行代码？",
+    "options": [
+      "repeat",
+      "loop",
+      "while",
+      "until"
+    ],
+    "answer_index": 2,
+    "explanation": "while 循环会在条件为真时反复执行代码块。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "python-026",
+    "prompt": "哪一项正确定义了一个空的 Student 类？",
+    "options": [
+      "class Student {}",
+      "type Student:",
+      "Student = class()",
+      "class Student:\n    pass"
+    ],
+    "answer_index": 3,
+    "explanation": "Python 使用 class 定义类；空类体可以写 pass。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "python-027",
+    "prompt": "Python 类中，实例初始化方法通常叫什么？",
+    "options": [
+      "__init__",
+      "constructor",
+      "initialize",
+      "__new_object__"
+    ],
+    "answer_index": 0,
+    "explanation": "创建实例后，Python 通常调用 __init__ 方法初始化实例。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "python-028",
+    "prompt": "Python 中表示“没有值”的特殊对象是什么？",
+    "options": [
+      "null",
+      "None",
+      "nil",
+      "undefined"
+    ],
+    "answer_index": 1,
+    "explanation": "Python 使用 None 表示没有具体值。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "python-029",
+    "prompt": "哪一项可以把整数 42 转换成字符串？",
+    "options": [
+      "string(42)",
+      "42.toString()",
+      "str(42)",
+      "text(42)"
+    ],
+    "answer_index": 2,
+    "explanation": "内置 str 函数可以把整数转换为字符串。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "python-030",
+    "prompt": "sum([1, 2, 3]) 的结果是什么？",
+    "options": [
+      "3",
+      "5",
+      "123",
+      "6"
+    ],
+    "answer_index": 3,
+    "explanation": "sum 会把序列中的数相加，1 + 2 + 3 等于 6。",
+    "difficulty": "easy"
+  }
+]

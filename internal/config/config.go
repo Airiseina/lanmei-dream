@@ -14,6 +14,7 @@ type Config struct {
 	Log       LogConfig       `mapstructure:"log"`
 	Prompts   PromptsConfig   `mapstructure:"prompts"`
 	Skills    SkillsConfig    `mapstructure:"skills"`
+	Quiz      QuizConfig      `mapstructure:"quiz"`
 	Knowledge KnowledgeConfig `mapstructure:"knowledge"`
 	Manager   ManagerConfig   `mapstructure:"manager"`
 }
@@ -103,6 +104,12 @@ type PluginBuiltinsConfig struct {
 	Sticker bool `mapstructure:"sticker"`
 	// TurtleSoup 海龟汤文字游戏插件
 	TurtleSoup bool `mapstructure:"turtle_soup"`
+	// RandomGames 随机小游戏插件（猜拳、骰子）
+	RandomGames bool `mapstructure:"random_games"`
+	// GuessNumber 编程答题游戏插件
+	GuessNumber bool `mapstructure:"guess_number"`
+	// DailyQuote 每日一句插件
+	DailyQuote bool `mapstructure:"daily_quote"`
 }
 
 // DatabaseConfig 数据库配置
@@ -231,6 +238,11 @@ type PromptsConfig struct {
 type SkillsConfig struct {
 	Dir    string `mapstructure:"dir"`
 	Config string `mapstructure:"config"`
+}
+
+// QuizConfig 编程答题题库路径配置
+type QuizConfig struct {
+	Dir string `mapstructure:"dir"`
 }
 
 // KnowledgeConfig 知识库系统配置

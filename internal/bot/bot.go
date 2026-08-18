@@ -763,7 +763,8 @@ func (b *Bot) flushOutput(ctx *conduit.MessageContext, msg *gateway.NormalizedMe
 		b.maybeInjectSticker(msg, sentSticker)
 		return
 	}
-	directed := b.isDirected(ctx, msg)
+	suppressRequesterAt, _ := conduit.Get[bool](ctx, KeySuppressRequesterAt)
+	directed := !suppressRequesterAt && b.isDirected(ctx, msg)
 	// 引用/at 只建立在首条文本消息上（anchorDone 标记），
 	// 避免多输出回复（如签到插件输出两条）重复引用同一条消息、重复 at 同一人；
 	// 图片消息无法携带引用段，不建立锚点，后续文本再补。

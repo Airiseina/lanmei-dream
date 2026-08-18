@@ -89,6 +89,8 @@ services:
       - ./prompts:/app/prompts:ro
       # Skill 系统（只读）
       - ./skills:/app/skills:ro
+      # 编程答题题库（只读）
+      - ./quizdata:/app/quizdata:ro
       # 知识库目录（只读）：Markdown / CSV 文件自动摄入
       - ./docs:/app/docs:ro
     ports:

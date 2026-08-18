@@ -1,0 +1,392 @@
+[
+  {
+    "id": "cpp-001",
+    "prompt": "C++ 使用 std::cout 前，通常需要包含哪个头文件？",
+    "options": [
+      "\u003cstdio.h\u003e",
+      "\u003cvector\u003e",
+      "\u003ciostream\u003e",
+      "\u003cstring\u003e"
+    ],
+    "answer_index": 2,
+    "explanation": "std::cout 定义在 iostream 头文件中。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "cpp-002",
+    "prompt": "包含 \u003ciostream\u003e 后，哪一项可以输出 Hello？",
+    "options": [
+      "printfLine(\"Hello\");",
+      "System.out.println(\"Hello\");",
+      "print(\"Hello\");",
+      "std::cout \u003c\u003c \"Hello\";"
+    ],
+    "answer_index": 3,
+    "explanation": "C++ 可使用 std::cout 和 \u003c\u003c 输出内容。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "cpp-003",
+    "prompt": "表达式 std::cout 中的 std 表示什么？",
+    "options": [
+      "标准库使用的命名空间",
+      "一种整数类型",
+      "循环关键字",
+      "文件扩展名"
+    ],
+    "answer_index": 0,
+    "explanation": "std 是 C++ 标准库使用的命名空间名称。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "cpp-004",
+    "prompt": "C++ 使用哪个关键字定义类？",
+    "options": [
+      "object",
+      "class",
+      "type",
+      "structOnly"
+    ],
+    "answer_index": 1,
+    "explanation": "class 关键字用于定义类。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "cpp-005",
+    "prompt": "包含 \u003cstring\u003e 后，哪种类型适合保存一段文本？",
+    "options": [
+      "char",
+      "text",
+      "std::string",
+      "words"
+    ],
+    "answer_index": 2,
+    "explanation": "std::string 是标准库提供的字符串类型。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "cpp-006",
+    "prompt": "包含 \u003cvector\u003e 后，哪一项声明了一个可变长度的整数序列？",
+    "options": [
+      "int values();",
+      "list values\u003cint\u003e;",
+      "int[] values;",
+      "std::vector\u003cint\u003e values;"
+    ],
+    "answer_index": 3,
+    "explanation": "std::vector\u003cint\u003e 是可动态改变长度的整数序列。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "cpp-007",
+    "prompt": "C++ 中适合保存 true 或 false 的类型是什么？",
+    "options": [
+      "bool",
+      "boolean",
+      "bit",
+      "truth"
+    ],
+    "answer_index": 0,
+    "explanation": "C++ 使用 bool 类型保存布尔值。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "cpp-008",
+    "prompt": "C++ 单行注释通常以哪个符号开头？",
+    "options": [
+      "#",
+      "//",
+      "--",
+      ";;"
+    ],
+    "answer_index": 1,
+    "explanation": "// 后面的内容会被视为单行注释。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "cpp-009",
+    "prompt": "C++ 中比较两个值是否相等，应使用哪个运算符？",
+    "options": [
+      "=",
+      "===",
+      "==",
+      ":="
+    ],
+    "answer_index": 2,
+    "explanation": "== 用于相等比较，= 用于赋值。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "cpp-010",
+    "prompt": "下面循环会依次输出什么？\nfor (int i = 0; i \u003c 3; i++) {\n    std::cout \u003c\u003c i;\n}",
+    "options": [
+      "123",
+      "0123",
+      "321",
+      "012"
+    ],
+    "answer_index": 3,
+    "explanation": "i 依次为 0、1、2，因此输出 012。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "cpp-011",
+    "prompt": "执行 int result = 7 / 2; 后，result 的值是多少？",
+    "options": [
+      "3",
+      "3.5",
+      "4",
+      "2"
+    ],
+    "answer_index": 0,
+    "explanation": "两个 int 相除会进行整数除法，小数部分被舍去，因此结果为 3。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "cpp-012",
+    "prompt": "包含 \u003ciostream\u003e 后，哪一项可以从标准输入读取整数 age？",
+    "options": [
+      "std::cout \u003e\u003e age;",
+      "std::cin \u003e\u003e age;",
+      "input(age);",
+      "scanf(age);"
+    ],
+    "answer_index": 1,
+    "explanation": "std::cin 配合 \u003e\u003e 运算符可以从标准输入读取值。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "cpp-013",
+    "prompt": "已有 std::vector\u003cint\u003e values{1, 2, 3};，怎样取得元素数量？",
+    "options": [
+      "values.length",
+      "len(values)",
+      "values.size()",
+      "sizeof(values)"
+    ],
+    "answer_index": 2,
+    "explanation": "std::vector 的 size() 成员函数返回当前元素数量。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "cpp-014",
+    "prompt": "若 std::vector\u003cint\u003e values{10, 20};，怎样取得第一个元素？",
+    "options": [
+      "values(0)",
+      "values[1]",
+      "values.first()",
+      "values[0]"
+    ],
+    "answer_index": 3,
+    "explanation": "vector 与数组一样从下标 0 开始访问元素。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "cpp-015",
+    "prompt": "哪一项是合法的 C++ 条件判断写法？",
+    "options": [
+      "if (score \u003e= 60) { }",
+      "if score \u003e= 60 then",
+      "when score \u003e= 60 { }",
+      "if score \u003e= 60:"
+    ],
+    "answer_index": 0,
+    "explanation": "C++ 的 if 条件写在圆括号中，代码块通常写在花括号中。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "cpp-016",
+    "prompt": "C++ 中表示逻辑“或者”的运算符是哪一个？",
+    "options": [
+      "\u0026\u0026",
+      "||",
+      "or=",
+      "|="
+    ],
+    "answer_index": 1,
+    "explanation": "|| 是逻辑或运算符，只要一侧为 true，结果通常就是 true。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "cpp-017",
+    "prompt": "哪一项定义了一个接收两个 int 并返回 int 的 add 函数？",
+    "options": [
+      "func add(a, b int) int",
+      "def add(a, b):",
+      "int add(int a, int b) { return a + b; }",
+      "function int add(a, b)"
+    ],
+    "answer_index": 2,
+    "explanation": "C++ 函数定义需要写返回类型、函数名、带类型的参数和函数体。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "cpp-018",
+    "prompt": "已有 int value = 5;，哪一项声明了 value 的引用 ref？",
+    "options": [
+      "int *ref = value;",
+      "ref int = value;",
+      "int ref* = value;",
+      "int \u0026ref = value;"
+    ],
+    "answer_index": 3,
+    "explanation": "int \u0026ref = value 声明 ref 为 value 的左值引用。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "cpp-019",
+    "prompt": "哪一项声明了初始化后不能被重新赋值的整数 maxCount？",
+    "options": [
+      "const int maxCount = 10;",
+      "fixed int maxCount = 10;",
+      "readonly maxCount = 10;",
+      "int constant maxCount = 10;"
+    ],
+    "answer_index": 0,
+    "explanation": "const 修饰的对象不能通过该名称再次修改。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "cpp-020",
+    "prompt": "C++11 起，推荐用哪个空指针字面量？",
+    "options": [
+      "nil",
+      "nullptr",
+      "None",
+      "empty"
+    ],
+    "answer_index": 1,
+    "explanation": "nullptr 是 C++11 引入的类型安全空指针字面量。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "cpp-021",
+    "prompt": "std::cout \u003c\u003c \"Hello\" \u003c\u003c std::endl; 中 std::endl 的主要作用是什么？",
+    "options": [
+      "结束程序",
+      "清空字符串",
+      "换行并刷新输出缓冲区",
+      "读取一行"
+    ],
+    "answer_index": 2,
+    "explanation": "std::endl 会插入换行符，并刷新输出缓冲区。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "cpp-022",
+    "prompt": "执行 auto count = 42; 时，count 通常会被推导为什么类型？",
+    "options": [
+      "double",
+      "std::string",
+      "bool",
+      "int"
+    ],
+    "answer_index": 3,
+    "explanation": "整数字面量 42 默认是 int，因此 auto 会把 count 推导为 int。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "cpp-023",
+    "prompt": "已有 std::vector\u003cint\u003e values，哪一项可以依次遍历其中的每个整数？",
+    "options": [
+      "for (int value : values) { }",
+      "for value in values { }",
+      "foreach value values { }",
+      "loop (values as value) { }"
+    ],
+    "answer_index": 0,
+    "explanation": "范围 for 循环使用 for (元素声明 : 容器) 的形式。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "cpp-024",
+    "prompt": "在 class 定义中，哪个访问说明符让后续成员可以从类外访问？",
+    "options": [
+      "open:",
+      "public:",
+      "export:",
+      "global:"
+    ],
+    "answer_index": 1,
+    "explanation": "public: 后的成员可以在符合其他规则时从类外访问。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "cpp-025",
+    "prompt": "若已有 class Animal {};，哪一项表示 Dog 公有继承 Animal？",
+    "options": [
+      "class Dog inherits Animal {};",
+      "class Dog(Animal) {};",
+      "class Dog : public Animal {};",
+      "class Dog extends Animal {};"
+    ],
+    "answer_index": 2,
+    "explanation": "C++ 使用冒号和 public 指定公有继承。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "cpp-026",
+    "prompt": "类名为 Student 时，它的构造函数名称是什么？",
+    "options": [
+      "new",
+      "constructor",
+      "init",
+      "Student"
+    ],
+    "answer_index": 3,
+    "explanation": "构造函数与类同名，并且不写返回类型。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "cpp-027",
+    "prompt": "类名为 Student 时，析构函数应写成哪一项？",
+    "options": [
+      "~Student()",
+      "delete Student()",
+      "Student~()",
+      "destroy Student()"
+    ],
+    "answer_index": 0,
+    "explanation": "析构函数名称是在类名前加波浪号，例如 ~Student()。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "cpp-028",
+    "prompt": "向 std::vector\u003cint\u003e values 的末尾添加 5，应使用哪一项？",
+    "options": [
+      "values.append(5);",
+      "values.push_back(5);",
+      "values.add(5);",
+      "push(values, 5);"
+    ],
+    "answer_index": 1,
+    "explanation": "vector 的 push_back 会在末尾添加一个元素。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "cpp-029",
+    "prompt": "在 switch 的 case 中，哪个关键字常用于结束当前分支，避免继续执行后续 case？",
+    "options": [
+      "stop",
+      "exit",
+      "break",
+      "returnCase"
+    ],
+    "answer_index": 2,
+    "explanation": "break 会结束当前 switch，避免继续落入后续 case。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "cpp-030",
+    "prompt": "动态创建的 int* value = new int(5); 不再使用时，应该怎样释放？",
+    "options": [
+      "free(value);",
+      "remove value;",
+      "clear(value);",
+      "delete value;"
+    ],
+    "answer_index": 3,
+    "explanation": "由 new 创建的单个对象应使用 delete 释放。",
+    "difficulty": "easy"
+  }
+]
