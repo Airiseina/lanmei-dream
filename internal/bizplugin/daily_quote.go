@@ -18,9 +18,10 @@ import (
 // ============================================================
 
 const (
-	dailyQuoteAPIURL       = "https://v1.hitokoto.cn/"
-	dailyQuoteHTTPTimeout  = 10 * time.Second
-	dailyQuoteMaxBodyBytes = 1 << 20 // 1 MiB，防止异常上游返回过大响应
+	dailyQuoteAPIURL        = "https://v1.hitokoto.cn/"
+	dailyQuoteHTTPTimeout   = 10 * time.Second
+	dailyQuoteMaxBodyBytes  = 1 << 20 // 1 MiB，防止异常上游返回过大响应
+	dailyQuoteSuppressAtKey = "bot.reply.suppress_requester_at"
 )
 
 // DailyQuotePlugin 调用一言接口返回一句话及其出处、作者。
@@ -115,6 +116,7 @@ type dailyQuotePass struct {
 }
 
 func (pass *dailyQuotePass) Execute(ctx *conduit.MessageContext) error {
+	conduit.Set(ctx, dailyQuoteSuppressAtKey, true)
 	quote, err := pass.fetch(ctx)
 	if err != nil {
 		pass.logger.Warn("daily_quote: 获取每日一句失败", zap.Error(err))

@@ -24,6 +24,8 @@ const (
 	KeyIsSegment      = "bot.is_segment"    // bool 标记流式段落重入消息
 	KeyStreamChannel  = "bot.stream.ch"     // chan string 流式段落通道
 	KeyIsSuperUser    = "bot.is_super_user" // bool 当前用户是否为超管（OnMessage 注入）
+	// KeySuppressRequesterAt 为 true 时，本次文本回复不自动 @ 请求者。
+	KeySuppressRequesterAt = "bot.reply.suppress_requester_at"
 
 	// ── 出站段输出（data，插件经 conduit.Set 写入，回调读取后按段发送）──
 	KeySendSegments = "bot.send.segments" // []map[string]any OneBot 原生段列表（at/text/image 组合）
@@ -202,6 +204,7 @@ func (p *ExecuteCommandPass) Execute(ctx *conduit.MessageContext) error {
 
 	var replies []string
 	var replySegments []map[string]any
+	suppressRequesterAt := false
 	cmdCtx := &command.Context{
 		Platform:       platformFromCtx(ctx),
 		PlatformUserID: platformUserIDFromCtx(ctx),
@@ -212,6 +215,9 @@ func (p *ExecuteCommandPass) Execute(ctx *conduit.MessageContext) error {
 		Message:        ctx.RawMsg,
 		Reply:          func(s string) { replies = append(replies, s) },
 		ReplySegments:  func(segments []map[string]any) { replySegments = segments },
+		SuppressRequesterAt: func() {
+			suppressRequesterAt = true
+		},
 		SelfID:         SelfIDFromCtx(ctx),
 		AtTargets:      AtTargetsFromCtx(ctx),
 		Nickname:       nicknameFromCtx(ctx),
@@ -227,6 +233,9 @@ func (p *ExecuteCommandPass) Execute(ctx *conduit.MessageContext) error {
 	if len(replySegments) > 0 {
 		// 原生段优先级高于文本输出，与 Bot.flushOutput 的发送规则一致。
 		conduit.Set(ctx, KeySendSegments, replySegments)
+	}
+	if suppressRequesterAt {
+		conduit.Set(ctx, KeySuppressRequesterAt, true)
 	}
 
 	for _, r := range replies {

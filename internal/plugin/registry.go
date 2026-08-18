@@ -605,6 +605,9 @@ func (r *Registry) makeCommandHandler(p Plugin, cmd CommandDef) func(ctx *comman
 		if segments, ok := conduit.Get[[]map[string]any](result, "bot.send.segments"); ok && len(segments) > 0 && cmdCtx.ReplySegments != nil {
 			cmdCtx.ReplySegments(segments)
 		}
+		if suppressAt, ok := conduit.Get[bool](result, "bot.reply.suppress_requester_at"); ok && suppressAt && cmdCtx.SuppressRequesterAt != nil {
+			cmdCtx.SuppressRequesterAt()
+		}
 		for _, msg := range result.Output {
 			cmdCtx.Reply(msg.Content)
 		}
