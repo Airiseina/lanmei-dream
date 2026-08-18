@@ -41,8 +41,8 @@ func (p *RandomGamesPlugin) Info() pluginpkg.PluginInfo {
 		Description: "QQ 原生猜拳、六面骰子动画与跨平台文字降级",
 		Version:     "1.0.0",
 		Commands: []pluginpkg.CommandDef{
-			{Name: "猜拳", Description: "开始随机猜拳；仅当用户明确说出石头、剪刀或布时提取该词为参数，否则不传参数"},
-			{Name: "骰子", Description: "掷一枚六面骰子；此命令不需要参数"},
+			{Name: "猜拳", Description: "开始随机猜拳；仅当用户明确说出石头、剪刀或布时提取该词为参数，否则不传参数", Order: 131},
+			{Name: "骰子", Description: "掷一枚六面骰子；此命令不需要参数", Order: 132},
 		},
 		SubtreeID: pluginpkg.SubtreeID("random_games"),
 	}

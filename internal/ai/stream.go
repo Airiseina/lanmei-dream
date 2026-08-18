@@ -63,6 +63,8 @@ func (s *ChatService) chatStreamWithToolLoop(
 	queryVec []float32,
 	lastMsgContent string,
 ) (*llm.ChatResponse, error) {
+	// 注入调用者平台身份，工具 handler 通过 tool.CallerFrom 读取
+	ctx = s.withCaller(ctx, req)
 	// 获取 chatModel（绑定工具或使用 base model）
 	chatModel, err := s.getStreamChatModel(einoClient)
 	if err != nil {

@@ -41,7 +41,7 @@ func (p *PingPlugin) Info() pluginpkg.PluginInfo {
 		Description: "响应Ping命令",
 		Version:     "1.0.0",
 		Commands: []pluginpkg.CommandDef{
-			{Name: "ping", Description: "测试机器人是否在线"},
+			{Name: "ping", Description: "测试机器人是否在线", Order: 30},
 		},
 		SubtreeID: pluginpkg.SubtreeID("ping"),
 		Tools: []pluginpkg.ToolDef{

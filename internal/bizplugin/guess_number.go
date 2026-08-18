@@ -52,8 +52,8 @@ func (p *GuessNumberPlugin) Info() pluginpkg.PluginInfo {
 		Description: "1～100 猜数字游戏（同群单局、可揭晓、10 分钟超时）",
 		Version:     "1.0.0",
 		Commands: []pluginpkg.CommandDef{
-			{Name: "猜数字", Description: "开始游戏或提交猜测，格式：/猜数字 50"},
-			{Name: "揭晓数字", Description: "揭晓答案并结束当前游戏"},
+			{Name: "猜数字", Description: "开始游戏或提交猜测，格式：/猜数字 50", Order: 133},
+			{Name: "揭晓数字", Description: "揭晓答案并结束当前游戏", Order: 134},
 		},
 		SubtreeID: pluginpkg.SubtreeID("guess_number"),
 	}

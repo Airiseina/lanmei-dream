@@ -99,6 +99,9 @@ type CommandDef struct {
 
 	// Description 命令描述，用于帮助信息和意图分析
 	Description string
+
+	// Order 帮助列表排序权重，小的在前；0（未设置）排在末尾
+	Order int
 }
 
 // ToolDef 描述插件提供的 AI 工具

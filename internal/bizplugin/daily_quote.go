@@ -59,7 +59,7 @@ func (p *DailyQuotePlugin) Info() pluginpkg.PluginInfo {
 		Description: "从一言接口获取一句话及其出处和作者",
 		Version:     "1.0.0",
 		Commands: []pluginpkg.CommandDef{
-			{Name: "每日一句", Description: "获取每日一句、一言或一句话，并显示出处和作者；此命令不需要参数"},
+			{Name: "每日一句", Description: "获取每日一句、一言或一句话，并显示出处和作者；此命令不需要参数", Order: 50},
 		},
 		SubtreeID: pluginpkg.SubtreeID("daily_quote"),
 	}

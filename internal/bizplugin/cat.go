@@ -44,8 +44,8 @@ func (p *CatPlugin) Info() pluginpkg.PluginInfo {
 		Description: "随机猫猫图片",
 		Version:     "1.0.0",
 		Commands: []pluginpkg.CommandDef{
-			{Name: "猫猫", Description: "随机猫猫图片"},
-			{Name: "哈基米", Description: "随机猫猫图片"},
+			{Name: "猫猫", Description: "随机猫猫图片", Order: 91}, // /哈基米 的别名，紧跟其后
+			{Name: "哈基米", Description: "随机猫猫图片", Order: 90},
 		},
 		SubtreeID: pluginpkg.SubtreeID("cat"),
 		Tools: []pluginpkg.ToolDef{

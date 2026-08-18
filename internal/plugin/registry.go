@@ -250,6 +250,7 @@ func (r *Registry) InitPlugin(ctx context.Context, pluginID string) error {
 			Name:        cmd.Name,
 			Description: cmd.Description,
 			Handler:     r.makeCommandHandler(p, cmd),
+			Order:       cmd.Order,
 		}); err != nil {
 			r.mu.RLock()
 			failedState := r.pluginState[pluginID]

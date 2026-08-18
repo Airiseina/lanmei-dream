@@ -118,12 +118,13 @@ func (p *RoleplayStreamPass) runStream(
 	defer close(segCh)
 
 	req := &llm.ChatRequest{
-		Messages:     []llm.Message{{Role: llm.RoleUser, Content: userMsg}},
-		UserID:       userID,
-		UserName:     nickname,
-		GroupName:    groupID,
-		GroupID:      groupID,
-		TopicContext: topicCtx,
+		Messages:       []llm.Message{{Role: llm.RoleUser, Content: userMsg}},
+		UserID:         userID,
+		UserName:       nickname,
+		GroupName:      groupID,
+		GroupID:        groupID,
+		PlatformUserID: senderID, // 平台用户 ID（conduit ctx.UserID），供工具调用身份注入
+		TopicContext:   topicCtx,
 	}
 
 	// 记录流式生成耗时与内容长度，便于排查"决策回复但无消息"类问题
@@ -156,12 +157,13 @@ func (p *RoleplayStreamPass) runStream(
 	if strings.TrimSpace(resp.Content) == "" {
 		p.Logger.Warn("roleplay: LLM 返回空响应，重试一次", zap.String("user", senderID))
 		retryReq := &llm.ChatRequest{
-			Messages:     []llm.Message{{Role: llm.RoleUser, Content: userMsg}},
-			UserID:       userID,
-			UserName:     nickname,
-			GroupName:    groupID,
-			GroupID:      groupID,
-			TopicContext: topicCtx,
+			Messages:       []llm.Message{{Role: llm.RoleUser, Content: userMsg}},
+			UserID:         userID,
+			UserName:       nickname,
+			GroupName:      groupID,
+			GroupID:        groupID,
+			PlatformUserID: senderID,
+			TopicContext:   topicCtx,
 		}
 		retryCtx, retryCancel := context.WithTimeout(context.Background(), 30*time.Second)
 		retryResp, retryErr := p.Chat.ChatStream(retryCtx, retryReq, segCh)
@@ -178,6 +180,24 @@ func (p *RoleplayStreamPass) runStream(
 			}
 			sendCancel()
 			return
+		}
+	}
+
+	// 表情提示词计数器：统计 Bot 在本群/私聊中发出的自然语言（LLM 触发）回复数。
+	// 本轮回复实际调用了 pick_sticker（回复携带表情）→ 清零重新计数，否则累加。
+	if p.Chat != nil {
+		scope := replyScopeFor(groupID, senderID)
+		sentSticker := false
+		for _, t := range resp.InvolvedTools {
+			if t == "pick_sticker" {
+				sentSticker = true
+				break
+			}
+		}
+		if sentSticker {
+			p.Chat.ResetReplyCount(scope)
+		} else {
+			p.Chat.IncReplyCount(scope)
 		}
 	}
 
@@ -214,6 +234,15 @@ func respContentLen(resp *llm.ChatResponse) int {
 		return 0
 	}
 	return utf8.RuneCountInString(resp.Content)
+}
+
+// replyScopeFor 计算表情计数的作用域：群聊用 groupID，私聊用 "dm:"+平台用户ID。
+// 与 ai 包内 assembleContext 注入提示词时的作用域保持一致。
+func replyScopeFor(groupID, platformUserID string) string {
+	if groupID != "" {
+		return groupID
+	}
+	return "dm:" + platformUserID
 }
 
 // ── RoleplaySegmentPass：流式段落交付 ──

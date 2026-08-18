@@ -213,6 +213,7 @@ func main() {
 		Name:        "帮助",
 		Description: "显示可用命令",
 		Handler:     cmdSys.HelpHandler,
+		Order:       51, // 紧跟 /help（50）之后
 	}); err != nil {
 		logger.Fatal("注册帮助命令失败", zap.Error(err))
 	}
@@ -221,6 +222,7 @@ func main() {
 		Name:        "help",
 		Description: "显示可用命令",
 		Handler:     cmdSys.HelpHandler,
+		Order:       50,
 	}); err != nil {
 		logger.Fatal("注册 help 命令失败", zap.Error(err))
 	}
@@ -294,9 +296,16 @@ func main() {
 
 	// 硬性表情规则：把表情库插件的随机表情能力注入 Bot（未启用/未注册时自动跳过）。
 	// 使 bot 每回复 10~20 条消息会周期性附带一张表情，不依赖 LLM 主动调用。
+	// 同时装配表情提示词计数器：统计 Bot 在本群/私聊的自然语言回复数，
+	// 以"当前计数{count}"注入 System Prompt，引导 LLM 约每五到十句发一次表情。
 	if p, ok := pluginReg.Get("sticker"); ok {
 		if inj, ok := p.(bot.StickerEmotionInjector); ok {
 			b.SetStickerInjector(inj)
+			counter := ai.NewReplyCounter()
+			if chatSvc != nil {
+				chatSvc.SetReplyCounter(counter)
+			}
+			b.SetStickerCounter(counter)
 		}
 	}
 

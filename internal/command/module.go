@@ -41,6 +41,10 @@ type Command struct {
 	Name        string
 	Description string
 	Handler     func(ctx *Context) error
+
+	// Order 帮助列表排序权重，小的在前；0（未设置）排在末尾，
+	// 同权重按命令名排序。动态安装的插件命令无需设置，自动排在最后。
+	Order int
 }
 
 // System 并发安全地管理所有已注册命令。
@@ -127,11 +131,28 @@ func (s *System) List() []Command {
 	return commands
 }
 
-// HelpHandler 是内置帮助命令。
+// HelpHandler 内置帮助命令：动态遍历全部注册命令，
+// 按 Order 权重排序（0 排末尾，动态安装的插件命令自动在最后）。
 func (s *System) HelpHandler(ctx *Context) error {
+	commands := s.List()
+
+	sort.SliceStable(commands, func(i, j int) bool {
+		oi, oj := commands[i].Order, commands[j].Order
+		if oi == 0 {
+			oi = 1 << 30 // 未设置权重 → 排末尾
+		}
+		if oj == 0 {
+			oj = 1 << 30
+		}
+		if oi != oj {
+			return oi < oj
+		}
+		return commands[i].Name < commands[j].Name
+	})
+
 	var builder strings.Builder
-	builder.WriteString("📋 可用命令:\n")
-	for _, cmd := range s.List() {
+	builder.WriteString("可用命令:\n")
+	for _, cmd := range commands {
 		builder.WriteString(fmt.Sprintf("  /%s — %s\n", cmd.Name, cmd.Description))
 	}
 	ctx.Reply(builder.String())
