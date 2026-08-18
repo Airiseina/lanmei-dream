@@ -124,6 +124,8 @@ func initFlags() {
 	// Skills 路径
 	pflag.String("skills.dir", "", "Skill 目录")
 	pflag.String("skills.config", "", "Skill 配置文件路径")
+	// Quiz 题库路径
+	pflag.String("quiz.dir", "", "编程答题题库目录")
 }
 
 func setDefaults(v *viper.Viper) {
@@ -188,6 +190,9 @@ func setDefaults(v *viper.Viper) {
 	// Skills 默认路径
 	v.SetDefault("skills.dir", "./skills")
 	v.SetDefault("skills.config", "./config/skills.toml")
+
+	// Quiz 默认题库路径
+	v.SetDefault("quiz.dir", "./quizdata")
 
 	// Knowledge 默认值（知识库默认关闭，需在配置中显式启用）
 	v.SetDefault("knowledge.enabled", false)

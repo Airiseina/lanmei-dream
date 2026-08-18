@@ -14,6 +14,7 @@ type Config struct {
 	Log       LogConfig       `mapstructure:"log"`
 	Prompts   PromptsConfig   `mapstructure:"prompts"`
 	Skills    SkillsConfig    `mapstructure:"skills"`
+	Quiz      QuizConfig      `mapstructure:"quiz"`
 	Knowledge KnowledgeConfig `mapstructure:"knowledge"`
 	Manager   ManagerConfig   `mapstructure:"manager"`
 }
@@ -237,6 +238,11 @@ type PromptsConfig struct {
 type SkillsConfig struct {
 	Dir    string `mapstructure:"dir"`
 	Config string `mapstructure:"config"`
+}
+
+// QuizConfig 编程答题题库路径配置
+type QuizConfig struct {
+	Dir string `mapstructure:"dir"`
 }
 
 // KnowledgeConfig 知识库系统配置

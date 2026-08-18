@@ -33,6 +33,7 @@ type BusinessRegistry struct {
 	store             *media.ObjectStore           // RustFS 对象存储（表情库插件使用，未配置时为 nil）
 	llmClient         llm.LLMClient                // LLM 客户端（海龟汤插件出题/判定使用，未配置时为 nil）
 	turtleSoupTimeout time.Duration                // 海龟汤出题/判定 LLM 调用独立超时（<=0 不限制）
+	quizDir           string                       // 编程答题题库根目录
 	logger            *zap.Logger
 }
 
@@ -68,6 +69,11 @@ func (r *BusinessRegistry) SetLLMClient(client llm.LLMClient) {
 // SetTurtleSoupTimeout 设置海龟汤出题/判定 LLM 调用的独立超时（<=0 不限制）。
 func (r *BusinessRegistry) SetTurtleSoupTimeout(timeout time.Duration) {
 	r.turtleSoupTimeout = timeout
+}
+
+// SetQuizDir 设置编程答题题库根目录。
+func (r *BusinessRegistry) SetQuizDir(dir string) {
+	r.quizDir = dir
 }
 
 // RegisterBuiltins 按配置注册所有内置业务插件。
@@ -175,7 +181,7 @@ func (r *BusinessRegistry) RegisterBuiltins() error {
 	}
 
 	// ── 编程答题游戏插件──
-	if err := register(builtins.GuessNumber, "guess_number", NewGuessNumberPlugin()); err != nil {
+	if err := register(builtins.GuessNumber, "guess_number", NewGuessNumberPlugin(r.quizDir)); err != nil {
 		return err
 	}
 

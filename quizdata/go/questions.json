@@ -1,0 +1,392 @@
+[
+  {
+    "id": "go-001",
+    "prompt": "可直接编译为可执行程序的 Go 源文件通常属于哪个包？",
+    "options": [
+      "run",
+      "main",
+      "app",
+      "start"
+    ],
+    "answer_index": 1,
+    "explanation": "Go 可执行程序使用 package main，并提供 main 函数。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "go-002",
+    "prompt": "在 Go 函数内部，哪一项可以简短声明变量 name 并赋值为 \"蓝妹\"？",
+    "options": [
+      "name := \"蓝妹\"",
+      "string name = \"蓝妹\"",
+      "let name = \"蓝妹\"",
+      "name ::= \"蓝妹\""
+    ],
+    "answer_index": 0,
+    "explanation": ":= 可在 Go 函数内部声明并初始化变量。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "go-003",
+    "prompt": "导入 fmt 包后，哪一项可以输出一行文字？",
+    "options": [
+      "fmt.PrintLine(\"Hi\")",
+      "System.out.println(\"Hi\")",
+      "fmt.Println(\"Hi\")",
+      "console.log(\"Hi\")"
+    ],
+    "answer_index": 2,
+    "explanation": "fmt.Println 会输出参数并在末尾换行。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "go-004",
+    "prompt": "Go 使用哪个关键字编写循环？",
+    "options": [
+      "while",
+      "loop",
+      "repeat",
+      "for"
+    ],
+    "answer_index": 3,
+    "explanation": "Go 只提供 for 这一种循环关键字。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "go-005",
+    "prompt": "下面哪一项是包含 1、2、3 的 Go 整数切片字面量？",
+    "options": [
+      "[]int{1, 2, 3}",
+      "int[1, 2, 3]",
+      "list\u003cint\u003e{1, 2, 3}",
+      "[1, 2, 3]int"
+    ],
+    "answer_index": 0,
+    "explanation": "[]int{1, 2, 3} 会创建一个 int 切片。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "go-006",
+    "prompt": "Go 中调用可能失败的函数后，最常见的错误检查条件是什么？",
+    "options": [
+      "if error",
+      "if err != nil",
+      "catch err",
+      "if err == true"
+    ],
+    "answer_index": 1,
+    "explanation": "Go 通常显式检查返回的 err 是否不为 nil。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "go-007",
+    "prompt": "Go 数组和切片的第一个元素下标是多少？",
+    "options": [
+      "-1",
+      "1",
+      "0",
+      "由长度决定"
+    ],
+    "answer_index": 2,
+    "explanation": "Go 数组和切片都从下标 0 开始。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "go-008",
+    "prompt": "执行 values := []string{\"a\", \"b\", \"c\"}; len(values) 的结果是什么？",
+    "options": [
+      "2",
+      "4",
+      "0",
+      "3"
+    ],
+    "answer_index": 3,
+    "explanation": "切片 values 中有三个元素，因此 len(values) 为 3。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "go-009",
+    "prompt": "Go 中已声明的 int 变量未显式赋初值时，它的零值是什么？",
+    "options": [
+      "0",
+      "nil",
+      "1",
+      "未定义"
+    ],
+    "answer_index": 0,
+    "explanation": "Go 的整数类型零值为 0。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "go-010",
+    "prompt": "Go 中用于按多个分支选择执行代码的关键字是什么？",
+    "options": [
+      "selectOnly",
+      "switch",
+      "choose",
+      "when"
+    ],
+    "answer_index": 1,
+    "explanation": "switch 用于根据表达式或条件选择分支。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "go-011",
+    "prompt": "Go 中哪一项声明了值为 10 的常量 Max？",
+    "options": [
+      "const Max = 10",
+      "constant Max = 10",
+      "final Max = 10",
+      "let Max = 10"
+    ],
+    "answer_index": 0,
+    "explanation": "Go 使用 const 关键字声明常量。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "go-012",
+    "prompt": "哪一项可以在 Go 的包级作用域声明 int 变量 age，并赋值为 18？",
+    "options": [
+      "age := 18",
+      "var age int = 18",
+      "int age = 18",
+      "let age: int = 18"
+    ],
+    "answer_index": 1,
+    "explanation": "包级变量使用 var 声明；简短声明 := 只能用在函数内部。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "go-013",
+    "prompt": "哪一项定义了一个接收两个 int 并返回 int 的 Go 函数？",
+    "options": [
+      "function add(a int, b int): int {}",
+      "int add(int a, int b) {}",
+      "func add(a int, b int) int {}",
+      "def add(a: int, b: int) -\u003e int:"
+    ],
+    "answer_index": 2,
+    "explanation": "Go 函数以 func 开头，返回类型写在参数列表之后。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "go-014",
+    "prompt": "下面哪一项是返回 int 和 string 两个值的合法 Go 函数？",
+    "options": [
+      "func pair() int, string { return 1, \"a\" }",
+      "func pair() [int, string] { return 1, \"a\" }",
+      "func pair() tuple { return 1, \"a\" }",
+      "func pair() (int, string) { return 1, \"a\" }"
+    ],
+    "answer_index": 3,
+    "explanation": "Go 将多个返回类型写在圆括号中，并可一次返回多个值。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "go-015",
+    "prompt": "下面哪一项是把字符串映射到整数的 Go map 字面量？",
+    "options": [
+      "map[string]int{\"a\": 1}",
+      "map\u003cstring, int\u003e{\"a\": 1}",
+      "{\"a\" = 1}",
+      "dict[string]int{\"a\": 1}"
+    ],
+    "answer_index": 0,
+    "explanation": "map[string]int 表示键为 string、值为 int 的映射。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "go-016",
+    "prompt": "已有 scores := map[string]int{\"蓝妹\": 10}，哪一项能同时取得值和键是否存在？",
+    "options": [
+      "value := scores.get(\"蓝妹\")",
+      "value, ok := scores[\"蓝妹\"]",
+      "value, ok := scores.get(\"蓝妹\")",
+      "ok, value := has(scores, \"蓝妹\")"
+    ],
+    "answer_index": 1,
+    "explanation": "读取 map 时可接收第二个布尔值，用来判断键是否存在。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "go-017",
+    "prompt": "已有 values := []int{1, 2}，怎样把 3 添加到切片末尾并保存结果？",
+    "options": [
+      "values.add(3)",
+      "append(values, 3)",
+      "values = append(values, 3)",
+      "push(values, 3)"
+    ],
+    "answer_index": 2,
+    "explanation": "append 返回更新后的切片，因此通常要把结果重新赋给原变量。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "go-018",
+    "prompt": "哪一项可以遍历切片 values，并同时取得下标 i 和元素 v？",
+    "options": [
+      "for (i, v) in values {}",
+      "foreach i, v in values {}",
+      "for i, v of values {}",
+      "for i, v := range values {}"
+    ],
+    "answer_index": 3,
+    "explanation": "Go 使用 for 和 range 遍历切片，range 可产生下标和值。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "go-019",
+    "prompt": "在 Go 函数中写 defer cleanup()，cleanup 通常会在什么时候执行？",
+    "options": [
+      "所在函数即将返回时",
+      "程序编译之前",
+      "每次循环开始时",
+      "永远不会执行"
+    ],
+    "answer_index": 0,
+    "explanation": "defer 会把函数调用推迟到当前函数返回前执行。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "go-020",
+    "prompt": "哪一项可以让 Go 函数 work 作为新的 goroutine 启动？",
+    "options": [
+      "async work()",
+      "go work()",
+      "thread work()",
+      "goroutine(work)"
+    ],
+    "answer_index": 1,
+    "explanation": "在函数调用前加 go，可以在新的 goroutine 中运行它。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "go-021",
+    "prompt": "哪一项创建了一个传递 int 的 Go 通道？",
+    "options": [
+      "ch := channel\u003cint\u003e()",
+      "ch := new(channel int)",
+      "ch := make(chan int)",
+      "chan ch = int"
+    ],
+    "answer_index": 2,
+    "explanation": "make(chan int) 会创建一个可传递 int 值的通道。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "go-022",
+    "prompt": "哪一项定义了包含 Name string 字段的 Go 结构体 Student？",
+    "options": [
+      "class Student { Name string }",
+      "struct Student(Name string)",
+      "type Student class { Name string }",
+      "type Student struct { Name string }"
+    ],
+    "answer_index": 3,
+    "explanation": "Go 使用 type 名称 struct 的形式定义结构体。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "go-023",
+    "prompt": "Go 中若希望标识符可被其他包访问，它的名称通常应怎样书写？",
+    "options": [
+      "首字母大写",
+      "全部小写",
+      "以数字开头",
+      "以 @ 开头"
+    ],
+    "answer_index": 0,
+    "explanation": "Go 使用首字母大写表示导出的标识符，其他包可以访问它。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "go-024",
+    "prompt": "已有 p := \u0026number，哪个表达式可以取得 p 指向的值？",
+    "options": [
+      "\u0026p",
+      "*p",
+      "p.value",
+      "value(p)"
+    ],
+    "answer_index": 1,
+    "explanation": "对指针使用 * 可以取得它指向的值。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "go-025",
+    "prompt": "已有整数变量 n，哪一项可以把它显式转换为 float64？",
+    "options": [
+      "n.toFloat64()",
+      "(float64)n",
+      "float64(n)",
+      "cast\u003cfloat64\u003e(n)"
+    ],
+    "answer_index": 2,
+    "explanation": "Go 使用目标类型加圆括号的形式进行显式类型转换。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "go-026",
+    "prompt": "Go 中通常使用哪种类型表示一个 Unicode 码点？",
+    "options": [
+      "string",
+      "byte",
+      "char",
+      "rune"
+    ],
+    "answer_index": 3,
+    "explanation": "rune 是 int32 的别名，通常用于表示 Unicode 码点。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "go-027",
+    "prompt": "Go 中适合保存 true 或 false 的类型是什么？",
+    "options": [
+      "bool",
+      "boolean",
+      "truth",
+      "bit"
+    ],
+    "answer_index": 0,
+    "explanation": "Go 使用 bool 类型保存布尔值。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "go-028",
+    "prompt": "已有 map 变量 scores，怎样删除键 \"蓝妹\"？",
+    "options": [
+      "scores.remove(\"蓝妹\")",
+      "delete(scores, \"蓝妹\")",
+      "remove(scores[\"蓝妹\"])",
+      "scores[\"蓝妹\"] = delete"
+    ],
+    "answer_index": 1,
+    "explanation": "Go 使用内置函数 delete 从 map 中删除指定键。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "go-029",
+    "prompt": "Go 中想忽略一个不需要的返回值，通常使用哪个标识符？",
+    "options": [
+      "?",
+      "ignore",
+      "_",
+      "nil"
+    ],
+    "answer_index": 2,
+    "explanation": "下划线 _ 是空白标识符，可用于接收并忽略值。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "go-030",
+    "prompt": "已有 type Counter struct { Value int }，哪一项为 Counter 定义了 Get 方法？",
+    "options": [
+      "method Counter.Get() int { return Value }",
+      "func Counter.Get() int { return Counter.Value }",
+      "func Get(c Counter) method int { return c.Value }",
+      "func (c Counter) Get() int { return c.Value }"
+    ],
+    "answer_index": 3,
+    "explanation": "Go 方法在 func 后、方法名前写接收者，例如 (c Counter)。",
+    "difficulty": "easy"
+  }
+]

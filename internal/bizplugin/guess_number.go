@@ -3,16 +3,22 @@ package bizplugin
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math/rand/v2"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/DaWesen/lanmei-dream/internal/database"
 	pluginpkg "github.com/DaWesen/lanmei-dream/internal/plugin"
+	"github.com/fsnotify/fsnotify"
 	"github.com/zrurf/conduit"
+	"go.uber.org/zap"
 )
 
 // ============================================================
@@ -39,31 +45,50 @@ import (
 //
 //	pipeline.plugin.guess_number.main → [quizPass]
 type GuessNumberPlugin struct {
-	kv   *database.PluginKVStore
-	pass *quizPass
+	kv      *database.PluginKVStore
+	quizDir string
+	logger  *zap.Logger
+	bank    atomic.Pointer[quizBank]
+	pass    *quizPass
+	watcher *quizBankWatcher
 }
 
-// NewGuessNumberPlugin 创建编程答题插件。
-func NewGuessNumberPlugin() *GuessNumberPlugin { return &GuessNumberPlugin{} }
+// NewGuessNumberPlugin 创建编程答题插件。quizDir 为题库根目录（语言子目录）。
+func NewGuessNumberPlugin(quizDir string) *GuessNumberPlugin {
+	return &GuessNumberPlugin{quizDir: quizDir}
+}
 
 // Info 返回编程答题插件元信息。
 func (p *GuessNumberPlugin) Info() pluginpkg.PluginInfo {
 	return pluginpkg.PluginInfo{
 		ID:          "guess_number",
 		Name:        "编程答题",
-		Description: "Java、Go、Python、C、C++ 新手选择题抢答（每轮五题、每题两次机会）",
-		Version:     "2.1.0",
+		Description: "多语言新手选择题抢答（每轮五题、每题两次机会，题库可由 quizdata 目录扩展）",
+		Version:     "2.2.0",
 		Commands: []pluginpkg.CommandDef{
-			{Name: "答题", Description: "开始编程选择题，可选 Java/Go/Python/C/C++，例如：/答题 go python", Order: 133},
+			{Name: "答题", Description: "开始编程选择题，可指定语言与难度，例如：/答题 go python 困难", Order: 133},
 		},
 		SubtreeID: pluginpkg.SubtreeID("guess_number"),
 	}
 }
 
-// OnInit 注册编程答题 Pass、Pipeline 和 Subtree。
+// OnInit 加载题库并注册编程答题 Pass、Pipeline 和 Subtree。
 func (p *GuessNumberPlugin) OnInit(ctx *pluginpkg.PluginContext) error {
 	p.kv = ctx.KV
-	p.pass = newQuizPass(p.kv)
+	p.logger = ctx.Logger
+
+	bank, err := loadQuizBank(p.quizDir)
+	if err != nil {
+		// 题库加载失败不阻断插件注册：以空题库降级，避免 quizdata 未挂载时整机崩溃。
+		if p.logger != nil {
+			p.logger.Warn("quiz: 题库加载失败，编程答题暂时不可用", zap.Error(err))
+		}
+		bank = emptyQuizBank()
+	} else if p.logger != nil {
+		p.logger.Info("quiz: 题库就绪", zap.Int("languages", len(bank.languages)))
+	}
+	p.bank.Store(bank)
+	p.pass = newQuizPass(p.kv, &p.bank)
 
 	passID := pluginpkg.PassID("guess_number", "main")
 	if err := ctx.Engine.RegisterPass(passID, p.pass); err != nil {
@@ -93,15 +118,610 @@ func (p *GuessNumberPlugin) OnInit(ctx *pluginpkg.PluginContext) error {
 	return nil
 }
 
-// OnStart 编程答题插件无需额外启动任务；计时器随每轮游戏创建。
-func (p *GuessNumberPlugin) OnStart(_ *pluginpkg.PluginContext) error { return nil }
+// OnStart 启动题库目录监听，支持热更新（文件变更会整体替换题库快照）。
+func (p *GuessNumberPlugin) OnStart(_ *pluginpkg.PluginContext) error {
+	if p.quizDir == "" {
+		return nil
+	}
+	watcher, err := startQuizBankWatcher(p.quizDir, p.reloadBank)
+	if err != nil {
+		if p.logger != nil {
+			p.logger.Warn("quiz: 启动题库热更新监听失败", zap.Error(err))
+		}
+		return nil
+	}
+	p.watcher = watcher
+	return nil
+}
 
-// OnStop 停止所有题目计时器并关闭异步消息通道。
+// OnStop 停止题库目录监听、所有题目计时器与异步消息通道。
 func (p *GuessNumberPlugin) OnStop(_ *pluginpkg.PluginContext) error {
+	if p.watcher != nil {
+		p.watcher.close()
+		p.watcher = nil
+	}
 	if p.pass != nil {
 		p.pass.stopAll()
 	}
 	return nil
+}
+
+// reloadBank 重新加载题库并原子替换；失败时保留旧题库，保证正在进行的轮次不受影响。
+func (p *GuessNumberPlugin) reloadBank() {
+	bank, err := loadQuizBank(p.quizDir)
+	if err != nil {
+		if p.logger != nil {
+			p.logger.Warn("quiz: 题库热重载失败，继续使用旧题库", zap.Error(err))
+		}
+		return
+	}
+	p.bank.Store(bank)
+	if p.logger != nil {
+		p.logger.Info("quiz: 题库已热重载", zap.Int("languages", len(bank.languages)))
+	}
+}
+
+// ============================================================
+// 题库（数据模型）
+// ============================================================
+//
+// 题目不再硬编码于 Go 源码，而是存放在 quizdata/ 目录下，按「语言目录 →
+// *.json」组织（见下方 loadQuizBank）。本节定义数据模型、难度枚举与语言元数据
+// 单点表，供加载器、选题逻辑与格式化共用。
+
+// quizLanguage 是题库使用的编程语言标识，即 quizdata/ 下的语言目录名。
+type quizLanguage string
+
+// 内置语言常量（历史兼容）。语言目录由目录扫描自动发现，这些常量仅用于
+// 元数据登记与测试；新增语言无需在此登记即可被扫描加载。
+const (
+	quizLanguageJava   quizLanguage = "java"
+	quizLanguageGo     quizLanguage = "go"
+	quizLanguagePython quizLanguage = "python"
+	quizLanguageC      quizLanguage = "c"
+	quizLanguageCPP    quizLanguage = "cpp"
+)
+
+// quizLanguageMeta 描述一门语言的展示名、别名与展示顺序。
+type quizLanguageMeta struct {
+	Name    string   // 展示名
+	Aliases []string // 玩家可输入的别名词（如 golang / py / c++）
+	Order   int      // 展示顺序，小的在前
+}
+
+// quizLanguageMetadata 是内置语言的单点元数据来源：展示名、别名解析、
+// 帮助文案与语言排序都由此派生，避免在多处硬编码 switch。
+//
+// 新增语言**无需**在此登记即可被扫描加载（展示名自动标题化、别名等于目录名）；
+// 如需更友好的展示名 / 别名，在这里追加一条即可。
+var quizLanguageMetadata = map[quizLanguage]quizLanguageMeta{
+	quizLanguageJava:   {Name: "Java", Aliases: []string{"java"}, Order: 1},
+	quizLanguageGo:     {Name: "Go", Aliases: []string{"go", "golang"}, Order: 2},
+	quizLanguagePython: {Name: "Python", Aliases: []string{"python", "py"}, Order: 3},
+	quizLanguageC:      {Name: "C", Aliases: []string{"c"}, Order: 4},
+	quizLanguageCPP:    {Name: "C++", Aliases: []string{"c++", "c＋＋", "cpp"}, Order: 5},
+}
+
+// quizLanguageName 返回语言的展示名；未登记的未知语言回退为标题化目录名。
+func quizLanguageName(lang quizLanguage) string {
+	if meta, ok := quizLanguageMetadata[lang]; ok {
+		return meta.Name
+	}
+	return titleLanguage(string(lang))
+}
+
+// quizLanguageAliases 返回语言的别名词表；未登记的未知语言仅以目录名为别名。
+func quizLanguageAliases(lang quizLanguage) []string {
+	if meta, ok := quizLanguageMetadata[lang]; ok {
+		return meta.Aliases
+	}
+	return []string{string(lang)}
+}
+
+// quizLanguageOrder 返回语言展示顺序；未登记的未知语言排在末尾（按名称稳定排序）。
+func quizLanguageOrder(lang quizLanguage) int {
+	if meta, ok := quizLanguageMetadata[lang]; ok {
+		return meta.Order
+	}
+	return 1000
+}
+
+// titleLanguage 将目录名（如 "rust" / "c++"）转为适合展示的标题形式。
+func titleLanguage(id string) string {
+	if id == "" {
+		return id
+	}
+	r := []rune(id)
+	for i, c := range r {
+		if c >= 'a' && c <= 'z' {
+			r[i] = c - ('a' - 'A')
+			break
+		}
+	}
+	return string(r)
+}
+
+// String 返回适合展示给玩家的语言名称。
+func (language quizLanguage) String() string {
+	return quizLanguageName(language)
+}
+
+// quizDifficulty 是题目难度。
+type quizDifficulty string
+
+// 难度枚举。JSON 字段值使用小写英文（与中文名解耦，便于序列化），
+// 展示时经 String() 转为中文。
+const (
+	quizDifficultyEasy   quizDifficulty = "easy"
+	quizDifficultyMedium quizDifficulty = "medium"
+	quizDifficultyHard   quizDifficulty = "hard"
+)
+
+// String 返回难度中文名。
+func (d quizDifficulty) String() string {
+	switch d {
+	case quizDifficultyEasy:
+		return "简单"
+	case quizDifficultyMedium:
+		return "中等"
+	case quizDifficultyHard:
+		return "困难"
+	default:
+		return ""
+	}
+}
+
+// valid 判断难度值是否合法。
+func (d quizDifficulty) valid() bool {
+	switch d {
+	case quizDifficultyEasy, quizDifficultyMedium, quizDifficultyHard:
+		return true
+	default:
+		return false
+	}
+}
+
+// quizQuestion 是一道四选一的编程题，AnswerIndex 使用 0～3 依次对应 A～D。
+type quizQuestion struct {
+	ID          string         `json:"id"`
+	Language    quizLanguage   `json:"language"`
+	Prompt      string         `json:"prompt"`
+	Options     []string       `json:"options"`
+	AnswerIndex int            `json:"answer_index"`
+	Explanation string         `json:"explanation"`
+	Difficulty  quizDifficulty `json:"difficulty"`
+}
+
+// validQuizQuestion 校验单题是否可用于出题与恢复回合。
+// 加载题库与恢复回合时共用同一套不变量：必填字段齐全、四选一、答案下标合法、
+// 选项无重复、难度合法。
+func validQuizQuestion(question quizQuestion) bool {
+	if strings.TrimSpace(question.ID) == "" ||
+		strings.TrimSpace(question.Prompt) == "" ||
+		strings.TrimSpace(question.Explanation) == "" {
+		return false
+	}
+	if len(question.Options) != 4 {
+		return false
+	}
+	if question.AnswerIndex < 0 || question.AnswerIndex > 3 {
+		return false
+	}
+	seen := make(map[string]struct{}, 4)
+	for _, option := range question.Options {
+		if strings.TrimSpace(option) == "" {
+			return false
+		}
+		if _, dup := seen[option]; dup {
+			return false
+		}
+		seen[option] = struct{}{}
+	}
+	return question.Difficulty.valid()
+}
+
+// ============================================================
+// 题库加载与扩展
+// ============================================================
+//
+// 题库采用「目录即语言」的组织方式，扫描过程中自动发现语言与题目，新增语言
+// 无需修改任何 Go 代码：
+//
+//	quizdata/
+//	  java/questions.json      # 目录名即语言标识 quizLanguage
+//	  go/questions.json
+//	  rust/questions.json      # 新增语言：建目录 + 放 JSON 即可
+//
+// 每个 *.json 文件是一个题目数组，可拆分为多个文件（如 easy.json / hard.json），
+// 按难度归类的文件也能被自动合并。单题结构见 quizQuestion。
+
+// quizBank 是一份线程安全的题目快照（加载后不可变，热重载时整体替换）。
+type quizBank struct {
+	languages []quizLanguage
+	questions map[quizLanguage][]quizQuestion
+	aliases   map[string]quizLanguage // 归一化别名 → 语言
+}
+
+func emptyQuizBank() *quizBank {
+	return &quizBank{
+		questions: make(map[quizLanguage][]quizQuestion),
+		aliases:   make(map[string]quizLanguage),
+	}
+}
+
+// loadQuizBank 递归扫描 dir 下每个语言子目录里的 *.json 并合并校验。
+// 任一份文件解析/校验失败都会整体失败，避免“半截题库”被悄悄启用。
+func loadQuizBank(dir string) (*quizBank, error) {
+	bank := emptyQuizBank()
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, fmt.Errorf("quiz: 读取题库目录 %s 失败: %w", dir, err)
+	}
+
+	seenID := make(map[string]quizLanguage)
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		language := quizLanguage(entry.Name())
+		questions, err := loadLanguageQuestions(language, filepath.Join(dir, entry.Name()))
+		if err != nil {
+			return nil, err
+		}
+		if len(questions) == 0 {
+			continue
+		}
+
+		bank.languages = append(bank.languages, language)
+		bank.questions[language] = questions
+		for _, alias := range quizLanguageAliases(language) {
+			bank.aliases[normalizeAlias(alias)] = language
+		}
+		for _, question := range questions {
+			if prev, dup := seenID[question.ID]; dup {
+				return nil, fmt.Errorf("quiz: 题目 ID %q 在语言 %q 与 %q 之间重复", question.ID, prev, language)
+			}
+			seenID[question.ID] = language
+		}
+	}
+
+	sort.Slice(bank.languages, func(i, j int) bool {
+		return quizLanguageLess(bank.languages[i], bank.languages[j])
+	})
+	return bank, nil
+}
+
+// loadLanguageQuestions 读取指定语言目录下所有 *.json 文件并合并。
+func loadLanguageQuestions(language quizLanguage, dir string) ([]quizQuestion, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, fmt.Errorf("quiz: 读取题库目录 %s 失败: %w", dir, err)
+	}
+
+	var all []quizQuestion
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(strings.ToLower(entry.Name()), ".json") {
+			continue
+		}
+		path := filepath.Join(dir, entry.Name())
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			return nil, fmt.Errorf("quiz: 读取题库文件 %s 失败: %w", path, err)
+		}
+
+		var questions []quizQuestion
+		if err := json.Unmarshal(raw, &questions); err != nil {
+			return nil, fmt.Errorf("quiz: 解析题库文件 %s 失败: %w", path, err)
+		}
+
+		for i := range questions {
+			question := &questions[i]
+			question.Language = language
+			if question.Difficulty == "" {
+				question.Difficulty = quizDifficultyEasy
+			}
+			if !validQuizQuestion(*question) {
+				return nil, fmt.Errorf("quiz: 题库文件 %s 第 %d 题校验失败", path, i+1)
+			}
+		}
+		all = append(all, questions...)
+	}
+	return all, nil
+}
+
+func quizLanguageLess(a, b quizLanguage) bool {
+	ao, bo := quizLanguageOrder(a), quizLanguageOrder(b)
+	if ao != bo {
+		return ao < bo
+	}
+	return quizLanguageName(a) < quizLanguageName(b)
+}
+
+// ============================================================
+// 输入解析（语言 + 难度）
+// ============================================================
+
+func normalizeAlias(raw string) string {
+	return strings.ToLower(strings.TrimSpace(raw))
+}
+
+// isAllKeyword 判断字段是否为“全部语言”关键字。
+func isAllKeyword(raw string) bool {
+	switch strings.ToLower(raw) {
+	case "all", "全部", "混合":
+		return true
+	default:
+		return false
+	}
+}
+
+// parseDifficultyToken 解析难度关键字（中英文），不支持时返回 false。
+func parseDifficultyToken(raw string) (quizDifficulty, bool) {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "简单", "easy":
+		return quizDifficultyEasy, true
+	case "中等", "medium":
+		return quizDifficultyMedium, true
+	case "困难", "hard":
+		return quizDifficultyHard, true
+	default:
+		return "", false
+	}
+}
+
+// resolveLanguage 将玩家输入（别名或目录名）解析为该题库已加载的语言。
+func (bank *quizBank) resolveLanguage(raw string) (quizLanguage, bool) {
+	language, ok := bank.aliases[normalizeAlias(raw)]
+	return language, ok
+}
+
+// parseQuizCommand 解析 /答题 后的参数：返回语言列表与可选的难度筛选。
+// 空参数表示全部语言、不限难度。
+func (bank *quizBank) parseQuizCommand(raw string) ([]quizLanguage, quizDifficulty, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return append([]quizLanguage(nil), bank.languages...), "", nil
+	}
+
+	normalized := strings.NewReplacer(",", " ", "，", " ", "、", " ", ";", " ", "；", " ").Replace(raw)
+	fields := strings.Fields(normalized)
+
+	var languages []quizLanguage
+	var difficulty quizDifficulty
+	var allRequested bool
+	seen := make(map[quizLanguage]bool, len(fields))
+
+	for _, field := range fields {
+		if d, ok := parseDifficultyToken(field); ok {
+			if difficulty != "" && difficulty != d {
+				return nil, "", fmt.Errorf("一轮只能选择一种难度")
+			}
+			difficulty = d
+			continue
+		}
+		if isAllKeyword(field) {
+			allRequested = true
+			continue
+		}
+		language, ok := bank.resolveLanguage(field)
+		if !ok {
+			return nil, "", fmt.Errorf("暂不支持语言 %q", field)
+		}
+		if !seen[language] {
+			seen[language] = true
+			languages = append(languages, language)
+		}
+	}
+
+	if allRequested {
+		if len(languages) > 0 {
+			return nil, "", fmt.Errorf("“全部”或“混合”不能与其他语言同时使用")
+		}
+		languages = append([]quizLanguage(nil), bank.languages...)
+	}
+	if len(languages) == 0 {
+		if len(bank.languages) == 0 {
+			return nil, "", fmt.Errorf("题库为空，请联系管理员补充题目")
+		}
+		// 仅给出难度（如“困难”）或仅分隔符时，默认覆盖全部语言。
+		languages = append([]quizLanguage(nil), bank.languages...)
+	}
+	return languages, difficulty, nil
+}
+
+// supportHint 返回错参数时的帮助提示，语言列表由当前题库动态生成。
+func (bank *quizBank) supportHint() string {
+	if len(bank.languages) == 0 {
+		return "题库为空，请联系管理员补充题目"
+	}
+	return "支持 " + formatQuizLanguages(bank.languages) +
+		"；例如：/答题 go python。不写语言时为全部混合，可追加 简单/中等/困难 按难度筛选。"
+}
+
+// ============================================================
+// 题目抽取
+// ============================================================
+
+// errNoDifficultyQuestions 表示所选语言在指定难度下没有任何题目，
+// 供调用方转换为友好的用户提示。
+var errNoDifficultyQuestions = errors.New("该难度没有题目")
+
+// selectQuestions 从所选语言中均衡抽取题目，按难度筛选（空难度表示不限）。
+// 同轮题目不重复，抽取结果随机洗牌。
+func (bank *quizBank) selectQuestions(languages []quizLanguage, count int, difficulty quizDifficulty) ([]quizQuestion, error) {
+	if len(languages) == 0 || count <= 0 {
+		return nil, fmt.Errorf("题目抽取参数无效")
+	}
+
+	order := append([]quizLanguage(nil), languages...)
+	shuffleQuizLanguages(order)
+
+	// 指定了难度但所有语言都没有该难度的题目时，返回专用哨兵错误。
+	if difficulty != "" {
+		total := 0
+		for _, language := range order {
+			total += len(bank.filterQuestions(language, difficulty))
+		}
+		if total == 0 {
+			return nil, errNoDifficultyQuestions
+		}
+	}
+	pools := make(map[quizLanguage][]quizQuestion, len(order))
+	positions := make(map[quizLanguage]int, len(order))
+	for _, language := range order {
+		questions := bank.filterQuestions(language, difficulty)
+		if len(questions) == 0 {
+			if difficulty == "" {
+				return nil, fmt.Errorf("%s 题库为空", quizLanguageName(language))
+			}
+			return nil, fmt.Errorf("%s 题库中没有「%s」题目", quizLanguageName(language), difficulty)
+		}
+		shuffleQuizQuestions(questions)
+		pools[language] = questions
+	}
+
+	selected := make([]quizQuestion, 0, count)
+	for len(selected) < count {
+		added := false
+		for _, language := range order {
+			position := positions[language]
+			if position >= len(pools[language]) {
+				continue
+			}
+			selected = append(selected, pools[language][position])
+			positions[language] = position + 1
+			added = true
+			if len(selected) == count {
+				break
+			}
+		}
+		if !added {
+			return nil, fmt.Errorf("所选难度题库不足 %d 题", count)
+		}
+	}
+	shuffleQuizQuestions(selected)
+	return selected, nil
+}
+
+// filterQuestions 返回指定语言、指定难度下的题目副本（空难度表示全部）。
+func (bank *quizBank) filterQuestions(language quizLanguage, difficulty quizDifficulty) []quizQuestion {
+	questions := bank.questions[language]
+	if difficulty == "" {
+		return append([]quizQuestion(nil), questions...)
+	}
+	filtered := make([]quizQuestion, 0, len(questions))
+	for _, question := range questions {
+		if question.Difficulty == difficulty {
+			filtered = append(filtered, question)
+		}
+	}
+	return filtered
+}
+
+func shuffleQuizLanguages(values []quizLanguage) {
+	for i := len(values) - 1; i > 0; i-- {
+		j := rand.IntN(i + 1)
+		values[i], values[j] = values[j], values[i]
+	}
+}
+
+func shuffleQuizQuestions(values []quizQuestion) {
+	for i := len(values) - 1; i > 0; i-- {
+		j := rand.IntN(i + 1)
+		values[i], values[j] = values[j], values[i]
+	}
+}
+
+// ============================================================
+// 热更新监听
+// ============================================================
+
+// quizBankWatcher 监听题库目录的文件变化，防抖后触发重载回调。
+type quizBankWatcher struct {
+	watcher  *fsnotify.Watcher
+	dir      string
+	onReload func()
+	debounce time.Duration
+	done     chan struct{}
+	once     sync.Once
+}
+
+// startQuizBankWatcher 启动题库目录监听。目录或其子目录不可访问时返回错误。
+func startQuizBankWatcher(dir string, onReload func()) (*quizBankWatcher, error) {
+	watcher, err := fsnotify.NewWatcher()
+	if err != nil {
+		return nil, fmt.Errorf("quiz: 创建文件监听失败: %w", err)
+	}
+	if err := addQuizBankWatches(watcher, dir); err != nil {
+		watcher.Close()
+		return nil, fmt.Errorf("quiz: 添加题库目录监听失败: %w", err)
+	}
+	qw := &quizBankWatcher{
+		watcher:  watcher,
+		dir:      dir,
+		onReload: onReload,
+		debounce: 300 * time.Millisecond,
+		done:     make(chan struct{}),
+	}
+	go qw.run()
+	return qw, nil
+}
+
+// addQuizBankWatches 监听题库根目录及其所有语言子目录。
+func addQuizBankWatches(watcher *fsnotify.Watcher, dir string) error {
+	if err := watcher.Add(dir); err != nil {
+		return err
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if entry.IsDir() {
+			if err := watcher.Add(filepath.Join(dir, entry.Name())); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func (qw *quizBankWatcher) run() {
+	var timer *time.Timer
+	schedule := func() {
+		if timer != nil {
+			timer.Stop()
+		}
+		timer = time.AfterFunc(qw.debounce, func() {
+			// 重载前重新同步子目录监听，覆盖“新增语言目录”的场景。
+			_ = addQuizBankWatches(qw.watcher, qw.dir)
+			qw.onReload()
+		})
+	}
+	for {
+		select {
+		case _, ok := <-qw.watcher.Events:
+			if !ok {
+				return
+			}
+			schedule()
+		case _, ok := <-qw.watcher.Errors:
+			if !ok {
+				return
+			}
+		case <-qw.done:
+			return
+		}
+	}
+}
+
+// close 停止监听并释放资源，幂等。
+func (qw *quizBankWatcher) close() {
+	qw.once.Do(func() {
+		close(qw.done)
+		qw.watcher.Close()
+	})
 }
 
 // ============================================================
@@ -136,55 +756,6 @@ func parseQuizChoice(raw string) (int, bool) {
 	default:
 		return 0, false
 	}
-}
-
-// parseQuizLanguages 解析 /答题 后的语言列表；空参数表示五种语言混合。
-func parseQuizLanguages(raw string) ([]quizLanguage, error) {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return append([]quizLanguage(nil), allQuizLanguages...), nil
-	}
-
-	normalized := strings.NewReplacer(
-		",", " ",
-		"，", " ",
-		"、", " ",
-		";", " ",
-		"；", " ",
-	).Replace(raw)
-	fields := strings.Fields(normalized)
-	languages := make([]quizLanguage, 0, len(fields))
-	seen := make(map[quizLanguage]bool, len(fields))
-	for _, field := range fields {
-		var language quizLanguage
-		switch strings.ToLower(field) {
-		case "all", "全部", "混合":
-			if len(fields) != 1 {
-				return nil, fmt.Errorf("“全部”或“混合”不能与其他语言同时使用")
-			}
-			return append([]quizLanguage(nil), allQuizLanguages...), nil
-		case "java":
-			language = quizLanguageJava
-		case "go", "golang":
-			language = quizLanguageGo
-		case "python", "py":
-			language = quizLanguagePython
-		case "c":
-			language = quizLanguageC
-		case "c++", "c＋＋", "cpp":
-			language = quizLanguageCPP
-		default:
-			return nil, fmt.Errorf("暂不支持语言 %q", field)
-		}
-		if !seen[language] {
-			seen[language] = true
-			languages = append(languages, language)
-		}
-	}
-	if len(languages) == 0 {
-		return nil, fmt.Errorf("至少选择一种编程语言")
-	}
-	return languages, nil
 }
 
 // ============================================================
@@ -243,64 +814,8 @@ func quizKey(groupID, userID string) string {
 }
 
 // ============================================================
-// 题目抽取与展示
+// 题目展示
 // ============================================================
-
-// selectQuizQuestions 从所选语言中均衡抽取题目；同轮题目不重复。
-func selectQuizQuestions(languages []quizLanguage, count int) ([]quizQuestion, error) {
-	if len(languages) == 0 || count <= 0 {
-		return nil, fmt.Errorf("题目抽取参数无效")
-	}
-
-	order := append([]quizLanguage(nil), languages...)
-	shuffleQuizLanguages(order)
-	pools := make(map[quizLanguage][]quizQuestion, len(order))
-	positions := make(map[quizLanguage]int, len(order))
-	for _, language := range order {
-		questions := append([]quizQuestion(nil), quizQuestionBank[language]...)
-		if len(questions) == 0 {
-			return nil, fmt.Errorf("%s 题库为空", language)
-		}
-		shuffleQuizQuestions(questions)
-		pools[language] = questions
-	}
-
-	selected := make([]quizQuestion, 0, count)
-	for len(selected) < count {
-		added := false
-		for _, language := range order {
-			position := positions[language]
-			if position >= len(pools[language]) {
-				continue
-			}
-			selected = append(selected, pools[language][position])
-			positions[language] = position + 1
-			added = true
-			if len(selected) == count {
-				break
-			}
-		}
-		if !added {
-			return nil, fmt.Errorf("所选题库不足 %d 题", count)
-		}
-	}
-	shuffleQuizQuestions(selected)
-	return selected, nil
-}
-
-func shuffleQuizLanguages(values []quizLanguage) {
-	for i := len(values) - 1; i > 0; i-- {
-		j := rand.IntN(i + 1)
-		values[i], values[j] = values[j], values[i]
-	}
-}
-
-func shuffleQuizQuestions(values []quizQuestion) {
-	for i := len(values) - 1; i > 0; i-- {
-		j := rand.IntN(i + 1)
-		values[i], values[j] = values[j], values[i]
-	}
-}
 
 func quizChoiceLetter(index int) string {
 	if index < 0 || index > 3 {
@@ -323,11 +838,15 @@ func formatQuizQuestion(game *quizGame, timeout time.Duration) string {
 	if seconds < 1 {
 		seconds = 1
 	}
+	label := question.Language.String()
+	if difficulty := question.Difficulty.String(); difficulty != "" {
+		label += " · " + difficulty
+	}
 	return fmt.Sprintf(
 		"📘 第 %d/%d 题 [%s]\n%s\n\nA. %s\nB. %s\nC. %s\nD. %s\n\n请直接发送 A/B/C/D 抢答（%d 秒内，每人本题最多作答 %d 次）。",
 		game.Current+1,
 		len(game.Questions),
-		question.Language,
+		label,
 		question.Prompt,
 		question.Options[0],
 		question.Options[1],
@@ -392,6 +911,7 @@ func formatQuizLeaderboard(game *quizGame) string {
 // quizPass 按命令处理开局与抢答，并串行保护轮次状态和计时器。
 type quizPass struct {
 	kv               quizKVStore
+	bank             *atomic.Pointer[quizBank]
 	mu               sync.Mutex
 	runtimes         map[string]*quizRuntime
 	generationSerial uint64
@@ -399,9 +919,10 @@ type quizPass struct {
 	now              func() time.Time
 }
 
-func newQuizPass(kv quizKVStore) *quizPass {
+func newQuizPass(kv quizKVStore, bank *atomic.Pointer[quizBank]) *quizPass {
 	return &quizPass{
 		kv:              kv,
+		bank:            bank,
 		runtimes:        make(map[string]*quizRuntime),
 		questionTimeout: quizQuestionTimeout,
 		now:             time.Now,
@@ -507,9 +1028,14 @@ func (pass *quizPass) start(ctx *conduit.MessageContext, rawLanguages string) er
 		return nil
 	}
 
-	languages, err := parseQuizLanguages(rawLanguages)
+	bank := pass.bank.Load()
+	if bank == nil {
+		pass.reply(ctx, "编程答题题库未加载，请稍后再试~")
+		return nil
+	}
+	languages, difficulty, err := bank.parseQuizCommand(rawLanguages)
 	if err != nil {
-		pass.reply(ctx, err.Error()+"。\n支持 Java、Go、Python、C、C++；例如：/答题 go python。不写语言时为五种混合。")
+		pass.reply(ctx, err.Error()+"。\n"+bank.supportHint())
 		return nil
 	}
 
@@ -540,8 +1066,12 @@ func (pass *quizPass) start(ctx *conduit.MessageContext, rawLanguages string) er
 	}
 	pass.finishRuntimeLocked(key, "")
 
-	questions, err := selectQuizQuestions(languages, quizQuestionCount)
+	questions, err := bank.selectQuestions(languages, quizQuestionCount, difficulty)
 	if err != nil {
+		if errors.Is(err, errNoDifficultyQuestions) {
+			pass.reply(ctx, "暂时没有该题型，联系工作室的大佬们添加叭~")
+			return nil
+		}
 		return fmt.Errorf("guess_number: select questions: %w", err)
 	}
 	now := pass.currentTime()
@@ -722,18 +1252,6 @@ func validQuizGame(game *quizGame) bool {
 	}
 	for _, question := range game.Questions {
 		if !validQuizQuestion(question) {
-			return false
-		}
-	}
-	return true
-}
-
-func validQuizQuestion(question quizQuestion) bool {
-	if question.ID == "" || question.Prompt == "" || question.Explanation == "" || question.AnswerIndex < 0 || question.AnswerIndex > 3 {
-		return false
-	}
-	for _, option := range question.Options {
-		if strings.TrimSpace(option) == "" {
 			return false
 		}
 	}

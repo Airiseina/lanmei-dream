@@ -1,0 +1,392 @@
+[
+  {
+    "id": "java-001",
+    "prompt": "在 Java 中，哪一行代码可以输出一行文字？",
+    "options": [
+      "System.out.println(\"Hello\");",
+      "print(\"Hello\")",
+      "fmt.Println(\"Hello\")",
+      "printf(\"Hello\")"
+    ],
+    "answer_index": 0,
+    "explanation": "Java 常用 System.out.println 输出一行内容。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "java-002",
+    "prompt": "下面哪个是常见的 Java 程序入口方法？",
+    "options": [
+      "func main()",
+      "public static void main(String[] args)",
+      "int main()",
+      "def main():"
+    ],
+    "answer_index": 1,
+    "explanation": "Java 应用通常从 public static void main(String[] args) 开始执行。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "java-003",
+    "prompt": "Java 表达式 2 + 3 * 2 的结果是多少？",
+    "options": [
+      "10",
+      "12",
+      "8",
+      "7"
+    ],
+    "answer_index": 2,
+    "explanation": "乘法优先于加法，所以先算 3 * 2，再加 2，结果为 8。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "java-004",
+    "prompt": "若 int[] numbers = {10, 20, 30};，怎样取得第一个元素？",
+    "options": [
+      "numbers[1]",
+      "numbers.first()",
+      "numbers(0)",
+      "numbers[0]"
+    ],
+    "answer_index": 3,
+    "explanation": "Java 数组下标从 0 开始，第一个元素是 numbers[0]。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "java-005",
+    "prompt": "在 Java 中，通常用哪个方法比较两个字符串的内容是否相同？",
+    "options": [
+      "equals()",
+      "same()",
+      "compareText()",
+      "match()"
+    ],
+    "answer_index": 0,
+    "explanation": "字符串内容比较通常使用 equals 方法。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "java-006",
+    "prompt": "Java 中表示逻辑“并且”的运算符是哪一个？",
+    "options": [
+      "||",
+      "\u0026\u0026",
+      "!",
+      "=="
+    ],
+    "answer_index": 1,
+    "explanation": "\u0026\u0026 只有在左右两个条件都为 true 时才得到 true。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "java-007",
+    "prompt": "下面循环会依次输出什么？\nfor (int i = 0; i \u003c 3; i++) {\n    System.out.print(i);\n}",
+    "options": [
+      "123",
+      "0123",
+      "012",
+      "321"
+    ],
+    "answer_index": 2,
+    "explanation": "i 从 0 开始，在 i 等于 3 前停止，因此输出 012。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "java-008",
+    "prompt": "已有 class Student {}，哪一项可以创建一个 Student 对象？",
+    "options": [
+      "Student.create()",
+      "Student()",
+      "create Student",
+      "new Student()"
+    ],
+    "answer_index": 3,
+    "explanation": "Java 使用 new 调用构造方法创建对象。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "java-009",
+    "prompt": "执行 int x = 5; x++; 后，x 的值是多少？",
+    "options": [
+      "6",
+      "4",
+      "5",
+      "55"
+    ],
+    "answer_index": 0,
+    "explanation": "++ 会让整数变量的值增加 1。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "java-010",
+    "prompt": "Java 中适合保存 true 或 false 的基本类型是什么？",
+    "options": [
+      "int",
+      "boolean",
+      "String",
+      "char"
+    ],
+    "answer_index": 1,
+    "explanation": "boolean 类型只有 true 和 false 两种取值。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "java-011",
+    "prompt": "下面哪一项声明了 int 变量 score，并将它初始化为 100？",
+    "options": [
+      "int score = 100;",
+      "score := 100",
+      "integer score = 100;",
+      "var score: int = 100;"
+    ],
+    "answer_index": 0,
+    "explanation": "Java 使用“类型 变量名 = 值;”的形式声明并初始化变量。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "java-012",
+    "prompt": "执行 String text = \"Java\"; 后，表达式 text + 8 的结果是什么？",
+    "options": [
+      "12",
+      "Java8",
+      "8Java",
+      "编译错误"
+    ],
+    "answer_index": 1,
+    "explanation": "字符串与整数使用 + 连接时，整数会转成文字，因此结果是 Java8。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "java-013",
+    "prompt": "哪一项是合法的 Java 条件判断写法？",
+    "options": [
+      "if score \u003e= 60 then {}",
+      "when (score \u003e= 60) {}",
+      "if (score \u003e= 60) {}",
+      "if score \u003e= 60: {}"
+    ],
+    "answer_index": 2,
+    "explanation": "Java 的 if 条件写在圆括号中，代码块通常写在花括号中。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "java-014",
+    "prompt": "Java 中哪个关键字可以在条件为 true 时重复执行代码块？",
+    "options": [
+      "repeat",
+      "loop",
+      "until",
+      "while"
+    ],
+    "answer_index": 3,
+    "explanation": "while 会在条件为 true 时重复执行它的代码块。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "java-015",
+    "prompt": "已有 int[] numbers = {4, 5, 6};，怎样取得数组长度？",
+    "options": [
+      "numbers.length",
+      "numbers.length()",
+      "len(numbers)",
+      "numbers.size()"
+    ],
+    "answer_index": 0,
+    "explanation": "Java 数组通过 length 字段取得长度，不需要加圆括号。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "java-016",
+    "prompt": "表达式 \"Lanmei\".length() 的结果是多少？",
+    "options": [
+      "5",
+      "6",
+      "7",
+      "8"
+    ],
+    "answer_index": 1,
+    "explanation": "字符串 Lanmei 包含 6 个字符，因此 length() 返回 6。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "java-017",
+    "prompt": "哪一项可以把字符串 \"42\" 转换为 int 值 42？",
+    "options": [
+      "int(\"42\")",
+      "String.toInt(\"42\")",
+      "Integer.parseInt(\"42\")",
+      "parse(\"42\")"
+    ],
+    "answer_index": 2,
+    "explanation": "Integer.parseInt 可以把符合整数格式的字符串转换为 int。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "java-018",
+    "prompt": "已有 ArrayList\u003cString\u003e names = new ArrayList\u003c\u003e();，怎样添加元素 \"蓝妹\"？",
+    "options": [
+      "names.push(\"蓝妹\");",
+      "names.append(\"蓝妹\");",
+      "add(names, \"蓝妹\");",
+      "names.add(\"蓝妹\");"
+    ],
+    "answer_index": 3,
+    "explanation": "ArrayList 的 add 方法用于添加元素。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "java-019",
+    "prompt": "执行 final int level = 1; 后，下面哪种说法正确？",
+    "options": [
+      "level 之后不能再次被赋值",
+      "level 会自动变成 2",
+      "level 只能在循环中使用",
+      "level 的类型变成 String"
+    ],
+    "answer_index": 0,
+    "explanation": "final 变量完成赋值后不能再被重新赋值。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "java-020",
+    "prompt": "Java 中哪个访问修饰符通常提供最宽的可见范围？",
+    "options": [
+      "private",
+      "public",
+      "protected",
+      "final"
+    ],
+    "answer_index": 1,
+    "explanation": "public 成员通常可以被其他类访问。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "java-021",
+    "prompt": "哪一项定义了一个返回两个 int 之和的静态方法？",
+    "options": [
+      "func add(a int, b int) int { return a + b; }",
+      "static add(int a, int b) { a + b; }",
+      "static int add(int a, int b) { return a + b; }",
+      "def add(a, b): return a + b"
+    ],
+    "answer_index": 2,
+    "explanation": "Java 方法要写返回类型、方法名、参数和方法体，并用 return 返回结果。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "java-022",
+    "prompt": "Java 表达式 17 % 5 的结果是多少？",
+    "options": [
+      "0",
+      "3",
+      "3.4",
+      "2"
+    ],
+    "answer_index": 3,
+    "explanation": "% 计算整数除法的余数，17 除以 5 的余数是 2。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "java-023",
+    "prompt": "下面哪一项正确声明了字符变量 grade？",
+    "options": [
+      "char grade = 'A';",
+      "char grade = \"A\";",
+      "character grade = 'A';",
+      "String grade = 'A';"
+    ],
+    "answer_index": 0,
+    "explanation": "Java 的 char 字面量使用单引号，例如 'A'。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "java-024",
+    "prompt": "下面哪一项可以保存小数 19.5？",
+    "options": [
+      "int price = 19.5;",
+      "double price = 19.5;",
+      "boolean price = 19.5;",
+      "char price = 19.5;"
+    ],
+    "answer_index": 1,
+    "explanation": "double 是 Java 中常用的浮点数基本类型，可以保存 19.5。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "java-025",
+    "prompt": "Java 引用变量的值为 null，通常表示什么？",
+    "options": [
+      "它保存数字 0",
+      "它保存空字符串",
+      "它当前没有指向对象",
+      "它一定指向新对象"
+    ],
+    "answer_index": 2,
+    "explanation": "null 表示引用当前没有指向任何对象。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "java-026",
+    "prompt": "Java 中通常用哪组关键字捕获并处理异常？",
+    "options": [
+      "if 和 else",
+      "switch 和 case",
+      "check 和 handle",
+      "try 和 catch"
+    ],
+    "answer_index": 3,
+    "explanation": "可能抛出异常的代码放在 try 中，异常处理代码写在 catch 中。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "java-027",
+    "prompt": "在传统的 switch case: 写法中，break 通常有什么作用？",
+    "options": [
+      "结束当前 switch 分支",
+      "重新执行当前分支",
+      "声明一个变量",
+      "比较两个字符串"
+    ],
+    "answer_index": 0,
+    "explanation": "break 会结束当前 switch，避免继续执行后续 case。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "java-028",
+    "prompt": "若 Dog 类要继承 Animal 类，应使用哪个关键字？",
+    "options": [
+      "implements",
+      "extends",
+      "inherits",
+      "superclass"
+    ],
+    "answer_index": 1,
+    "explanation": "Java 类使用 extends 继承另一个类。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "java-029",
+    "prompt": "若 Bird 类要实现 Flyable 接口，应使用哪个关键字？",
+    "options": [
+      "extends",
+      "interface",
+      "implements",
+      "instanceof"
+    ],
+    "answer_index": 2,
+    "explanation": "Java 类使用 implements 声明它实现某个接口。",
+    "difficulty": "easy"
+  },
+  {
+    "id": "java-030",
+    "prompt": "Java 表达式 Math.max(4, 9) 的结果是多少？",
+    "options": [
+      "4",
+      "13",
+      "36",
+      "9"
+    ],
+    "answer_index": 3,
+    "explanation": "Math.max 返回两个参数中较大的一个，因此结果是 9。",
+    "difficulty": "easy"
+  }
+]
