@@ -83,7 +83,7 @@ type PluginConfig struct {
 // 成人内容、擦边内容与 AI 图片过滤是不可关闭的代码级安全下限。
 type RandomBeautyConfig struct {
 	APIBaseURL               string  `mapstructure:"api_base_url"`
-	TimeoutSeconds           int     `mapstructure:"timeout_seconds"`
+	TimeoutSeconds           int     `mapstructure:"timeout_seconds"` // 补图单张拉取预算（候选+下载），仅约束补图后台，不约束用户取图
 	MaxAttempts              int     `mapstructure:"max_attempts"`
 	CooldownSeconds          int     `mapstructure:"cooldown_seconds"`
 	MaxImageBytes            int64   `mapstructure:"max_image_bytes"`
@@ -92,6 +92,10 @@ type RandomBeautyConfig struct {
 	MinBookmarks             int     `mapstructure:"min_bookmarks"`
 	SafeConfidence           float64 `mapstructure:"safe_confidence"`
 	ModerationTimeoutSeconds int     `mapstructure:"moderation_timeout_seconds"`
+	// PoolInitSize 图池种子目标张数（补图后台循环补到该数量为止）
+	PoolInitSize int `mapstructure:"pool_init_size"`
+	// RefillModerationTimeoutSeconds 补图单张视觉审核（含上传）预算
+	RefillModerationTimeoutSeconds int `mapstructure:"refill_moderation_timeout_seconds"`
 }
 
 // PluginBuiltinsConfig 内置业务插件开关。

@@ -212,7 +212,7 @@ func (r *BusinessRegistry) RegisterBuiltins() error {
 	} else if _, loaded := r.registry.Get("random_beauty"); loaded {
 		logger.Info("bizplugin: 插件已由 Wasm 动态加载，跳过内置注册", zap.String("plugin", "random_beauty"))
 	} else {
-		p, err := randombeauty.New(r.randomBeautyConfig, r.vision, logger)
+		p, err := randombeauty.New(r.randomBeautyConfig, r.vision, r.store, logger)
 		if err != nil {
 			return fmt.Errorf("bizplugin: 创建 random_beauty 插件失败: %w", err)
 		}
