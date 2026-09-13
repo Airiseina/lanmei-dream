@@ -41,6 +41,7 @@ func (db *DB) Migrate(ctx context.Context, vectorDim int) error {
 		&model.PluginKV{},
 		&model.KnowledgeChunk{},
 		&model.StickerLibrary{},
+		&model.RandomBeautyPool{},
 		&model.BotAdmin{},
 		&model.GroupFact{},
 		// 管理面板（Manager）专属表

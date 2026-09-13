@@ -6,9 +6,12 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/DaWesen/lanmei-dream/internal/config"
+	"github.com/DaWesen/lanmei-dream/internal/database"
+	"github.com/DaWesen/lanmei-dream/internal/media"
 	pluginpkg "github.com/DaWesen/lanmei-dream/internal/plugin"
 	"github.com/zrurf/conduit"
 	"go.uber.org/zap"
@@ -24,19 +27,37 @@ const (
 	messageRateLimited = "请求太频繁啦，请稍后再试"
 )
 
-type imageSelector interface {
-	Select(ctx context.Context) (*SelectedImage, error)
-}
-
-// Plugin 是严格安全审核的 Pixiv 随机美图内置插件。
+// Plugin 是严格安全审核的 Pixiv 随机美图插件（预审核图池模式）。
+//
+// 用户路径只读池（Postgres + RustFS）毫秒级出图；
+// 「候选 → 下载 → vision 审核」全部前置到补图后台 goroutine（见 refill.go）。
 type Plugin struct {
-	cfg      config.RandomBeautyConfig
-	selector imageSelector
-	logger   *zap.Logger
+	cfg        config.RandomBeautyConfig
+	provider   CandidateProvider
+	downloader ImageDownloader
+	moderator  ImageModerator
+	store      *media.ObjectStore
+	db         *database.DB
+	logger     *zap.Logger
+
+	// 补图后台任务编排：
+	//   - refillCtx：补图专用上下文，OnStop 取消，绝不引用消息 ctx；
+	//   - wg：跟踪所有补图 goroutine，OnStop 等待其退出；
+	//   - sem：补图并发闸门（峰值 refillConcurrency）；
+	//   - seed：进程内只触发一次的种子补图入口；
+	//   - warnStoreUnavailable：对象存储缺失时只 Warn 一次。
+	refillCtx            context.Context
+	refillCancel         context.CancelFunc
+	wg                   sync.WaitGroup
+	sem                  chan struct{}
+	seed                 func()
+	warnStoreUnavailable func()
 }
 
 // New 使用 Random Mage 兼容 API 构建随机美图插件。
-func New(cfg config.RandomBeautyConfig, moderator ImageModerator, logger *zap.Logger) (*Plugin, error) {
+// moderator 为 nil 时无法补图（fail-closed，仅能发送池内既有图片）；
+// store 为 nil 时图池不可用，取图一律降级回复失败提示。
+func New(cfg config.RandomBeautyConfig, moderator ImageModerator, store *media.ObjectStore, logger *zap.Logger) (*Plugin, error) {
 	cfg = normalizedConfig(cfg)
 	if logger == nil {
 		logger = zap.NewNop()
@@ -51,33 +72,45 @@ func New(cfg config.RandomBeautyConfig, moderator ImageModerator, logger *zap.Lo
 	if err != nil {
 		return nil, err
 	}
-	var selected imageSelector
-	if moderator != nil {
-		selected = newSelector(
-			provider,
-			downloader,
-			moderator,
-			cfg.MaxAttempts,
-			cfg.SafeConfidence,
-			time.Duration(cfg.ModerationTimeoutSeconds)*time.Second,
-			logger,
-		)
+	if moderator == nil {
+		logger.Warn("random_beauty: 视觉审核未配置，无法补图，仅能发送池内既有图片")
 	}
-	return newPluginWithSelector(cfg, selected, logger), nil
+	return newPluginWithDeps(cfg, provider, downloader, moderator, store, logger), nil
 }
 
-func newPluginWithSelector(cfg config.RandomBeautyConfig, selected imageSelector, logger *zap.Logger) *Plugin {
+// newPluginWithDeps 按依赖组装插件，供测试注入替身。
+func newPluginWithDeps(cfg config.RandomBeautyConfig, provider CandidateProvider, downloader ImageDownloader, moderator ImageModerator, store *media.ObjectStore, logger *zap.Logger) *Plugin {
 	if logger == nil {
 		logger = zap.NewNop()
 	}
-	return &Plugin{cfg: normalizedConfig(cfg), selector: selected, logger: logger}
+	cfg = normalizedConfig(cfg)
+	refillCtx, cancel := context.WithCancel(context.Background())
+	p := &Plugin{
+		cfg:          cfg,
+		provider:     provider,
+		downloader:   downloader,
+		moderator:    moderator,
+		store:        store,
+		logger:       logger,
+		refillCtx:    refillCtx,
+		refillCancel: cancel,
+		sem:          make(chan struct{}, refillConcurrency),
+	}
+	p.seed = sync.OnceFunc(func() {
+		p.wg.Go(p.seedLoop)
+	})
+	p.warnStoreUnavailable = sync.OnceFunc(func() {
+		p.logger.Warn("random_beauty: 对象存储未配置，图池不可用")
+	})
+	return p
 }
 
 func normalizedConfig(cfg config.RandomBeautyConfig) config.RandomBeautyConfig {
 	if strings.TrimSpace(cfg.APIBaseURL) == "" {
 		cfg.APIBaseURL = "https://i.mukyu.ru"
 	}
-	if cfg.TimeoutSeconds < 1 || cfg.TimeoutSeconds > 18 {
+	// 补图单张拉取预算（候选+下载）：上限放宽到 30，超范围回退默认 18。
+	if cfg.TimeoutSeconds < 1 || cfg.TimeoutSeconds > 30 {
 		cfg.TimeoutSeconds = 18
 	}
 	if cfg.MaxAttempts < 1 {
@@ -107,6 +140,14 @@ func normalizedConfig(cfg config.RandomBeautyConfig) config.RandomBeautyConfig {
 	if cfg.ModerationTimeoutSeconds < 1 || cfg.ModerationTimeoutSeconds > 20 {
 		cfg.ModerationTimeoutSeconds = 8
 	}
+	// 图池种子目标张数：默认 100，夹在 10~500。
+	if cfg.PoolInitSize < 10 || cfg.PoolInitSize > 500 {
+		cfg.PoolInitSize = 100
+	}
+	// 补图单张审核（含上传）预算：默认 25，夹在 5~30。
+	if cfg.RefillModerationTimeoutSeconds < 5 || cfg.RefillModerationTimeoutSeconds > 30 {
+		cfg.RefillModerationTimeoutSeconds = 25
+	}
 	return cfg
 }
 
@@ -115,7 +156,7 @@ func (p *Plugin) Info() pluginpkg.PluginInfo {
 		ID:          pluginID,
 		Name:        "随机美图",
 		Description: "获取经过成人内容与擦边内容安全审核的 Pixiv 随机插画",
-		Version:     "1.0.0",
+		Version:     "1.1.0",
 		Commands: []pluginpkg.CommandDef{
 			{Name: "随机美图", Description: "发送一张经过严格安全审核的 Pixiv 随机插画；不需要参数", Order: 60},
 		},
@@ -124,14 +165,14 @@ func (p *Plugin) Info() pluginpkg.PluginInfo {
 }
 
 func (p *Plugin) OnInit(ctx *pluginpkg.PluginContext) error {
+	p.db = ctx.DB
+	p.logger = ctx.Logger
+
 	passID := pluginpkg.PassID(pluginID, "fetch")
 	pass := &randomBeautyPass{
-		selector: p.selector,
-		store:    ctx.Store,
-		cooldown: time.Duration(p.cfg.CooldownSeconds) * time.Second,
-		timeout:  time.Duration(p.cfg.TimeoutSeconds) * time.Second,
-		inFlight: make(chan struct{}, 1),
-		logger:   p.logger,
+		plugin:     p,
+		stateStore: ctx.Store,
+		cooldown:   time.Duration(p.cfg.CooldownSeconds) * time.Second,
 	}
 	if err := ctx.Engine.RegisterPass(passID, pass); err != nil {
 		return fmt.Errorf("register random_beauty pass: %w", err)
@@ -154,90 +195,93 @@ func (p *Plugin) OnInit(ctx *pluginpkg.PluginContext) error {
 	return nil
 }
 
-func (p *Plugin) OnStart(_ *pluginpkg.PluginContext) error { return nil }
-func (p *Plugin) OnStop(_ *pluginpkg.PluginContext) error  { return nil }
+// OnStart 池为空时触发一次性种子补图（进程内仅跑一次）。
+func (p *Plugin) OnStart(_ *pluginpkg.PluginContext) error {
+	if p.store == nil || p.db == nil {
+		return nil
+	}
+	count, err := p.db.CountRandomBeautyPool(p.refillCtx)
+	if err != nil {
+		p.logger.Warn("random_beauty: 统计图池数量失败，跳过启动种子", zap.Error(err))
+		return nil
+	}
+	if count == 0 {
+		p.seed()
+	}
+	return nil
+}
+
+// OnStop 取消补图上下文并等待所有补图 goroutine 退出（幂等，可重复调用）。
+func (p *Plugin) OnStop(_ *pluginpkg.PluginContext) error {
+	p.refillCancel()
+	p.wg.Wait()
+	return nil
+}
 
 func isRandomBeautyCommand(ctx *conduit.MessageContext) bool {
 	return ctx != nil && strings.TrimSpace(ctx.RawMsg) == "/随机美图"
 }
 
+// randomBeautyPass 用户取图 Pass：冷却检查 → 池内随机命中 → 直发既有审核图。
 type randomBeautyPass struct {
-	selector imageSelector
-	store    conduit.StateStore
-	cooldown time.Duration
-	timeout  time.Duration
-	inFlight chan struct{}
-	logger   *zap.Logger
+	plugin     *Plugin
+	stateStore conduit.StateStore
+	cooldown   time.Duration
 }
 
 func (pass *randomBeautyPass) Execute(ctx *conduit.MessageContext) error {
-	if pass.selector == nil {
+	p := pass.plugin
+	if p.store == nil {
+		p.warnStoreUnavailable()
 		pass.reply(ctx, messageFailure)
 		return nil
 	}
-	if !pass.acquireSlot() {
-		pass.reply(ctx, messageFailure)
-		return nil
-	}
-	defer pass.releaseSlot()
 	if !pass.acquireCooldown(ctx) {
 		pass.reply(ctx, messageRateLimited)
 		return nil
 	}
-
-	requestCtx := ctx.Ctx
-	cancel := func() {}
-	if pass.timeout > 0 {
-		requestCtx, cancel = context.WithTimeout(ctx.Ctx, pass.timeout)
+	if p.db == nil {
+		pass.reply(ctx, messageFailure)
+		return nil
 	}
-	selected, err := pass.selector.Select(requestCtx)
-	cancel()
+
+	// 池内随机命中一张既有审核图。
+	rec, err := p.db.GetRandomBeautyImage(ctx.Ctx)
 	if err != nil {
-		pass.logger.Warn("random_beauty: 获取美图失败", zap.Error(err))
+		p.logger.Warn("random_beauty: 图池取图失败", zap.Error(err))
 		pass.reply(ctx, messageFailure)
+		// 池空/不可达兜底：触发种子补图（sync.Once 保证进程内只跑一次）。
+		p.seed()
 		return nil
 	}
-	if selected == nil || selected.Candidate == nil || selected.Image == nil || len(selected.Image.Data) == 0 {
-		pass.logger.Warn("random_beauty: 选择器返回空结果")
+	data, err := p.store.Get(ctx.Ctx, rec.ObjectKey)
+	if err != nil {
+		p.logger.Warn("random_beauty: 读取池内图片对象失败",
+			zap.String("object_key", rec.ObjectKey), zap.Error(err))
 		pass.reply(ctx, messageFailure)
+		// 禁止回退实时管道：安全标准不因存储故障而放松。
 		return nil
 	}
 
-	file := "base64://" + base64.StdEncoding.EncodeToString(selected.Image.Data)
-	attribution := formatAttribution(selected.Candidate)
+	file := "base64://" + base64.StdEncoding.EncodeToString(data)
 	conduit.Set(ctx, sendSegmentsKey, []map[string]any{
 		{"type": "image", "data": map[string]any{"file": file}},
-		{"type": "text", "data": map[string]any{"text": attribution}},
+		{"type": "text", "data": map[string]any{"text": formatAttribution(rec.IllustID, rec.Title, rec.Author)}},
 	})
+
+	// 异步补一张维持池水位，绝不阻塞用户路径。
+	p.wg.Go(func() { p.refillOne(p.refillCtx) })
 	return nil
 }
 
-func (pass *randomBeautyPass) acquireSlot() bool {
-	if pass.inFlight == nil {
-		return true
-	}
-	select {
-	case pass.inFlight <- struct{}{}:
-		return true
-	default:
-		return false
-	}
-}
-
-func (pass *randomBeautyPass) releaseSlot() {
-	if pass.inFlight != nil {
-		<-pass.inFlight
-	}
-}
-
 func (pass *randomBeautyPass) acquireCooldown(ctx *conduit.MessageContext) bool {
-	if pass.store == nil || pass.cooldown <= 0 {
+	if pass.stateStore == nil || pass.cooldown <= 0 {
 		return true
 	}
 	key := pluginpkg.StoreKey(pluginID, cooldownScope(ctx))
-	acquired, err := pass.store.SetIfNotExists(ctx.Ctx, key, "1", pass.cooldown)
+	acquired, err := pass.stateStore.SetIfNotExists(ctx.Ctx, key, "1", pass.cooldown)
 	if err != nil {
-		pass.logger.Warn("random_beauty: 冷却状态写入失败，放行请求", zap.Error(err))
+		pass.plugin.logger.Warn("random_beauty: 冷却状态写入失败，放行请求", zap.Error(err))
 		return true
 	}
 	return acquired
@@ -255,10 +299,11 @@ func cooldownScope(ctx *conduit.MessageContext) string {
 	return fmt.Sprintf("cooldown:%s:%s:user:%s", platform, scope, ctx.UserID)
 }
 
-func formatAttribution(candidate *Candidate) string {
-	title := singleLine(candidate.Title, "未命名")
-	author := singleLine(candidate.Author, "未知画师")
-	return fmt.Sprintf("\n《%s》\n作者：%s\nPixiv：https://www.pixiv.net/artworks/%d", title, author, candidate.IllustID)
+// formatAttribution 生成图片署名文本。
+func formatAttribution(illustID int64, title, author string) string {
+	title = singleLine(title, "未命名")
+	author = singleLine(author, "未知画师")
+	return fmt.Sprintf("\n《%s》\n作者：%s\nPixiv：https://www.pixiv.net/artworks/%d", title, author, illustID)
 }
 
 func singleLine(value, fallback string) string {

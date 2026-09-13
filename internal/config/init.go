@@ -167,6 +167,8 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("plugin.random_beauty.min_bookmarks", 100)
 	v.SetDefault("plugin.random_beauty.safe_confidence", 0.9)
 	v.SetDefault("plugin.random_beauty.moderation_timeout_seconds", 8)
+	v.SetDefault("plugin.random_beauty.pool_init_size", 100)
+	v.SetDefault("plugin.random_beauty.refill_moderation_timeout_seconds", 25)
 
 	// 群聊 topic 系统默认值
 	v.SetDefault("bot.topic.enabled", true)
