@@ -149,7 +149,6 @@ function handleLoginError(err: unknown) {
         </t-button>
       </t-form>
 
-      <!-- TOTP 二次验证 -->
       <t-form v-else label-align="top" @submit="handleTOTPVerify">
         <t-form-item label="TOTP 验证码">
           <t-input v-model="form.totpCode" placeholder="6 位验证码" maxlength="6" size="large" @enter="handleTOTPVerify" />

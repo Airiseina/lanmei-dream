@@ -9,8 +9,6 @@ import (
 	"gorm.io/gorm/clause"
 )
 
-// ── 动态管理员数据访问（bot_admin 表）──
-
 // AddAdmin 幂等写入一个动态管理员。
 // 同 (platform, user_id) 已存在时不写入、不报错，返回 existed=true；
 // 新增成功返回 existed=false。

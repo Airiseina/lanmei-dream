@@ -1,10 +1,8 @@
 // Package handlers 提供管理面板 HTTP API 处理器（Fiber v3）。
 //
-// 安全约定（零信任）：
-//   - 敏感操作（管理员管理 / LLM Provider / Conduit 编辑）必须
-//     Auth + RequireRole(super) + RequireStepUp 三重校验；
-//   - 所有写操作经 audit.Record 全量留痕；
-//   - 认证相关错误统一泛化，避免账号枚举。
+// 安全约定（零信任）：敏感操作（管理员管理 / LLM Provider / Conduit 编辑）
+// 必须 Auth + RequireRole(super) + RequireStepUp 三重校验；所有写操作经
+// audit.Record 全量留痕；认证相关错误统一泛化，避免账号枚举。
 package handlers
 
 import (
@@ -71,6 +69,8 @@ type Options struct {
 }
 
 // New 创建 Handler。
+// Logger 为空时回退为 Nop Logger；Skills/Prompts/Knowledge/Wasm 为 nil 时，
+// 对应内容管理接口返回不可用错误而非 panic。
 func New(opts Options) *Handler {
 	if opts.Logger == nil {
 		opts.Logger = zap.NewNop()
@@ -92,10 +92,6 @@ func New(opts Options) *Handler {
 		commands:  opts.Commands,
 	}
 }
-
-// ─────────────────────────────────────────────
-// 通用辅助
-// ─────────────────────────────────────────────
 
 // bind 解析 JSON 请求体并统一报错。
 func (h *Handler) bind(c fiber.Ctx, out any) error {
@@ -136,7 +132,7 @@ func pageQuery(c fiber.Ctx) (offset, limit int) {
 	return (page - 1) * size, size
 }
 
-// timeRange 解析 since/until 查询参数（RFC3339；缺省为最近 24h）。
+// timeRange 解析 since/until 查询参数（秒级时间戳或 RFC3339；缺省返回 0，由调用方按最近 24h 兜底）。
 func timeRange(c fiber.Ctx) (since, until int64, err error) {
 	if s := c.Query("since"); s != "" {
 		since, err = parseUnixOrRFC3339(s)

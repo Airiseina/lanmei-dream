@@ -9,9 +9,7 @@ import (
 	"github.com/DaWesen/lanmei-dream/internal/model"
 )
 
-// ─────────────────────────────────────────────
 // 管理员管理（super + step-up）
-// ─────────────────────────────────────────────
 
 // createAdminReq 创建管理员请求。
 type createAdminReq struct {

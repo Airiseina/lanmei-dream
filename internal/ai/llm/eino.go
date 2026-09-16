@@ -12,10 +12,8 @@ import (
 )
 
 // opencodeSessionHeader / opencodeUserAgent OpenCode Go 网关要求的标识请求头。
-// 官方文档（https://opencode.ai/docs/go/）要求接入方：
-//  1. 明确标识自身（不要过于笼统的 user agent）；
-//  2. 携带 x-opencode-session 以优化提示词缓存。
-// 2026-09-06 起缺失该头的请求会被网关 400 拒绝（生产实测）。
+// 官方文档（https://opencode.ai/docs/go/）要求接入方明确标识自身，
+// 并携带 x-opencode-session 以优化提示词缓存；缺失该头的请求会被网关 400 拒绝。
 const (
 	opencodeSessionHeader = "x-opencode-session"
 	opencodeSessionValue  = "lanmei-bot"
@@ -28,6 +26,9 @@ type opencodeTransport struct {
 	base http.RoundTripper
 }
 
+// RoundTrip 实现 http.RoundTripper：为 OpenCode Go 网关的每个出站请求附加
+// x-opencode-session 与 User-Agent 标识头后转发；缺失标识头的请求会被网关 400 拒绝。
+// 每次调用先 Clone 请求，避免修改调用方传入的原始 *http.Request。
 func (t *opencodeTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	req = req.Clone(req.Context())
 	req.Header.Set(opencodeSessionHeader, opencodeSessionValue)
@@ -57,10 +58,10 @@ func DisableThinkingOption() model.Option {
 type EinoOptions struct {
 	Provider    string  // Provider 名称（如 deepseek/qwen/openai），用于计费统计
 	BaseURL     string  // API 基础地址（OpenAI/DeepSeek/Qwen/Moonshot/Ark/Ollama 通用）
-	APIKey      string  // API 密钥
-	Model       string  // 模型名
-	MaxTokens   int     // 单次回复最大 token 数
-	Temperature float64 // 生成温度
+	APIKey      string
+	Model       string
+	MaxTokens   int
+	Temperature float64
 }
 
 // UsageHook 用量上报回调（由计费模块注入；nil 表示不上报）。
@@ -75,7 +76,14 @@ type EinoClient struct {
 	usageHook UsageHook
 }
 
-// NewEinoClient 创建 eino LLM 客户端
+// NewEinoClient 创建 eino LLM 客户端（基于 OpenAI 兼容层，仅做配置装配，不发起对话请求）。
+//
+// 参数：
+//   - ctx：初始化上下文
+//   - opts：Provider/BaseURL/APIKey/Model 等连接配置，不能为 nil（BaseURL 指向 OpenCode Go
+//     网关时自动注入标识头 HTTPClient）
+//
+// 返回：初始化失败返回错误；成功后返回的客户端同时实现 LLMClient 与 EinoCapable。
 func NewEinoClient(ctx context.Context, opts *EinoOptions) (*EinoClient, error) {
 	mt := opts.MaxTokens
 	t := float32(opts.Temperature)
@@ -87,7 +95,7 @@ func NewEinoClient(ctx context.Context, opts *EinoOptions) (*EinoClient, error) 
 		MaxTokens:   &mt,
 		Temperature: &t,
 		// OpenCode Go 网关：注入标识头 HTTPClient（x-opencode-session + UA），
-		// 2026-09-06 起缺失会被 400 拒绝；其他 provider 该值为 nil 不生效
+		// 缺失该头的请求会被 400 拒绝；其他 provider 该值为 nil 不生效
 		HTTPClient: withOpencodeHeaders(opts.BaseURL),
 	})
 	if err != nil {
@@ -158,7 +166,7 @@ func (c *EinoClient) Chat(ctx context.Context, req *ChatRequest) (*ChatResponse,
 
 	var opts []model.Option
 	if req.MaxTokens != nil {
-		// 按请求覆盖输出上限（推理模型对 max_tokens 敏感，短输出场景必须显式设小值）
+		// 按请求覆盖输出上限（短输出场景需显式设小值）
 		opts = append(opts, model.WithMaxTokens(*req.MaxTokens))
 	}
 	if req.DisableThinking != nil && *req.DisableThinking {

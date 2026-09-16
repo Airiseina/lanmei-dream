@@ -6,7 +6,9 @@ import "time"
 type ConversationSource string
 
 const (
-	SourceChat   ConversationSource = "chat"   // 真实对话
+	// SourceChat 真实对话：用户与 bot 的正常消息，参与记忆压缩与上下文组装。
+	SourceChat ConversationSource = "chat" // 真实对话
+	// SourcePlugin 插件交互产生的消息，压缩器据此与真实对话区分处理。
 	SourcePlugin ConversationSource = "plugin" // 插件交互
 )
 

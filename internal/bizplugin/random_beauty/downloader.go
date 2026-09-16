@@ -78,6 +78,11 @@ func newImageDownloader(baseURL string, client *http.Client, maxBytes int64, min
 	}, nil
 }
 
+// Download 下载并严格校验候选图片：校验候选本地路径合法且与图源同源（拒绝跨源路径与带凭据地址），
+// 限制重定向次数与响应体大小，确认响应 MIME、嗅探 MIME 与解码格式三者一致，
+// 并校验最小尺寸、最大尺寸 / 像素上限以及与候选元数据的一致性。
+// 由补图流程 refillOne 调用（用户取图路径只读池、不下载）；任一校验不通过都返回错误且不返回图片，
+// 调用方按失败关闭处理，绝不发送未通过校验的字节。
 func (d *sameOriginDownloader) Download(ctx context.Context, candidate *Candidate) (*DownloadedImage, error) {
 	if candidate == nil {
 		return nil, errors.New("random_beauty: 候选为空")

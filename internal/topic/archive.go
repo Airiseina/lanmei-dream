@@ -23,13 +23,9 @@ const archiveMaxDialogueRunes = 4000
 const archiveMaxEmbedRunes = 400
 
 // Archiver 冷却话题归档器：将话题窗口沉淀为群级长期记忆。
-//
-// 归档内容（与个人 L1 压缩同构的 brief/detailed/facts 结构）：
-//   - memories 表：{user_id:0(群级), group_id, metadata:{topic_id,label,members}}
-//   - memory_vectors 表：窗口摘要文本的 embedding，供后续 RAG 群聊召回
-//
-// 降级链：无 LLM → brief=标签, detailed=原文拼接, facts=成员列表；
-// 无 Embedder → 仅写 memories 元数据表，跳过向量化。
+// 写入 memories 表（user_id=0 群级 + metadata）与 memory_vectors 表（窗口摘要 embedding，
+// 供后续 RAG 群聊召回），并将 facts 合并进群画像；降级链：无 LLM → brief=标签、detailed=原文
+// 拼接、facts=成员列表，无 Embedder → 跳过向量化。
 type Archiver struct {
 	llmClient llm.LLMClient
 	embedder  embedding.Embedder
@@ -39,6 +35,15 @@ type Archiver struct {
 }
 
 // NewArchiver 创建归档器（各依赖可 nil，均自动降级）。
+//
+// 参数：
+//   - llmClient：摘要生成；nil 时降级为标签 + 原文拼接
+//   - emb：摘要向量化；nil 时跳过向量记忆写入
+//   - mem：向量记忆存储（memory_vectors）；nil 时跳过
+//   - db：memories 表与群画像写入；nil 时跳过
+//   - logger：日志器；nil 时使用 zap.NewNop()
+//
+// 返回：可并发调用 Archive 的归档器（无可变状态）。
 func NewArchiver(llmClient llm.LLMClient, emb embedding.Embedder, mem memory.MemoryStore,
 	db *database.DB, logger *zap.Logger) *Archiver {
 	if logger == nil {
@@ -60,6 +65,13 @@ type ArchiveSnapshot struct {
 
 // Archive 归档一个冷却话题。返回 error 时由 Manager 保留话题并重试。
 // 空窗口话题返回 nil（无内容可沉淀）。
+//
+// 参数：
+//   - ctx：LLM/向量化/数据库调用使用的上下文（Manager 侧以 60s 超时调用）
+//   - snap：归档快照（由 Manager 在持锁状态下冻结，归档期间只读）
+//
+// 返回：nil 快照返回错误；空窗口返回 nil；内部分步骤（摘要/写库/向量化/画像）失败仅记 Warn
+// 日志，不改变返回值——归档仍按成功处理并由 Manager 移除话题。
 func (a *Archiver) Archive(ctx context.Context, snap *ArchiveSnapshot) error {
 	if snap == nil {
 		return errors.New("topic archive: nil snapshot")
@@ -68,7 +80,6 @@ func (a *Archiver) Archive(ctx context.Context, snap *ArchiveSnapshot) error {
 		return nil
 	}
 
-	// 1. 生成摘要（LLM 或降级）
 	brief, detailed, facts := a.summarize(ctx, snap)
 	label := snap.Label
 	if label == "" {
@@ -80,7 +91,6 @@ func (a *Archiver) Archive(ctx context.Context, snap *ArchiveSnapshot) error {
 	content := label + "：" + brief
 	timeRange := fmt.Sprintf("%s ~ %s", snap.Window[0].SentAt.Format("01-02 15:04"), snap.Window[len(snap.Window)-1].SentAt.Format("01-02 15:04"))
 
-	// 2. 写 memories 表（群级 user_id=0）
 	if a.db != nil {
 		meta, _ := json.Marshal(map[string]any{
 			"topic_id":      snap.ID,
@@ -100,7 +110,6 @@ func (a *Archiver) Archive(ctx context.Context, snap *ArchiveSnapshot) error {
 		}
 	}
 
-	// 3. 写 memory_vectors（向量化，供群聊 RAG 召回）
 	if a.memStore != nil && a.embedder != nil {
 		vec, err := a.embedder.Embed(ctx, truncateRunes(brief+" "+detailed, archiveMaxEmbedRunes))
 		if err == nil && len(vec) > 0 {
@@ -121,7 +130,7 @@ func (a *Archiver) Archive(ctx context.Context, snap *ArchiveSnapshot) error {
 		}
 	}
 
-	// 4. 群画像：归档事实三态合并进 group_facts（跨话题沉淀群级长期记忆）
+	// 归档事实并入群画像（跨话题沉淀群级长期记忆）
 	if a.db != nil && len(facts) > 0 {
 		for i := range facts {
 			facts[i].Evidence = append(facts[i].Evidence, snap.ID)
@@ -194,10 +203,9 @@ facts 规则：
 
 注意：只输出 JSON，不要任何额外文字。`
 
-// formatWindow 将话题消息窗口格式化为对话文本（昵称/机器人交替行）。
-// 供归档摘要与话题标签生成共用。用户消息以「昵称(用户ID)」标注发言者：
-// 用户ID 是稳定身份锚点（群昵称常变，只留昵称会让归档记忆"认不出"同一人），
-// 缺失昵称时退化为 user_id，避免匿名 user_id 导致记忆串线（历史教训）。
+// formatWindow 将话题消息窗口格式化为对话文本（昵称/机器人交替行），供归档摘要与话题标签生成共用。
+// 用户消息以「昵称(用户ID)」标注发言者：用户ID 是稳定身份锚点（群昵称常变，只留昵称会让归档记忆
+// "认不出"同一人），缺失昵称时退化为 user_id，避免匿名 user_id 导致记忆串线（历史教训）。
 func formatWindow(window []TopicMsg) string {
 	var b strings.Builder
 	for i, tm := range window {

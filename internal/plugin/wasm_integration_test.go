@@ -74,7 +74,7 @@ func TestWasmCommandPass_ConduitIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// 构建行为树：插件子树 + 兜底动作
+	// 行为树 = 插件子树 + 兜底动作
 	branches := []conduit.BTNode{}
 	for _, ref := range reg.SubtreeRefs() {
 		branches = append(branches, ref)

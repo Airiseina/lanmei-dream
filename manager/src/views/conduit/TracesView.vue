@@ -46,7 +46,6 @@ async function load() {
     })
     items.value = res.items
     total.value = res.total
-    // 从结果汇总可选管线
     const set = new Set(pipelines.value)
     for (const it of res.items) if (it.pipeline) set.add(it.pipeline)
     pipelines.value = [...set]
@@ -71,7 +70,7 @@ function toggleRealtime() {
     try {
       closeStream = conduitApi.openTraceStream(
         (rec) => {
-          // 新 Trace 插入列表顶部，去重并限制长度
+          // 实时 Trace 插入顶部；按 trace_id + created_at 去重，最多保留 100 条
           if (items.value.some((t) => t.trace_id === rec.trace_id && t.created_at === rec.created_at)) return
           items.value.unshift(rec)
           if (items.value.length > 100) items.value.pop()

@@ -7,13 +7,16 @@ import (
 // maxChunkChars 单条召回结果在提示词中展示的最大字符数（rune）。
 const maxChunkChars = 200
 
-// FormatRecall 将召回结果格式化为可注入提示词 / 工具返回的文本。
+// FormatRecall 将召回结果格式化为可注入提示词 / 工具返回的文本，空结果返回空字符串。
+// 每条为「- [知识库: 名称] 标题」，后跟缩进的内容片段（截断）与来源链接。
 //
-// 输出格式（空结果返回空字符串）：
+// 参数：
+//   - results：按分数降序的召回结果；Chunk 为 nil 的条目会被跳过
 //
-//   - [知识库: 主知识库] 标题
-//     内容片段（截断）
-//     来源: url
+// 返回：格式化文本；results 为空（或全部条目的 Chunk 为 nil）时返回空字符串
+//
+// 注意：内容片段按 rune 截断到 200 字（超出补 "..."）；标题为空时取内容前 24 字，
+// 知识库名缺失时回退为知识库 ID，来源链接仅在 URL 非空时输出。
 func FormatRecall(results []ScoredChunk) string {
 	if len(results) == 0 {
 		return ""

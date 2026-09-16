@@ -9,15 +9,19 @@ import (
 	"time"
 )
 
-// ── OneBot 12 消息段 ──
-
-// MessageSegmentV12 表示 OneBot 12 消息段
+// MessageSegmentV12 表示 OneBot 12 消息段。
+//
+// 注意：at 段用 user_id 标识目标（OneBot 11 用 qq），引用段用 message_id
+// （OneBot 11 用 id）；Data 内的值经 ParseSegmentsV12 统一转为字符串。
 type MessageSegmentV12 struct {
 	Type string         `json:"type"` // text / image / at / reply / ...
 	Data map[string]any `json:"data"`
 }
 
-// TextContent 提取消息段的纯文本内容
+// TextContent 提取消息段的纯文本内容。
+//
+// 返回：text 段返回 text 字段原文；at 段返回 "@" + user_id（字段非字符串时返回空）；
+// 其余类型返回空字符串。
 func (m MessageSegmentV12) TextContent() string {
 	switch m.Type {
 	case "text":
@@ -32,7 +36,12 @@ func (m MessageSegmentV12) TextContent() string {
 	return ""
 }
 
-// ExtractPlainText 从 OneBot 12 消息段列表提取纯文本
+// ExtractPlainTextV12 从 OneBot 12 消息段列表提取纯文本。
+//
+// 参数：
+//   - segments：消息段列表，可为 nil
+//
+// 返回：各段文本表示（见 TextContent）按原顺序无分隔拼接；无文本时返回空字符串。
 func ExtractPlainTextV12(segments []MessageSegmentV12) string {
 	var parts []string
 	for _, seg := range segments {
@@ -43,15 +52,19 @@ func ExtractPlainTextV12(segments []MessageSegmentV12) string {
 	return strings.Join(parts, "")
 }
 
-// ── OneBot 11 消息段 ──
-
-// MessageSegmentV11 表示 OneBot 11 消息段（NapCat 方言）
+// MessageSegmentV11 表示 OneBot 11 消息段（NapCat 方言）。
+//
+// 注意：at 段目标在 qq 字段（OneBot 12 为 user_id），值可能是 JSON number 或 string；
+// 引用段用 id 字段（OneBot 12 为 message_id）。Data 内的值经 ParseSegmentsV11 统一转字符串。
 type MessageSegmentV11 struct {
 	Type string         `json:"type"` // text / image / at / face / reply / ...
 	Data map[string]any `json:"data"`
 }
 
-// TextContent 提取消息段的纯文本内容
+// TextContent 提取消息段的纯文本内容。
+//
+// 返回：text 段返回 text 字段原文；at 段优先取 name（昵称）、其次 qq，
+// 两者均缺失时返回空字符串；其余类型返回空字符串。
 func (m MessageSegmentV11) TextContent() string {
 	switch m.Type {
 	case "text":
@@ -70,7 +83,12 @@ func (m MessageSegmentV11) TextContent() string {
 	return ""
 }
 
-// ExtractPlainTextV11 从 OneBot 11 消息段列表提取纯文本
+// ExtractPlainTextV11 从 OneBot 11 消息段列表提取纯文本。
+//
+// 参数：
+//   - segments：消息段列表，可为 nil
+//
+// 返回：各段文本表示（见 TextContent）按原顺序无分隔拼接；无文本时返回空字符串。
 func ExtractPlainTextV11(segments []MessageSegmentV11) string {
 	var parts []string
 	for _, seg := range segments {
@@ -81,14 +99,15 @@ func ExtractPlainTextV11(segments []MessageSegmentV11) string {
 	return strings.Join(parts, "")
 }
 
-// ── 事件类型与通知子类型 ──
-
-// MessageType 事件类型
+// MessageType 事件类型。
 type MessageType string
 
 const (
+	// MessageTypeMessage 普通消息事件：含完整消息段，是机器人回复的主要触发源。
 	MessageTypeMessage MessageType = "message" // 普通消息
-	MessageTypeNotice  MessageType = "notice"  // 系统通知
+	// MessageTypeNotice 系统通知事件（进群/退群/撤回/禁言等）；白名单见 notice.go。
+	MessageTypeNotice MessageType = "notice" // 系统通知
+	// MessageTypeRequest 请求事件（好友申请 / 加群邀请）；仅标准化透传给上层，网关不自动处理。
 	MessageTypeRequest MessageType = "request" // 请求（好友/加群）
 )
 
@@ -101,9 +120,7 @@ type NormalizedSegment struct {
 	Text     string            // 该段的纯文本表示（text 内容 / @昵称 / 空）
 }
 
-// ── 标准化消息 ──
-
-// NormalizedMessage 是跨平台标准化后的消息，供 bot 层消费
+// NormalizedMessage 是跨平台标准化后的消息，供 bot 层消费。
 type NormalizedMessage struct {
 	Platform   Platform // 来源平台
 	Protocol   Protocol // 协议版本
@@ -118,8 +135,7 @@ type NormalizedMessage struct {
 	// ReceivedAt 消息到达时间（由事件时间戳填充；用于"回复前会话是否已有新消息"判定）
 	ReceivedAt time.Time
 
-	// ── 多模态 / 事件扩展字段 ──
-	// 多模态段（message 事件填充）；事件字段（notice/request 事件填充，普通消息为空）
+	// 多模态段由 message 事件填充；事件字段由 notice/request 事件填充（普通消息为空）
 	Segments     []NormalizedSegment // 完整段列表
 	AtTargets    []string            // at 目标 user_id 列表
 	MimeTypes    []string            // 去重后的 MIME 类型列表
@@ -132,12 +148,23 @@ type NormalizedMessage struct {
 
 // NormalizeV12 将 OneBot 12 事件标准化为 NormalizedMessage。
 // 支持 message / notice / request 三类事件；meta 事件返回 nil。
+//
+// 参数：
+//   - connID：来源连接 ID，写入 NormalizedMessage.ConnID 用于回复路由
+//   - evt：OneBot 12 事件；Type 为空视同 meta 事件
+//   - platform：连接配置的平台兜底值；事件自带 platform 字段非空时以事件为准
+//
+// 返回：标准化消息；Type 为空 / meta / 未知，以及 notice 白名单（见 notice.go）
+// 之外的事件返回 nil。
+//
+// 注意：消息事件的纯文本优先取 alt_message，缺失时才回退为消息段提取（at 段转
+// "@user_id" 而非昵称）；notice / request 事件不解析消息段。
 func NormalizeV12(connID string, evt *EventV12, platform Platform) *NormalizedMessage {
 	if evt.Type == "" || evt.Type == "meta" {
 		return nil
 	}
 
-	// 如果事件平台字段有效，优先使用事件中的平台标识
+	// 事件平台字段有效时优先使用事件中的平台标识
 	p := platform
 	if evt.Platform != "" {
 		p = Platform(evt.Platform)
@@ -153,7 +180,7 @@ func NormalizeV12(connID string, evt *EventV12, platform Platform) *NormalizedMe
 		MessageID: evt.ID,
 		ConnID:    connID,
 	}
-	// 事件时间戳（Unix 秒，浮点保留亚秒精度）填充到达时间
+	// 事件时间戳（Unix 秒，浮点保留亚秒精度）填充到达时间。
 	if evt.Time > 0 {
 		sec := int64(evt.Time)
 		nsec := int64((evt.Time - float64(sec)) * 1e9)
@@ -169,10 +196,10 @@ func NormalizeV12(connID string, evt *EventV12, platform Platform) *NormalizedMe
 			msg.Content = ExtractPlainTextV12(evt.Message)
 		}
 		collectSegmentMeta(msg, msg.Segments)
-		msg.SenderName = "" // OB12 消息事件不直接包含 sender nickname，需从 sender 子对象获取（如有）
+		msg.SenderName = "" // OB12 消息事件不含 sender 昵称，需从 sender 子对象获取（如有）
 
 	case "notice":
-		// 通知事件：仅接收白名单内的事件类型（见 notice.go），白名单外返回 nil
+		// 通知事件：仅接收白名单内的事件类型（见 notice.go），白名单外返回 nil。
 		eventType, subType, data, ok := normalizeNoticeV12(evt)
 		if !ok {
 			return nil
@@ -202,6 +229,20 @@ func NormalizeV12(connID string, evt *EventV12, platform Platform) *NormalizedMe
 
 // NormalizeV11 将 OneBot 11 事件标准化为 NormalizedMessage。
 // 支持 message / notice / request 三类事件；meta_event 返回 nil。
+//
+// 参数：
+//   - connID：来源连接 ID，写入 NormalizedMessage.ConnID 用于回复路由
+//   - evt：OneBot 11 事件；PostType 为空视同 meta_event
+//   - platform：连接配置的平台标识（OneBot 11 事件不含平台字段）
+//
+// 返回：标准化消息；PostType 为空 / meta_event / 未知，以及 notice 白名单
+// （见 notice.go）之外的事件返回 nil。
+//
+// 注意：
+//   - 群聊判定以 message_type == "group" 为主，message_type 缺失而 group_id 非 0
+//     时兜底判为群聊。
+//   - message 字段为空时回退 raw_message（CQ 码）解析；Content 一律取纯文本
+//     （at 段转 "@昵称"），段解析彻底失败时才兜底保留 raw_message 原文。
 func NormalizeV11(connID string, evt *EventV11, platform Platform) *NormalizedMessage {
 	if evt.PostType == "" || evt.PostType == "meta_event" {
 		return nil
@@ -213,7 +254,7 @@ func NormalizeV11(connID string, evt *EventV11, platform Platform) *NormalizedMe
 		SelfID:   strconv.FormatInt(evt.SelfID, 10),
 		ConnID:   connID,
 	}
-	// 事件时间戳（Unix 秒）填充到达时间
+	// 事件时间戳（Unix 秒）填充到达时间。
 	if evt.Time > 0 {
 		msg.ReceivedAt = time.Unix(evt.Time, 0)
 	}
@@ -226,22 +267,20 @@ func NormalizeV11(connID string, evt *EventV11, platform Platform) *NormalizedMe
 			msg.GroupID = strconv.FormatInt(evt.GroupID, 10)
 			msg.IsGroup = true
 		}
-		// 群聊兜底判定：message_type 缺失时 group_id 非 0 也判为群聊
-		//（防御 message_type 缺失的异常报文，notice 事件不经过此分支）
+		// 群聊兜底：message_type 缺失时 group_id 非 0 也判为群聊（notice 事件不经过此分支）
 		if !msg.IsGroup && evt.GroupID != 0 {
 			msg.GroupID = strconv.FormatInt(evt.GroupID, 10)
 			msg.IsGroup = true
 		}
 		segs := ParseSegmentsV11(evt.ParseMessageSegments())
 		// NapCat 部分配置下 message 字段为空字符串：回退用 raw_message（CQ 码）解析，
-		// 确保 at 目标（平台 ID）与纯文本内容可被下游消费
+		// 确保 at 目标（平台 ID）与纯文本内容可被下游消费。
 		if len(segs) == 0 && evt.RawMessage != "" {
 			segs = ParseSegmentsV11(ParseCQSegmentsV11(evt.RawMessage))
 		}
 		msg.Segments = segs
-		// Content 一律使用纯文本（at 段转为 "@昵称"），避免原始 CQ 码污染
-		// 意图分析、话题提及检测与记忆层（CQ 码内 name= 会导致昵称误命中）。
-		// 纯媒体消息（如仅图片）不 fallback 为 CQ 码：保持空文本交给媒体管线处理。
+		// Content 一律使用纯文本（at 段转为 "@昵称"）：CQ 码内的 name= 会污染意图分析、
+		// 话题提及检测与记忆层，导致昵称误命中。纯媒体消息不 fallback 为 CQ 码，交媒体管线处理。
 		msg.Content = ExtractNormalizedTextV11(segs)
 		if msg.Content == "" && len(segs) == 0 && evt.RawMessage != "" {
 			msg.Content = evt.RawMessage // 段解析彻底失败时兜底保留原文，避免消息被丢弃
@@ -256,7 +295,7 @@ func NormalizeV11(connID string, evt *EventV11, platform Platform) *NormalizedMe
 		msg.MessageID = strconv.FormatInt(evt.MessageID, 10)
 
 	case "notice":
-		// 通知事件：仅接收白名单内的事件类型（见 notice.go），白名单外返回 nil
+		// 通知事件：仅接收白名单内的事件类型（见 notice.go），白名单外返回 nil。
 		eventType, subType, data, ok := normalizeNoticeV11(evt)
 		if !ok {
 			return nil
@@ -290,10 +329,17 @@ func NormalizeV11(connID string, evt *EventV11, platform Platform) *NormalizedMe
 	return msg
 }
 
-// ── 消息段解析与辅助 ──
-
 // ParseSegmentsV12 将 OneBot 12 消息段列表解析为标准化段。
 // 多媒体段的 MIME 类型按文件扩展名推断；at 段的 Text 为 "@昵称"（无昵称时用 user_id）。
+//
+// 参数：
+//   - segs：OneBot 12 消息段列表，可为 nil
+//
+// 返回：与输入等长的标准化段列表；Data 内数值 / 布尔值统一转为字符串，
+// 输入为空时返回空切片（非 nil）。
+//
+// 注意：at 段以 user_id 为目标标识；face 段的 Text 固定为 "[表情]"；其余类型仅保留
+// 原始 Data，不做文本化。
 func ParseSegmentsV12(segs []MessageSegmentV12) []NormalizedSegment {
 	result := make([]NormalizedSegment, 0, len(segs))
 	for _, seg := range segs {
@@ -316,6 +362,15 @@ func ParseSegmentsV12(segs []MessageSegmentV12) []NormalizedSegment {
 
 // ParseSegmentsV11 将 OneBot 11 消息段列表解析为标准化段。
 // at 段的 user_id 同时兼容 JSON number 与 string 两种编码。
+//
+// 参数：
+//   - segs：OneBot 11 消息段列表，可为 nil
+//
+// 返回：与输入等长的标准化段列表；Data 内数值 / 布尔值统一转为字符串，
+// 输入为空时返回空切片（非 nil）。
+//
+// 注意：at 段的目标 ID 优先取 qq 字段、缺失时回退 user_id，并回写 Data["user_id"]，
+// Text 为 "@昵称"（无昵称时用目标 ID）；CQ 码字符串需先经 ParseCQSegmentsV11 解析。
 func ParseSegmentsV11(segs []MessageSegmentV11) []NormalizedSegment {
 	result := make([]NormalizedSegment, 0, len(segs))
 	for _, seg := range segs {
@@ -341,25 +396,30 @@ func ParseSegmentsV11(segs []MessageSegmentV11) []NormalizedSegment {
 	return result
 }
 
-// ── CQ 码字符串解析（OneBot 11 raw_message）──
-
 // ParseCQSegmentsV11 将 OneBot 11 的 CQ 码字符串（raw_message）解析为消息段列表。
 //
 // 支持文本与 CQ 码混排（如 "你好[CQ:at,qq=123,name=张三]在吗"）。
 // 参数值中的转义（&#44; 逗号、&#91; [、&#93; ]、&amp; &）在解析时还原。
+//
+// 参数：
+//   - raw：CQ 码原始文本，可为空
+//
+// 返回：消息段列表；纯文本片段生成 text 段，空文本片段跳过，raw 为空时返回 nil。
+//
+// 注意：未闭合的 "[CQ:" 按普通文本处理，避免吞掉后续内容；转义还原为单遍替换，
+// "&amp;#91;" 还原为 "&#91;" 而非 "["。
 func ParseCQSegmentsV11(raw string) []MessageSegmentV11 {
 	var segs []MessageSegmentV11
 	rest := raw
 	for len(rest) > 0 {
 		start := strings.Index(rest, "[CQ:")
 		if start < 0 {
-			// 剩余为纯文本（文本中的 [ / ] / & 以转义形式出现，不会误命中 CQ 码前缀）
+			// 剩余为纯文本：文本中的 [ / ] / & 均以转义形式出现，不会误命中 CQ 码前缀。
 			if t := unescapeCQText(rest); t != "" {
 				segs = append(segs, MessageSegmentV11{Type: "text", Data: map[string]any{"text": t}})
 			}
 			break
 		}
-		// CQ 码之前的文本
 		if t := unescapeCQText(rest[:start]); t != "" {
 			segs = append(segs, MessageSegmentV11{Type: "text", Data: map[string]any{"text": t}})
 		}
@@ -381,7 +441,7 @@ func ParseCQSegmentsV11(raw string) []MessageSegmentV11 {
 }
 
 // parseCQSegment 解析单个 CQ 码为消息段。
-// 格式: [CQ:type,key1=value1,key2=value2]
+// 格式：[CQ:type,key1=value1,key2=value2]
 func parseCQSegment(code string) MessageSegmentV11 {
 	inner := strings.TrimPrefix(code, "[CQ:")
 	inner = strings.TrimSuffix(inner, "]")
@@ -500,6 +560,13 @@ func atDisplayName(userID, name string) string {
 
 // DetectMimeByExt 根据段类型与 file/url 扩展名推断 MIME 类型。
 // 无法推断时返回 ""。
+//
+// 参数：
+//   - segType：消息段类型，仅 image / audio / record / voice / video 参与推断
+//   - file：文件名或路径，优先取其扩展名
+//   - url：文件 URL，file 无扩展名时回退使用
+//
+// 返回：MIME 类型字符串（如 image/png、audio/ogg、video/mp4）；无法识别时返回 ""。
 func DetectMimeByExt(segType, file, url string) string {
 	ext := strings.ToLower(path.Ext(file))
 	if ext == "" {
@@ -543,16 +610,20 @@ func DetectMimeByExt(segType, file, url string) string {
 	return ""
 }
 
-// ── 动作请求/响应 ──
-
-// ActionRequest 表示要发送给 OneBot 实现的动作请求
+// ActionRequest 表示要发送给 OneBot 实现的动作请求。
+//
+// 注意：OneBot 12 用 send_message 动作（detail_type 区分私聊 / 群聊），OneBot 11 用
+// send_private_msg / send_group_msg；由 BuildSendMessage* 系列函数按协议构造。
 type ActionRequest struct {
 	Action string         `json:"action"`         // 动作名，如 send_message / send_group_msg
 	Params map[string]any `json:"params"`         // 动作参数
 	Echo   string         `json:"echo,omitempty"` // 请求标识（用于匹配响应）
 }
 
-// ActionResponse 表示 OneBot 实现返回的动作响应
+// ActionResponse 表示 OneBot 实现返回的动作响应。
+//
+// 注意：网关仅对失败响应（RetCode != 0 或 Status == "failed"）记录告警日志，
+// 不按 Echo 做请求-响应配对。
 type ActionResponse struct {
 	Status  string          `json:"status"`            // ok / failed
 	RetCode int64           `json:"retcode"`           // 返回码
@@ -561,9 +632,15 @@ type ActionResponse struct {
 	Echo    string          `json:"echo,omitempty"`    // 请求标识
 }
 
-// ── 构建动作辅助 ──
-
-// BuildSendMessageV12 构建 OneBot 12 send_message 动作
+// BuildSendMessageV12 构建 OneBot 12 send_message 动作（纯文本）。
+//
+// 参数：
+//   - detailType：会话类型，"private" 私聊，其余值按群聊处理
+//   - userID：私聊目标用户 ID，仅私聊时写入参数
+//   - groupID：群聊目标群 ID，仅群聊时写入参数
+//   - text：纯文本内容
+//
+// 返回：send_message 动作请求（message 为单个 text 段）。
 func BuildSendMessageV12(detailType, userID, groupID, text string) *ActionRequest {
 	params := map[string]any{
 		"detail_type": detailType, // private / group
@@ -582,7 +659,17 @@ func BuildSendMessageV12(detailType, userID, groupID, text string) *ActionReques
 	}
 }
 
-// BuildSendMessageV11 构建 OneBot 11 send_private_msg / send_group_msg 动作
+// BuildSendMessageV11 构建 OneBot 11 send_private_msg / send_group_msg 动作（纯文本）。
+//
+// 参数：
+//   - isGroup：true 发送 send_group_msg 并取 groupID，false 发送 send_private_msg 并取 userID
+//   - userID：私聊目标用户 ID（十进制字符串）
+//   - groupID：群聊目标群 ID（十进制字符串）
+//   - text：纯文本内容
+//
+// 返回：对应动作请求（message 为单个 text 段）。
+//
+// 注意：ID 经 strconv.ParseInt 转 int64，非法或为空时按 0 发送，由平台侧报错。
 func BuildSendMessageV11(isGroup bool, userID, groupID, text string) *ActionRequest {
 	if isGroup {
 		gid, _ := strconv.ParseInt(groupID, 10, 64)
@@ -608,9 +695,15 @@ func BuildSendMessageV11(isGroup bool, userID, groupID, text string) *ActionRequ
 	}
 }
 
-// ── 富媒体发送构建 ──
-
 // BuildSendMessageSegmentsV12 构建 OneBot 12 send_message 动作（支持富媒体段）。
+//
+// 参数：
+//   - detailType：会话类型，"private" 私聊，其余值按群聊处理
+//   - userID：私聊目标用户 ID，仅私聊时写入参数
+//   - groupID：群聊目标群 ID，仅群聊时写入参数
+//   - segs：标准化消息段，经 ToMessageSegmentV12 转换；为空时发送空 message 数组
+//
+// 返回：send_message 动作请求。
 func BuildSendMessageSegmentsV12(detailType, userID, groupID string, segs []NormalizedSegment) *ActionRequest {
 	params := map[string]any{
 		"detail_type": detailType,
@@ -625,6 +718,14 @@ func BuildSendMessageSegmentsV12(detailType, userID, groupID string, segs []Norm
 }
 
 // BuildSendMessageSegmentsV11 构建 OneBot 11 富媒体动作（send_group_msg / send_private_msg）。
+//
+// 参数：
+//   - isGroup：true 发送 send_group_msg，false 发送 send_private_msg
+//   - userID：私聊目标用户 ID（十进制字符串），非法或为空按 0 处理
+//   - groupID：群聊目标群 ID（十进制字符串），非法或为空按 0 处理
+//   - segs：标准化消息段，经 ToMessageSegmentV11 转换（at 段转为 qq 字段）
+//
+// 返回：对应动作请求。
 func BuildSendMessageSegmentsV11(isGroup bool, userID, groupID string, segs []NormalizedSegment) *ActionRequest {
 	if isGroup {
 		gid, _ := strconv.ParseInt(groupID, 10, 64)
@@ -647,6 +748,15 @@ func BuildSendMessageSegmentsV11(isGroup bool, userID, groupID string, segs []No
 }
 
 // ToMessageSegmentV12 将标准化段转为 OneBot 12 消息段列表。
+//
+// 参数：
+//   - segs：标准化段列表，可为 nil
+//
+// 返回：与输入等长的 OneBot 12 消息段列表；输入为空时返回空切片（非 nil）。
+//
+// 注意：at 段输出 user_id（优先 user_id，缺失时回退 qq）；image 段按
+// file_id → file → url 顺序取首个非空字段；其余类型（reply / face 等）原样透传 Data，
+// 引用段的 message_id（V12）/ id（V11）命名差异由调用方保证。
 func ToMessageSegmentV12(segs []NormalizedSegment) []MessageSegmentV12 {
 	result := make([]MessageSegmentV12, 0, len(segs))
 	for _, s := range segs {
@@ -670,7 +780,7 @@ func ToMessageSegmentV12(segs []NormalizedSegment) []MessageSegmentV12 {
 			}
 			result = append(result, MessageSegmentV12{Type: "at", Data: map[string]any{"user_id": uid}})
 		default:
-			// 其余类型透传原始 data（转为 string 值，兼容 number 场景）
+			// 其余类型透传原始 data（值已在 toStringMap 中转为字符串，兼容 number 场景）
 			data := make(map[string]any, len(s.Data))
 			for k, v := range s.Data {
 				data[k] = v
@@ -682,6 +792,14 @@ func ToMessageSegmentV12(segs []NormalizedSegment) []MessageSegmentV12 {
 }
 
 // ToMessageSegmentV11 将标准化段转为 OneBot 11 消息段列表。
+//
+// 参数：
+//   - segs：标准化段列表，可为 nil
+//
+// 返回：与输入等长的 OneBot 11 消息段列表；输入为空时返回空切片（非 nil）。
+//
+// 注意：at 段目标写入 qq 字段（OneBot 12 为 user_id）；image 段 file 优先取
+// file、缺失时回退 url（支持 url / base64 data URI / 本地路径）；其余类型原样透传 Data。
 func ToMessageSegmentV11(segs []NormalizedSegment) []MessageSegmentV11 {
 	result := make([]MessageSegmentV11, 0, len(segs))
 	for _, s := range segs {
@@ -712,9 +830,7 @@ func ToMessageSegmentV11(segs []NormalizedSegment) []MessageSegmentV11 {
 	return result
 }
 
-// ── 辅助函数 ──
-
-// formatIntOrString 将值格式化为字符串（处理 JSON number 或 string）
+// formatIntOrString 将值格式化为字符串（处理 JSON number 或 string）。
 func formatIntOrString(v any) string {
 	switch n := v.(type) {
 	case json.Number:

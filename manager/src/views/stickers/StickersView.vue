@@ -30,7 +30,6 @@ const pageSize = 20
 const stepUpVisible = ref(false)
 const pendingAction = ref<((token: string) => Promise<void>) | null>(null)
 
-// 标签编辑弹窗
 const editVisible = ref(false)
 const editing = ref<StickerView | null>(null)
 const tagsText = ref('')
@@ -150,7 +149,6 @@ onMounted(load)
       </t-table>
     </t-card>
 
-    <!-- 标签编辑 -->
     <t-dialog
       v-model:visible="editVisible"
       header="编辑语义标签"

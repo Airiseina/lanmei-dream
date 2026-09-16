@@ -19,32 +19,15 @@ import (
 	"go.uber.org/zap"
 )
 
-// ============================================================
-// StickerPlugin 自定义表情库插件
-// ============================================================
-
-// StickerPlugin 实现自定义表情的收藏与发送：
-//   - /添加表情（兼容旧命令 /收表情）：管理员（普通管理员 + 超管）收藏消息中的图片（上传 RustFS + 视觉模型自动打标 + 写 sticker_library）
-//   - /删除表情 <标签>：管理员按精确标签删除表情及未被共享引用的 RustFS 对象
-//   - /发表情 <标签>：按标签发送一张表情；无参数时发送一张随机表情（默认行为）
-//   - /表情列表：仅管理员（普通管理员 + 超管）可查看表情库清单（必须是 /表情列表 完整命令）
-//   - pick_sticker 工具：LLM 按语义（情绪/语境）检索表情库，返回可发送的图片 URL
+// StickerPlugin 实现自定义表情的收藏与发送：管理员（普通管理员 + 超管）用 /添加表情
+// （兼容旧命令 /收表情）收藏消息中的图片（上传 RustFS + 视觉模型自动打标 + 写 sticker_library），
+// /删除表情 按精确标签删除并清理未被共享引用的 RustFS 对象，/发表情 按标签检索发送一张
+// （无参数时发最新收藏的一张），/表情列表 必须完整匹配且仅管理员可用；
+// pick_sticker 工具供 LLM 按语义（情绪/语境）检索表情库，返回可发送的图片 URL。
 //
-// 行为树：
-//
-//	subtree.sticker → Selector(
-//	  Sequence(isCollectStickerCommand, Action("pipeline.plugin.sticker.collect")),
-//	  Sequence(isDeleteStickerCommand,  Action("pipeline.plugin.sticker.delete")),
-//	  Sequence(isListStickerCommand,    Action("pipeline.plugin.sticker.list")),
-//	  Sequence(isSendStickerCommand,    Action("pipeline.plugin.sticker.send")),
-//	)
-//
-// 管线：
-//
-//	pipeline.plugin.sticker.collect → [stickerCollectPass]
-//	pipeline.plugin.sticker.delete  → [stickerDeletePass]
-//	pipeline.plugin.sticker.list    → [stickerListPass]
-//	pipeline.plugin.sticker.send    → [stickerSendPass]
+// 插件 ID sticker；依赖 RustFS 对象存储（store 为 nil 时收藏、删除、发送不可用，仍可查询库内记录）、
+// 视觉服务（vision 为 nil 时无法自动打标，收藏不可用）与 Postgres（db 由 PluginContext 在 OnInit 注入）；
+// 不使用受限 KV 与 StateStore。
 //
 // 数据来源约定（"不导包"）：
 //   - 管理员标记：黑板 "bot.is_super_user"（bot 层注入，普通管理员与超管统一标记）
@@ -98,7 +81,6 @@ func (p *StickerPlugin) OnInit(ctx *pluginpkg.PluginContext) error {
 	p.db = ctx.DB
 	p.logger = ctx.Logger
 
-	// 注册 Pass
 	collectPassID := pluginpkg.PassID("sticker", "collect")
 	collectPass := &stickerCollectPass{db: p.db, store: p.store, vision: p.vision, logger: p.logger}
 	if err := ctx.Engine.RegisterPass(collectPassID, collectPass); err != nil {
@@ -127,7 +109,6 @@ func (p *StickerPlugin) OnInit(ctx *pluginpkg.PluginContext) error {
 	}
 	ctx.Registry.TrackPass("sticker", listPassID)
 
-	// 注册管线
 	collectPipelineID := pluginpkg.PipelineID("sticker", "collect")
 	if err := ctx.Engine.RegisterPipeline(conduit.NewPipelineFromIDs(collectPipelineID, collectPassID)); err != nil {
 		return fmt.Errorf("register sticker collect pipeline: %w", err)
@@ -152,7 +133,6 @@ func (p *StickerPlugin) OnInit(ctx *pluginpkg.PluginContext) error {
 	}
 	ctx.Registry.TrackPipeline("sticker", listPipelineID)
 
-	// 注册行为树子树：添加表情 / 删除表情 / 表情列表 / 发表情 命令路由
 	subtree := conduit.NewSelector(
 		conduit.NewSequence(
 			conduit.NewCondition(isCollectStickerCommand),
@@ -183,10 +163,6 @@ func (p *StickerPlugin) OnStart(_ *pluginpkg.PluginContext) error { return nil }
 
 // OnStop 表情库插件无需清理资源。
 func (p *StickerPlugin) OnStop(_ *pluginpkg.PluginContext) error { return nil }
-
-// ============================================================
-// 条件判断
-// ============================================================
 
 // stickerCollectPrefixes 添加表情命令前缀：正式 /添加表情，兼容旧命令 /收表情。
 var stickerCollectPrefixes = []string{"/添加表情", "/收表情"}
@@ -225,15 +201,12 @@ func isListStickerCommand(ctx *conduit.MessageContext) bool {
 	return strings.TrimSpace(ctx.RawMsg) == "/表情列表"
 }
 
-// ============================================================
-// 黑板键（bot 层注入，插件按"不导包"约定用字符串字面量）
-// ============================================================
-
+// 黑板键（bot 层注入，插件按"不导包"约定使用字符串字面量）。
 const (
 	// 项目会把配置超管与 bot_admin 动态 Bot 管理员合并到同一集合后注入此标记。
-	blackboardIsSuperUser    = "bot.is_super_user"   // bool 当前用户是否超管
-	blackboardImageURLs      = "bot.image_urls"      // []string 消息中图片段 url 列表
-	blackboardCommandReentry = "bot.command.reentry" // bool 命令重入标记（意图路由/斜杠命令经插件 handler 重入引擎）
+	blackboardIsSuperUser    = "bot.is_super_user"
+	blackboardImageURLs      = "bot.image_urls"
+	blackboardCommandReentry = "bot.command.reentry"
 )
 
 // isCommandReentry 判断当前消息是否为插件命令重入（意图路由或斜杠命令触发的插件命令）。
@@ -242,11 +215,7 @@ func isCommandReentry(ctx *conduit.MessageContext) bool {
 	return b
 }
 
-// ============================================================
-// Pass 实现：添加表情入库
-// ============================================================
-
-// stickerCollectPass 收藏表情：校验超管 → 提取图片 → 上传 RustFS → 视觉模型自动打标 → 写库。
+// stickerCollectPass 收藏表情：管理员图片上传 RustFS、经视觉模型自动打标后写入表情库。
 type stickerCollectPass struct {
 	db     *database.DB
 	store  *media.ObjectStore
@@ -254,8 +223,13 @@ type stickerCollectPass struct {
 	logger *zap.Logger
 }
 
+// Execute 收藏表情：校验调用者为管理员后，取黑板 bot.image_urls 的首张图片下载
+// （10 秒超时、10MB 上限），上传 RustFS，再经视觉模型自动打标并写入表情库。
+// 由 plugin.sticker.pipeline.collect 在 isCollectStickerCommand 命中 /添加表情
+// （兼容旧命令 /收表情）后调用。
+// 失败分支均只回复对应提示且不写库：非管理员、未附图片、RustFS 未配置、图片下载失败或内容为空、
+// 同图已收藏（objectKey 内容寻址幂等）、视觉模型未配置、打标失败、入库失败。
 func (pass *stickerCollectPass) Execute(ctx *conduit.MessageContext) error {
-	// 超管校验
 	isSuper, _ := ctx.Extra[blackboardIsSuperUser].(bool)
 	if !isSuper {
 		conduit.AppendOutput(ctx, &conduit.Message{
@@ -265,7 +239,6 @@ func (pass *stickerCollectPass) Execute(ctx *conduit.MessageContext) error {
 		return nil
 	}
 
-	// 对象存储未配置时收藏不可用
 	if pass.store == nil {
 		conduit.AppendOutput(ctx, &conduit.Message{
 			UserID: ctx.UserID, GroupID: ctx.GroupID, IsGroup: ctx.IsGroup,
@@ -274,7 +247,6 @@ func (pass *stickerCollectPass) Execute(ctx *conduit.MessageContext) error {
 		return nil
 	}
 
-	// 提取消息图片 URL
 	imageURLs, _ := ctx.Extra[blackboardImageURLs].([]string)
 	if len(imageURLs) == 0 {
 		conduit.AppendOutput(ctx, &conduit.Message{
@@ -284,7 +256,6 @@ func (pass *stickerCollectPass) Execute(ctx *conduit.MessageContext) error {
 		return nil
 	}
 
-	// 下载并上传（仅处理第一张图片）
 	imgURL := imageURLs[0]
 	data, mime, err := downloadImage(ctx.Ctx, imgURL)
 	if err != nil {
@@ -346,7 +317,6 @@ func (pass *stickerCollectPass) Execute(ctx *conduit.MessageContext) error {
 		return nil
 	}
 
-	// 写库
 	tagsJSON, _ := json.Marshal(tags)
 	sticker := &model.StickerLibrary{
 		ObjectKey: objectKey,
@@ -370,10 +340,6 @@ func (pass *stickerCollectPass) Execute(ctx *conduit.MessageContext) error {
 	return nil
 }
 
-// ============================================================
-// Pass 实现：按标签删除表情
-// ============================================================
-
 // stickerDeletePass 仅允许 Bot 管理员或超级管理员通过显式斜杠命令，
 // 按一个完整标签删除所有匹配表情，并清理未被媒体缓存共享引用的 RustFS 对象。
 type stickerDeletePass struct {
@@ -382,6 +348,12 @@ type stickerDeletePass struct {
 	logger *zap.Logger
 }
 
+// Execute 按单个精确标签删除表情：删除数据库中匹配标签的全部记录，并逐个清理
+// 未被媒体缓存共享引用（IsMediaObjectReferenced）的 RustFS 对象；
+// 共享引用检查失败的条目保留对象不删，删除结果以「已删除标签……张表情」回复。
+// 由 plugin.sticker.pipeline.delete 在 isDeleteStickerCommand 命中 /删除表情 后调用。
+// 删除属于破坏性管理员操作，命中命令重入标记 bot.command.reentry（LLM 自然语言意图间接触发）时直接拒绝执行；
+// 非管理员（读黑板 bot.is_super_user）、标签数不为 1、数据库或 RustFS 未配置时只回复提示。
 func (pass *stickerDeletePass) Execute(ctx *conduit.MessageContext) error {
 	// 删除属于破坏性管理员操作，不允许由 LLM 自然语言意图间接触发。
 	if isCommandReentry(ctx) {
@@ -457,28 +429,28 @@ func (pass *stickerDeletePass) reply(ctx *conduit.MessageContext, content string
 	})
 }
 
-// ============================================================
-// Pass 实现：发表情（发送）
-// ============================================================
-
-// stickerSendPass 发送表情：/发表情 标签 → 检索并发送一张；/发表情（无参）→ 发送最新收藏的一张（默认行为）。
+// stickerSendPass 发送表情：带标签时按标签检索发送一张，无参数时发送最新收藏的一张。
 type stickerSendPass struct {
 	db     *database.DB
 	store  *media.ObjectStore
 	logger *zap.Logger
 }
 
+// Execute 发送表情：带参数时按标签检索最新匹配的一张（SearchStickers 按时间倒序取第一条），
+// 无参数时发送最新收藏的一张；命中记录经 RustFS 预签名（10 分钟）后以纯 URL 输出，
+// 由 bot 层识别为图片段发送。
+// 由 plugin.sticker.pipeline.send 在 isSendStickerCommand 命中 /发表情 后调用；
+// 检索失败、无匹配、存储未配置或预签名失败时只回复对应提示。
 func (pass *stickerSendPass) Execute(ctx *conduit.MessageContext) error {
 	keyword := strings.TrimSpace(strings.TrimPrefix(ctx.RawMsg, "/发表情"))
 
-	// 无参数（手动 /发表情 或意图路由触发但未提取到标签）：
-	// 默认发送最新收藏的一张表情，不再列出表情库（列表改由仅管理员的 /表情列表 提供）。
+	// 无参数（手动 /发表情 或意图路由未提取到标签）时发送最新一张；
+	// 库清单改由仅管理员可用的 /表情列表 提供。
 	if keyword == "" {
 		pass.sendLatest(ctx)
 		return nil
 	}
 
-	// 带参数：按标签检索并发一张（取最新匹配）
 	stickers, err := pass.db.SearchStickers(ctx.Ctx, keyword, 5)
 	if err != nil {
 		pass.logger.Error("sticker: 检索失败", zap.String("keyword", keyword), zap.Error(err))
@@ -521,8 +493,7 @@ func (pass *stickerSendPass) Execute(ctx *conduit.MessageContext) error {
 	return nil
 }
 
-// sendLatest 无参数时的默认行为：发送表情库最新收藏的一张表情
-// （随机取图接口已随表情检索改造移除，无参路径以取最新一张代替随机）。
+// sendLatest 无参数时的默认行为：发送表情库最新收藏的一张（随机取图接口已移除，以取最新一张代替）。
 // 库为空、存储未配置或取图失败时给出对应提示。
 func (pass *stickerSendPass) sendLatest(ctx *conduit.MessageContext) {
 	if pass.db == nil || pass.store == nil {
@@ -565,16 +536,15 @@ func (pass *stickerSendPass) sendLatest(ctx *conduit.MessageContext) {
 	})
 }
 
-// ============================================================
-// Pass 实现：表情列表（仅管理员）
-// ============================================================
-
-// stickerListPass 查看表情库清单：校验管理员（普通管理员 + 超管）→ 输出列表。
+// stickerListPass 查看表情库清单，仅管理员（普通管理员 + 超管）可用。
 type stickerListPass struct {
 	db     *database.DB
 	logger *zap.Logger
 }
 
+// Execute 输出表情库清单（最多 20 条，含 ID 与标签）。
+// 由 plugin.sticker.pipeline.list 在 isListStickerCommand 完整匹配 /表情列表 后调用；
+// 仅管理员可用（读黑板 bot.is_super_user），非管理员、查询失败或库为空时只回复对应提示。
 func (pass *stickerListPass) Execute(ctx *conduit.MessageContext) error {
 	// 管理员校验：bot 层将普通管理员与超管统一注入 bot.is_super_user
 	isAdmin, _ := ctx.Extra[blackboardIsSuperUser].(bool)
@@ -619,16 +589,12 @@ func (pass *stickerListPass) Execute(ctx *conduit.MessageContext) error {
 	return nil
 }
 
-// ============================================================
-// AI 工具：pick_sticker 按语义选表情
-// ============================================================
-
 // toolPickSticker 是 AI 工具处理器：按情绪/语境检索表情库，
 // 命中则返回可发送的图片 URL（预签名），未命中返回空结果提示。
 func (p *StickerPlugin) toolPickSticker(ctx context.Context, argsJSON string) (string, error) {
 	var args struct {
-		Emotion string `json:"emotion"` // 情绪/语境描述，如"无语""开心""被坑了"
-		QingXu  string `json:"情绪"`      // 兼容部分 LLM 直接传中文键
+		Emotion string `json:"emotion"`
+		QingXu  string `json:"情绪"` // 兼容部分 LLM 直接传中文键
 	}
 	_ = json.Unmarshal([]byte(argsJSON), &args) // 解析失败走下方兜底，不中断
 	emotion := strings.TrimSpace(args.Emotion)
@@ -654,7 +620,7 @@ func (p *StickerPlugin) toolPickSticker(ctx context.Context, argsJSON string) (s
 		return "表情库里没有匹配「" + emotion + "」的表情，直接回复纯文本即可", nil
 	}
 
-	// 取匹配度最高的（第一条，按时间最新）生成预签名 URL
+	// SearchStickers 按时间倒序返回，第一条即最新匹配。
 	hit := stickers[0]
 	if p.store == nil {
 		return fmt.Sprintf("找到表情但对象存储不可用，无法生成图片URL"), nil
@@ -667,11 +633,7 @@ func (p *StickerPlugin) toolPickSticker(ctx context.Context, argsJSON string) (s
 	return presignedURL, nil
 }
 
-// ============================================================
-// 辅助函数
-// ============================================================
-
-// stickerHTTPClient 图片下载客户端（10s 超时 + 10MB 上限）。
+// stickerHTTPClient 图片下载客户端（10s 超时；大小上限见 downloadImage）。
 var stickerHTTPClient = &http.Client{Timeout: 10 * time.Second}
 
 // downloadImage 下载图片内容，限制大小（10MB）。

@@ -15,64 +15,40 @@ import (
 	"go.uber.org/zap"
 )
 
-// ============================================================
-// Registry 插件注册表
-// ============================================================
-
-// Registry 管理所有插件的生命周期，是插件系统的核心。
-//
-// 职责：
-//   - 维护已注册插件的列表
-//   - 按序调用插件的 OnInit → OnStart 生命周期
-//   - 反序调用插件的 OnStop 进行清理
-//   - 动态重建主行为树，将插件子树挂载到决策流程中
-//   - 跟踪每个插件注册的 Pass/Pipeline/Subtree/Command，卸载时自动清理
-//
-// 使用流程：
-//
-//	reg := plugin.NewRegistry(engine, store, db, cmdSys)
-//	reg.Register(&SigninPlugin{})
-//	reg.Register(&FestivalPlugin{})
-//	reg.InitPlugins(ctx)  // 初始化所有插件
-//	reg.StartPlugins(ctx) // 启动所有插件
-//	// ... 运行 ...
-//	reg.StopPlugins(ctx)  // 停止所有插件
+// Registry 管理所有插件的生命周期：按注册顺序调用 OnInit → OnStart，
+// 反序调用 OnStop 清理，并在插件注册或卸载后重建主行为树、
+// 自动清理插件注册的 Pass/Pipeline/Subtree/Command。
 type Registry struct {
 	mu sync.RWMutex
 
-	// engine Conduit 引擎，用于注册/注销 Pass、Pipeline、Subtree
+	// engine 用于注册/注销 Pass、Pipeline、Subtree
 	engine *conduit.Engine
 	// store 全局状态存储
 	store conduit.StateStore
 	// kv 受限键值存储（PostgreSQL 后端，持久化；可为 nil）
-	kv *database.PluginKVStore
-	// db 数据库访问层
-	db *database.DB
-	// cmdSys 命令系统
-	cmdSys *command.System
-	// toolReg AI 工具注册表
+	kv      *database.PluginKVStore
+	db      *database.DB
+	cmdSys  *command.System
 	toolReg *tool.Registry
-	// logger 日志记录器
-	logger *zap.Logger
+	logger  *zap.Logger
 
 	// plugins 已注册的插件实例（按注册顺序）
-	plugins []Plugin
-	// pluginState 每个插件的运行状态
+	plugins     []Plugin
 	pluginState map[string]pluginState
 
-	// rebuildBT 行为树重建回调，由 Bot 层设置
-	// 当插件注册/卸载后，Registry 调用此函数通知 Bot 重建主行为树
+	// rebuildBT 行为树重建回调，由 Bot 层设置；
+	// 插件注册/卸载后 Registry 调用它通知 Bot 重建主行为树
 	rebuildBT func()
 }
 
-// pluginState 记录插件的运行状态和注册的资源
+// pluginState 记录插件的运行状态和注册的资源。
 type pluginState struct {
-	state        stateKind // 当前状态
-	subtreeID    string    // 注册的子树 ID（空表示无子树）
-	passIDs      []string  // 注册的 Pass ID 列表
-	pipelineIDs  []string  // 注册的 Pipeline ID 列表
-	commandNames []string  // 注册的命令名列表
-	toolNames    []string  // 注册的工具名列表
+	state        stateKind
+	subtreeID    string
+	passIDs      []string
+	pipelineIDs  []string
+	commandNames []string
+	toolNames    []string
 }
 
 type stateKind int
@@ -85,7 +61,16 @@ const (
 )
 
 // NewRegistry 创建插件注册表。
-// engine 可以为 nil，稍后通过 SetEngine 设置（适用于引擎在 Bot.New 中创建的场景）。
+//
+// 参数：
+//   - engine：Conduit 引擎；可以为 nil，稍后通过 SetEngine 注入（适用于引擎在 Bot.New 中创建的场景）
+//   - store：全局状态存储，注入插件 PluginContext
+//   - db：数据库句柄，注入插件 PluginContext
+//   - cmdSys：命令系统，用于注册插件命令
+//   - toolReg：AI 工具注册表；为 nil 时跳过插件工具注册
+//   - logger：日志器
+//
+// 返回：空的插件注册表。
 func NewRegistry(engine *conduit.Engine, store conduit.StateStore, db *database.DB, cmdSys *command.System, toolReg *tool.Registry, logger *zap.Logger) *Registry {
 	return &Registry{
 		engine:      engine,
@@ -100,6 +85,9 @@ func NewRegistry(engine *conduit.Engine, store conduit.StateStore, db *database.
 
 // SetEngine 设置 Conduit 引擎。
 // 当引擎在 Registry 创建之后才初始化时（如 bot.New 中），通过此方法注入。
+//
+// 参数：
+//   - engine：Conduit 引擎实例
 func (r *Registry) SetEngine(engine *conduit.Engine) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -108,6 +96,9 @@ func (r *Registry) SetEngine(engine *conduit.Engine) {
 
 // SetKVStore 注入插件受限键值存储（PostgreSQL 持久化）。
 // 在 InitPlugins 之前调用；不设置时插件的 PluginContext.KV 为 nil。
+//
+// 参数：
+//   - kv：受限键值存储；为 nil 时插件 KV 功能不可用
 func (r *Registry) SetKVStore(kv *database.PluginKVStore) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -115,19 +106,20 @@ func (r *Registry) SetKVStore(kv *database.PluginKVStore) {
 }
 
 // SetRebuildBT 设置行为树重建回调。
-// Bot 层在创建 Registry 后调用此方法，传入行为树重建函数。
-// 当插件注册/卸载导致子树变化时，Registry 通过此回调通知 Bot 重建主行为树。
+// 插件注册/卸载导致子树变化时，Registry 通过它通知 Bot 重建主行为树。
+//
+// 参数：
+//   - fn：无参回调；为 nil 时不通知
 func (r *Registry) SetRebuildBT(fn func()) {
 	r.rebuildBT = fn
 }
 
-// ============================================================
-// 注册与卸载
-// ============================================================
-
-// Register 注册一个插件到注册表。
-// 插件 ID 不可重复，否则返回错误。
-// 注册后需调用 InitPlugins 进行初始化。
+// Register 注册一个插件到注册表，此阶段只登记实例，不调用任何生命周期方法。
+//
+// 参数：
+//   - p：插件实例，Info().ID 不能为空且不可与已注册插件重复
+//
+// 返回：ID 为空或重复时返回错误；注册后需调用 InitPlugins 初始化。
 func (r *Registry) Register(p Plugin) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -146,10 +138,13 @@ func (r *Registry) Register(p Plugin) error {
 	return nil
 }
 
-// Unregister 卸载一个插件。
-// 如果插件已启动，会先调用 OnStop 停止，然后清理所有注册的资源。
+// Unregister 卸载一个插件：已启动时先调用 OnStop，再清理插件注册的 Pass/Pipeline/Subtree/命令/工具。
+//
+// 参数：
+//   - pluginID：插件 ID
+//
+// 返回：插件不存在时返回错误；OnStop 失败只记录日志，不阻断注销。
 func (r *Registry) Unregister(pluginID string) error {
-	// 在锁内快照插件信息
 	r.mu.Lock()
 
 	idx := -1
@@ -187,7 +182,7 @@ func (r *Registry) Unregister(pluginID string) error {
 
 	// 重新获取锁，从列表移除
 	r.mu.Lock()
-	// 重新查找索引（可能在释放锁期间发生变化）
+	// 索引可能在释放锁期间发生变化，需重新查找
 	idx = -1
 	for i, pp := range r.plugins {
 		if pp.Info().ID == pluginID {
@@ -211,11 +206,13 @@ func (r *Registry) Unregister(pluginID string) error {
 	return nil
 }
 
-// ============================================================
-// 生命周期
-// ============================================================
-
-// InitPlugin 初始化单个已注册插件。
+// InitPlugin 初始化单个已注册插件：调用 OnInit，再注册插件声明的斜杠命令与 AI 工具。
+//
+// 参数：
+//   - ctx：传给 OnInit 的上下文
+//   - pluginID：插件 ID
+//
+// 返回：插件不存在、OnInit 失败或命令注册失败时返回错误；失败时回滚已注册资源。
 func (r *Registry) InitPlugin(ctx context.Context, pluginID string) error {
 	r.mu.RLock()
 	var p Plugin
@@ -263,7 +260,7 @@ func (r *Registry) InitPlugin(ctx context.Context, pluginID string) error {
 		cmdNames = append(cmdNames, cmd.Name)
 	}
 
-	// Register tools if PluginInfo has them
+	// 注册插件声明的 AI 工具
 	toolNames := make([]string, 0, len(info.Tools))
 	if len(info.Tools) > 0 && r.toolReg != nil {
 		for _, td := range info.Tools {
@@ -304,7 +301,13 @@ func (r *Registry) InitPlugin(ctx context.Context, pluginID string) error {
 	return nil
 }
 
-// StartPlugin 启动单个已初始化插件。
+// StartPlugin 启动单个已初始化插件（调用 OnStart）。
+//
+// 参数：
+//   - ctx：传给 OnStart 的上下文
+//   - pluginID：插件 ID
+//
+// 返回：插件不存在、未初始化或 OnStart 失败时返回错误。
 func (r *Registry) StartPlugin(ctx context.Context, pluginID string) error {
 	r.mu.RLock()
 	var p Plugin
@@ -338,7 +341,13 @@ func (r *Registry) StartPlugin(ctx context.Context, pluginID string) error {
 	return nil
 }
 
-// StopPlugin 停止单个已启动插件，不注销资源。
+// StopPlugin 停止单个已启动插件（调用 OnStop），不注销已注册资源。
+//
+// 参数：
+//   - ctx：传给 OnStop 的上下文
+//   - pluginID：插件 ID
+//
+// 返回：插件不存在或 OnStop 失败时返回错误；插件未启动时直接返回 nil。
 func (r *Registry) StopPlugin(ctx context.Context, pluginID string) error {
 	r.mu.RLock()
 	var p Plugin
@@ -369,7 +378,12 @@ func (r *Registry) StopPlugin(ctx context.Context, pluginID string) error {
 	return nil
 }
 
-// InitPlugins 初始化所有已注册插件。
+// InitPlugins 按注册顺序初始化所有已注册插件，任一失败即中止并返回错误。
+//
+// 参数：
+//   - ctx：传给每个插件 OnInit 的上下文
+//
+// 返回：首个失败的初始化错误；全部成功返回 nil。
 func (r *Registry) InitPlugins(ctx context.Context) error {
 	r.mu.RLock()
 	ids := make([]string, 0, len(r.plugins))
@@ -385,7 +399,12 @@ func (r *Registry) InitPlugins(ctx context.Context) error {
 	return nil
 }
 
-// StartPlugins 启动所有已初始化插件。
+// StartPlugins 按注册顺序启动所有已初始化插件，任一失败即中止并返回错误。
+//
+// 参数：
+//   - ctx：传给每个插件 OnStart 的上下文
+//
+// 返回：首个失败的启动错误；全部成功返回 nil。
 func (r *Registry) StartPlugins(ctx context.Context) error {
 	r.mu.RLock()
 	ids := make([]string, 0, len(r.plugins))
@@ -401,7 +420,10 @@ func (r *Registry) StartPlugins(ctx context.Context) error {
 	return nil
 }
 
-// StopPlugins 按注册逆序停止所有已启动插件。
+// StopPlugins 按注册逆序停止所有已启动插件；单个插件失败只记录日志，不阻断其余停止。
+//
+// 参数：
+//   - ctx：传给每个插件 OnStop 的上下文
 func (r *Registry) StopPlugins(ctx context.Context) {
 	r.mu.RLock()
 	ids := make([]string, 0, len(r.plugins))
@@ -416,15 +438,10 @@ func (r *Registry) StopPlugins(ctx context.Context) {
 	}
 }
 
-// ============================================================
-// 行为树管理
-// ============================================================
-
 // SubtreeRefs 返回所有已初始化插件的 SubtreeRef 节点列表。
-// Bot 层在构建主行为树时，将这些 SubtreeRef 插入到核心分支之前，
-// 使插件的路由优先级高于核心逻辑。
+// Bot 构建主行为树时将其插入核心分支之前，使插件路由优先级高于核心逻辑。
 //
-// 调用时机：Bot 构建或重建主行为树时。
+// 返回：子树引用列表；未初始化或无子树的插件不包含在内。
 func (r *Registry) SubtreeRefs() []*conduit.SubtreeRef {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -443,11 +460,9 @@ func (r *Registry) SubtreeRefs() []*conduit.SubtreeRef {
 	return refs
 }
 
-// ============================================================
-// 查询
-// ============================================================
-
-// List 返回所有已注册插件的信息列表。
+// List 返回所有已注册插件的信息列表，顺序与注册顺序一致。
+//
+// 返回：PluginInfo 切片；无插件时为空切片。
 func (r *Registry) List() []PluginInfo {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -460,6 +475,11 @@ func (r *Registry) List() []PluginInfo {
 }
 
 // Get 根据插件 ID 获取插件实例。
+//
+// 参数：
+//   - pluginID：插件 ID
+//
+// 返回：插件实例与是否存在。
 func (r *Registry) Get(pluginID string) (Plugin, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -472,7 +492,12 @@ func (r *Registry) Get(pluginID string) (Plugin, bool) {
 	return nil, false
 }
 
-// State 返回插件的当前状态。
+// State 返回插件的内部状态标识；对外展示请用 StateName。
+//
+// 参数：
+//   - pluginID：插件 ID
+//
+// 返回：状态标识与插件是否存在；不存在时返回 stateRegistered 与 false。
 func (r *Registry) State(pluginID string) (stateKind, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -485,6 +510,11 @@ func (r *Registry) State(pluginID string) (stateKind, bool) {
 }
 
 // StateName 返回插件的可读状态名（供管理面板展示）。
+//
+// 参数：
+//   - pluginID：插件 ID
+//
+// 返回：not_loaded、registered、initialized、started、stopped 或 unknown。
 func (r *Registry) StateName(pluginID string) string {
 	st, ok := r.State(pluginID)
 	if !ok {
@@ -502,10 +532,6 @@ func (r *Registry) StateName(pluginID string) string {
 	}
 	return "unknown"
 }
-
-// ============================================================
-// 内部方法
-// ============================================================
 
 // newPluginContext 创建不带超时的 PluginContext（用于生命周期调用）。
 func (r *Registry) newPluginContext() *PluginContext {
@@ -538,17 +564,15 @@ func (r *Registry) newPluginContextWith(ctx context.Context) *PluginContext {
 }
 
 // makeCommandHandler 将插件的命令处理包装为 command.Handler。
-//
-// 插件命令的实际执行由行为树子树路由到插件管线完成，
-// 此 handler 仅作为 command.System 中的注册占位（供帮助列表和 Lookup 查询使用）。
-// 当通过意图分析路由到插件命令时，handler 会通过插件管线执行命令逻辑。
+// 命令实际由行为树子树路由到插件管线执行，此 handler 仅作为 command.System 中的
+// 注册占位（供帮助列表和 Lookup 查询），并在意图分析路由到插件命令时触发该管线。
 func (r *Registry) makeCommandHandler(p Plugin, cmd CommandDef) func(ctx *command.Context) error {
 	return func(cmdCtx *command.Context) error {
 		pluginID := p.Info().ID
 
-		// 防重入死循环：当插件子树未匹配（如命令带插件不支持的参数）时，
+		// 防重入死循环：插件子树未匹配时（如命令带插件不支持的参数），
 		// 重入消息会再次落入"命令分支 → 本 handler → 重入"的无限递归。
-		// 重入消息由下方 Extra 中的重入标记标识，第二次进入直接报错退出。
+		// 下方 Extra 中的重入标记标识此类消息，第二次进入直接报错退出。
 		if cmdCtx.CommandReentry {
 			return fmt.Errorf("plugin %q command %q reentry loop detected", pluginID, cmd.Name)
 		}
@@ -561,13 +585,12 @@ func (r *Registry) makeCommandHandler(p Plugin, cmd CommandDef) func(ctx *comman
 			"command_name": cmd.Name,
 			// 重入标记：插件子树消费后不再进入命令分支
 			"bot.command.reentry": true,
-			// ── 消息上下文（bot 包 KeyPlatform/KeyPlatformUserID/...）──
-			"platform":         cmdCtx.Platform,
-			"platform_user_id": cmdCtx.PlatformUserID,
-			"nickname":         cmdCtx.Nickname,
-			"message_id":       cmdCtx.MessageID,
-			"conn_id":          cmdCtx.ConnID,
-			"self_id":          cmdCtx.SelfID,
+			"platform":            cmdCtx.Platform,
+			"platform_user_id":    cmdCtx.PlatformUserID,
+			"nickname":            cmdCtx.Nickname,
+			"message_id":          cmdCtx.MessageID,
+			"conn_id":             cmdCtx.ConnID,
+			"self_id":             cmdCtx.SelfID,
 			// bot.message_type = "message"（gateway.MessageTypeMessage）：命令必然为普通消息
 			"bot.message_type": "message",
 			"bot.at_targets":   cmdCtx.AtTargets,
@@ -642,7 +665,11 @@ func (r *Registry) cleanupResources(pluginID string, st pluginState) {
 	}
 }
 
-// TrackPass 记录插件注册的 Pass ID。
+// TrackPass 记录插件注册的 Pass ID，供卸载时自动清理。
+//
+// 参数：
+//   - pluginID：插件 ID
+//   - passID：由 PassID 生成的注册 ID
 func (r *Registry) TrackPass(pluginID, passID string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -651,7 +678,11 @@ func (r *Registry) TrackPass(pluginID, passID string) {
 	r.pluginState[pluginID] = st
 }
 
-// TrackPipeline 记录插件注册的 Pipeline ID。
+// TrackPipeline 记录插件注册的 Pipeline ID，供卸载时自动清理。
+//
+// 参数：
+//   - pluginID：插件 ID
+//   - pipelineID：由 PipelineID 生成的注册 ID
 func (r *Registry) TrackPipeline(pluginID, pipelineID string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -660,7 +691,11 @@ func (r *Registry) TrackPipeline(pluginID, pipelineID string) {
 	r.pluginState[pluginID] = st
 }
 
-// TrackTool 记录插件注册的工具名。
+// TrackTool 记录插件注册的工具名，供卸载时自动清理。
+//
+// 参数：
+//   - pluginID：插件 ID
+//   - toolName：工具名
 func (r *Registry) TrackTool(pluginID, toolName string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()

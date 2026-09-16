@@ -36,17 +36,17 @@ var (
 
 // Config 认证服务配置（来自 manager 配置节）。
 type Config struct {
-	AccessTokenTTL      time.Duration // 短期 Access Token 有效期
-	RefreshTokenTTL     time.Duration // 长期 Refresh Token 有效期
-	MaxSessionsPerUser  int           // 单账号最大活跃会话数
-	MaxLoginFails       int           // 连续失败锁定阈值
+	AccessTokenTTL      time.Duration
+	RefreshTokenTTL     time.Duration
+	MaxSessionsPerUser  int
+	MaxLoginFails       int
 	LoginLockWindow     time.Duration // 失败统计窗口（同时作为锁定时长）
 	EnableWebAuthn      bool
 	WebAuthnRPID        string // 显式 RPID（域名）；空则按请求 Host 推断
 	WebAuthnDisplayName string
 	WebAuthnOrigins     []string
 	SuperAdminUsername  string // env 超管（bootstrap 用，不落库明文）
-	SuperAdminPassword  string // env 超管密码
+	SuperAdminPassword  string
 	SecretKey           string // 加密主密钥
 }
 
@@ -164,12 +164,8 @@ func (s *Service) ValidateStepUp(token string, adminID uint) bool {
 	return true
 }
 
-// Bootstrap 环境变量超级管理员引导（启动时调用一次）。
-// 规则见实施文档 §4.3：
-//   - 不存在 → 创建 super_admin（auth_source=env，argon2id 哈希）
-//   - 存在且 auth_source=env → 用 env 重新派生哈希（改 env 重启即生效）
-//   - 存在且 auth_source=db → 不覆盖（面板内改过密码）
-//
+// Bootstrap 用环境变量引导超级管理员（启动时调用一次）：账号不存在则创建 super_admin；
+// auth_source=env 时按 env 重新派生哈希（改 env 重启即生效），auth_source=db 时不覆盖（面板内改过密码）。
 // 明文密码全程不落库、不落日志。
 func (s *Service) Bootstrap(ctx context.Context) error {
 	username := s.cfg.SuperAdminUsername

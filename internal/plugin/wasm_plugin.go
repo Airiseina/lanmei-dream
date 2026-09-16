@@ -14,13 +14,18 @@ import (
 // WasmRuntime 是 WasmPlugin 所需的 Runtime 能力接口。
 // 测试可用 fake 替代真实 *Runtime。
 type WasmRuntime interface {
+	// CallHandle 调用 Guest 的 lanmei_handle 并返回校验后的响应。
 	CallHandle(ctx context.Context, instance *extism.Plugin, mu *sync.Mutex, req HandleRequest) (*HandleResponse, error)
+	// CallStart 调用可选的 lanmei_start。
 	CallStart(ctx context.Context, instance *extism.Plugin, mu *sync.Mutex) error
+	// CallStop 以指定原因调用可选的 lanmei_stop。
 	CallStop(ctx context.Context, instance *extism.Plugin, mu *sync.Mutex, reason StopReason)
+	// Close 关闭实例并回收资源。
 	Close(ctx context.Context, instance *extism.Plugin, mu *sync.Mutex) error
 }
 
-// WasmPlugin 将一个正式 Extism 安装实例适配为宿主 Plugin。
+// WasmPlugin 将一个正式 Extism 安装实例适配为宿主 Plugin：路由元数据来自 lanmei_plugin_info，
+// 安装实例身份由宿主生成，所有 Guest 调用经 callMu 串行化。
 type WasmPlugin struct {
 	metadata       PluginInfoResponse
 	installationID string
@@ -36,7 +41,16 @@ type WasmPlugin struct {
 
 var _ Plugin = (*WasmPlugin)(nil)
 
-// NewWasmPlugin 创建已实例化的 Wasm 插件适配器。
+// NewWasmPlugin 创建已实例化的 Wasm 插件适配器，主体按安装实例构造，停止原因默认为 shutdown。
+//
+// 参数：
+//   - metadata：插件元数据（来自 lanmei_plugin_info）
+//   - installationID：宿主生成的安装实例 ID
+//   - runtime：Guest 调用实现（通常为 *Runtime）
+//   - instance：已创建的 Extism 实例
+//   - authorizer：权限判定器，命令处理与消息回复前做动作检查
+//
+// 返回：可直接注册到 Registry 的插件实例。
 func NewWasmPlugin(
 	metadata PluginInfoResponse,
 	installationID string,
@@ -55,16 +69,25 @@ func NewWasmPlugin(
 	}
 }
 
-// InstallationID 返回宿主可信安装实例 ID。
+// InstallationID 返回宿主生成的安装实例 ID。
+//
+// 返回：安装实例 ID；插件命令重入时用它回填 Extra 中的 installation_id。
 func (p *WasmPlugin) InstallationID() string { return p.installationID }
 
-// Principal 返回宿主可信 Casbin 主体。
+// Principal 返回宿主可信的 Casbin 主体（plugin::<pluginID>::<installationID>）。
+//
+// 返回：主体字符串。
 func (p *WasmPlugin) Principal() string { return p.principal }
 
-// SetStopReason 设置下一次停止通知原因。
+// SetStopReason 设置下一次停止通知（lanmei_stop）的原因。
+//
+// 参数：
+//   - reason：停止原因，取值见 StopReason 常量
 func (p *WasmPlugin) SetStopReason(reason StopReason) { p.stopReason = reason }
 
-// Info 返回宿主生成的路由元数据。
+// Info 返回宿主生成的路由元数据：命令与工具声明来自插件元数据，SubtreeID 由插件 ID 推导。
+//
+// 返回：注册与展示用的插件元信息。
 func (p *WasmPlugin) Info() PluginInfo {
 	commands := make([]CommandDef, 0, len(p.metadata.Commands))
 	for _, command := range p.metadata.Commands {
@@ -89,7 +112,13 @@ func (p *WasmPlugin) Info() PluginInfo {
 	}
 }
 
-// OnInit 注册宿主控制的共享 Pass、Pipeline 和行为树子树。
+// OnInit 注册宿主控制的共享 Pass、Pipeline 和行为树子树：命令匹配条件只看 /<命令名> 前缀，
+// 命中后写入 command_name 并交由 WasmCommandPass 调用 Guest。
+//
+// 参数：
+//   - ctx：生命周期上下文，提供 Engine 与 Registry
+//
+// 返回：注册失败时返回错误。
 func (p *WasmPlugin) OnInit(ctx *PluginContext) error {
 	passID := PassID(p.metadata.ID, "command")
 	pipelineID := PipelineID(p.metadata.ID, "command")
@@ -104,7 +133,7 @@ func (p *WasmPlugin) OnInit(ctx *PluginContext) error {
 	}
 	ctx.Registry.TrackPipeline(p.metadata.ID, pipelineID)
 
-	// 构建命令名匹配条件：检查 RawMsg 是否以 /<命令名> 开头
+	// 命令匹配条件：RawMsg 以 /<命令名> 开头即命中
 	commandNames := make([]string, 0, len(p.metadata.Commands))
 	for _, cmd := range p.metadata.Commands {
 		commandNames = append(commandNames, cmd.Name)
@@ -132,12 +161,22 @@ func (p *WasmPlugin) OnInit(ctx *PluginContext) error {
 	return nil
 }
 
-// OnStart 发送一次性启动通知。
+// OnStart 发送一次性启动通知（lanmei_start）。
+//
+// 参数：
+//   - ctx：生命周期上下文
+//
+// 返回：Guest 启动失败时返回错误。
 func (p *WasmPlugin) OnStart(ctx *PluginContext) error {
 	return p.runtime.CallStart(ctx.Ctx, p.instance, &p.callMu)
 }
 
-// OnStop 停止 Guest 并关闭实例。关闭保持幂等。
+// OnStop 先以 stopReason 通知 Guest（lanmei_stop），再关闭实例；关闭保持幂等，重复调用返回首次结果。
+//
+// 参数：
+//   - ctx：生命周期上下文
+//
+// 返回：关闭实例失败时返回错误；lanmei_stop 失败只记录日志。
 func (p *WasmPlugin) OnStop(ctx *PluginContext) error {
 	p.closeOnce.Do(func() {
 		p.runtime.CallStop(ctx.Ctx, p.instance, &p.callMu, p.stopReason)
@@ -181,7 +220,12 @@ func generateEventID() string {
 	return fmt.Sprintf("evt-%d", time.Now().UTC().UnixNano())
 }
 
-// Close 在 Registry 注册前失败时回收实例。
+// Close 关闭 Guest 实例并回收资源，不发送 lanmei_stop 通知；幂等，重复调用返回首次关闭结果。
+//
+// 参数：
+//   - ctx：关闭上下文
+//
+// 返回：首次关闭失败时返回该错误。
 func (p *WasmPlugin) Close(ctx context.Context) error {
 	p.closeOnce.Do(func() {
 		p.closeErr = p.runtime.Close(ctx, p.instance, &p.callMu)

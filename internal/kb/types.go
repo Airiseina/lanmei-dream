@@ -1,27 +1,32 @@
 // Package kb 提供知识库系统：多模式召回（向量/模糊/时间）+ Provider 抽象 + LLM 工具。
 //
-// 设计目标：
-//   - 与 eino/conduit 架构优雅结合：召回结果作为 system 消息注入 ChatService，
-//     主动召回通过 tool.Registry 注册的 kb_search/kb_add 工具参与 eino 工具调用循环；
-//   - Provider 抽象层抹平本地数据库 / 飞书 / 未来其它知识库产品的差异，
-//     新增召回模式（如 graph）只需扩展 RecallMode 常量并让 Provider 声明能力；
-//   - 多路召回合并采用与 ai/memory 一致的 rank 加权算法，跨 provider 分数可比。
+// 召回结果作为 system 消息注入 ChatService，主动召回通过 kb_search/kb_add 工具参与
+// eino 工具调用循环；Provider 抽象抹平本地数据库 / 飞书等数据源差异，新增召回模式
+// 只需扩展 RecallMode 常量并让 Provider 声明能力；合并算法与 ai/memory 的 rank
+// 加权一致，跨 provider 分数可比。
 package kb
 
 import "time"
 
-// RecallMode 召回模式标识。
-// 未来新增模式（如 graph）只需追加常量、让 Provider 在 Capabilities 中声明支持，
-// 引擎会自动把该模式分发给支持它的 Provider，未支持的 Provider 跳过并告警。
+// RecallMode 召回模式标识。新增模式只需追加常量并让 Provider 在 Capabilities 中声明支持，
+// 引擎会自动分发给支持的 Provider，未支持的跳过并告警。
 type RecallMode string
 
 const (
-	RecallModeVector RecallMode = "vector" // 向量召回（语义相似）
-	RecallModeFuzzy  RecallMode = "fuzzy"  // 模糊召回（倒排索引/全文匹配）
-	RecallModeTime   RecallMode = "time"   // 时间召回（最近更新）
+	// RecallModeVector 向量召回：把查询文本向量化后按语义相似度检索，适合自然语言提问
+	// （近义表达、口语化描述）场景；依赖 embedder 与 provider 的向量索引，缺 embedder 时降级。
+	RecallModeVector RecallMode = "vector"
+
+	// RecallModeFuzzy 模糊召回：基于倒排索引 / 全文匹配打分（本地 pg_trgm，远程 provider
+	// 的关键词评分），适合专有名词、缩写、代码标识符等词面命中的场景。
+	RecallModeFuzzy RecallMode = "fuzzy"
+
+	// RecallModeTime 时间召回：按内容更新时间倒序取最近的分块，适合「最近 / 最新」类
+	// 时效性查询；不依赖查询文本，也不依赖 embedder。
+	RecallModeTime RecallMode = "time"
 )
 
-// Valid 判断模式是否合法
+// Valid 判断模式是否合法。
 func (m RecallMode) Valid() bool {
 	switch m {
 	case RecallModeVector, RecallModeFuzzy, RecallModeTime:
@@ -32,16 +37,16 @@ func (m RecallMode) Valid() bool {
 
 // Chunk 一条知识分块，是 provider 无关的统一表示。
 type Chunk struct {
-	ID                string         // provider 内唯一标识（本地=自增ID字符串，飞书=node_id）
-	KnowledgeBaseID   string         // 所属知识库 ID（配置 bases[].id）
-	KnowledgeBaseName string         // 知识库名称（展示用）
-	Provider          string         // provider 类型标识（local/feishu）
-	Title             string         // 标题
-	Content           string         // 正文内容
-	URL               string         // 原文链接（可选）
-	Meta              map[string]any // 元数据：source/tags 等（筛选依据）
-	CreatedAt         time.Time      // 创建时间（时序筛选）
-	UpdatedAt         time.Time      // 更新时间（时序筛选）
+	ID                string // provider 内唯一标识（本地=自增ID字符串，飞书=node_id）
+	KnowledgeBaseID   string // 所属知识库 ID（配置 bases[].id）
+	KnowledgeBaseName string
+	Provider          string
+	Title             string
+	Content           string
+	URL               string
+	Meta              map[string]any // 元数据（source/tags 等，筛选依据）
+	CreatedAt         time.Time
+	UpdatedAt         time.Time
 }
 
 // ScoredChunk 带分数的召回结果。
@@ -106,7 +111,7 @@ type KnowledgeBase struct {
 	ID          string
 	Name        string
 	Description string
-	Provider    string // provider 类型标识（local/feishu）
+	Provider    string
 	Enabled     bool
 	RecallLimit int            // 单模式召回上限（默认 5）
 	Config      map[string]any // provider 私有配置

@@ -15,7 +15,14 @@ type wasmInstaller interface {
 	Install(ctx context.Context, actor, sourceURL string) (*model.PluginInstallation, error)
 }
 
-// NewWasmInstallCommand 创建面向 bot_owner 的远程 Wasm 安装命令。
+// NewWasmInstallCommand 创建面向 bot_owner 的远程 Wasm 安装命令（/插件 安装 <URL>）。
+// 命令只负责提交安装，成功后的加载/启用仍由管理流程决定。
+//
+// 参数：
+//   - ctx：安装请求使用的上下文
+//   - installer：安装实现，通常传 *WasmManager
+//
+// 返回：可注册到命令系统的 Command；调用者主体取消息发送者（user:: 主体）。
 func NewWasmInstallCommand(ctx context.Context, installer wasmInstaller) command.Command {
 	return command.Command{
 		Name:        "插件",

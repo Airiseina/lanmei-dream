@@ -37,10 +37,6 @@ func GetClaims(c fiber.Ctx) *auth.AccessClaims {
 	return v
 }
 
-// ─────────────────────────────────────────────
-// 鉴权与 RBAC
-// ─────────────────────────────────────────────
-
 // Auth 验证 Bearer Access Token，注入当前管理员。
 func Auth(svc *auth.Service) fiber.Handler {
 	return func(c fiber.Ctx) error {
@@ -118,10 +114,6 @@ func RequireStepUp(svc *auth.Service) fiber.Handler {
 	}
 }
 
-// ─────────────────────────────────────────────
-// CSRF（双提交 Cookie + Origin 校验）
-// ─────────────────────────────────────────────
-
 // CSRF 对状态变更请求做 CSRF 防护：
 //  1. 带 Origin 的请求必须与 Host 同源（浏览器跨站请求必带 Origin）；
 //  2. X-CSRF-Token 头必须与 lanmei_csrf Cookie 一致（双提交）。
@@ -139,7 +131,6 @@ func CSRF() fiber.Handler {
 			}
 		}
 
-		// 双提交校验：Cookie 与 Header 必须一致
 		cookie := c.Cookies(csrfCookieName)
 		header := c.Get("X-CSRF-Token")
 		if cookie == "" || header == "" || cookie != header {
@@ -155,7 +146,6 @@ func sameOrigin(origin, host, scheme string) bool {
 	u := strings.TrimPrefix(origin, "http://")
 	u = strings.TrimPrefix(u, "https://")
 	u = strings.TrimSuffix(u, "/")
-	// 去除默认端口差异
 	originHost := stripDefaultPort(u)
 	reqHost := stripDefaultPort(host)
 	return originHost == reqHost
@@ -185,10 +175,6 @@ func SetCSRFCookie(c fiber.Ctx, value string) {
 func GetCSRFCookieValue(c fiber.Ctx) string {
 	return c.Cookies(csrfCookieName)
 }
-
-// ─────────────────────────────────────────────
-// 限流（内存滑动窗口，按 IP）
-// ─────────────────────────────────────────────
 
 // rateBucket 固定窗口计数器。
 type rateBucket struct {
@@ -235,10 +221,6 @@ func maxInt(a, b int) int {
 	}
 	return b
 }
-
-// ─────────────────────────────────────────────
-// 恢复
-// ─────────────────────────────────────────────
 
 // Recover 捕获 handler panic，返回 500 并记录日志。
 func Recover(logf func(format string, args ...any)) fiber.Handler {

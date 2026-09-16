@@ -10,15 +10,10 @@ import (
 	"go.uber.org/zap"
 )
 
-// ─────────────────────────────────────────────
-// 登录流程
-// ─────────────────────────────────────────────
-
 // PasswordLogin 密码登录（第一步）。
 // 若账号已绑定 TOTP：返回 PendingTOTP（挂起状态），需调用方继续走 TOTP 校验；
 // 否则直接返回完整会话。
 func (s *Service) PasswordLogin(ctx context.Context, username, password, ip, userAgent string) (*SessionResult, *PendingTOTP, error) {
-	// 登录锁定检查（连续失败）
 	locked, err := s.isLocked(ctx, username)
 	if err != nil {
 		return nil, nil, err
@@ -137,10 +132,6 @@ func (s *Service) StepUpVerify(ctx context.Context, admin *model.ManagerAdmin, p
 	return token, nil
 }
 
-// ─────────────────────────────────────────────
-// 会话管理
-// ─────────────────────────────────────────────
-
 // Refresh 刷新会话（轮换 refresh token）。
 // 复用检测：旧 refresh token 再次出现 → 视为泄露，吊销该账号全部会话。
 func (s *Service) Refresh(ctx context.Context, refreshToken, ip, userAgent string) (*SessionResult, error) {
@@ -176,7 +167,6 @@ func (s *Service) Refresh(ctx context.Context, refreshToken, ip, userAgent strin
 		return nil, ErrAccountDisabled
 	}
 
-	// 轮换：旧摘要移到 PrevRefreshHash，签发新 refresh token
 	newRefresh, err := randomToken(32)
 	if err != nil {
 		return nil, err
@@ -260,7 +250,6 @@ func (s *Service) createSession(ctx context.Context, admin *model.ManagerAdmin, 
 		return nil, fmt.Errorf("auth: create session: %w", err)
 	}
 
-	// 会话配额裁剪
 	if s.cfg.MaxSessionsPerUser > 0 {
 		active, err := s.store.ListSessionsByAdmin(ctx, admin.ID)
 		if err == nil && len(active) > s.cfg.MaxSessionsPerUser {

@@ -1,6 +1,5 @@
 // 与后端 internal/model/manager.go 及 handlers 响应结构对齐
 
-// ── 认证 ──
 export type AdminRole = 'super_admin' | 'admin'
 export type AdminStatus = 'active' | 'disabled'
 
@@ -52,7 +51,6 @@ export interface AuthSession {
   revoked_at: string | null
 }
 
-// ── 管理员 ──
 export interface Admin {
   id: number
   username: string
@@ -64,7 +62,6 @@ export interface Admin {
   created_at: string
 }
 
-// ── LLM Provider 与用量 ──
 export interface LLMProvider {
   id: number
   name: string
@@ -95,7 +92,6 @@ export interface UsagePoint {
   calls: number
 }
 
-// ── Conduit 控制平面 ──
 export type BTNodeType = 'selector' | 'sequence' | 'condition' | 'action' | 'subtree' | 'custom'
 
 export interface BTNode {
@@ -166,7 +162,6 @@ export interface ConfigRevision {
   created_at: string
 }
 
-// ── 审计 ──
 export interface AuditLog {
   id: number
   admin_id: number | null
@@ -180,7 +175,6 @@ export interface AuditLog {
   created_at: string
 }
 
-// ── 仪表盘 ──
 export interface DashboardStats {
   today: {
     messages_processed: number
@@ -200,7 +194,6 @@ export interface DashboardStats {
   server_time: string
 }
 
-// ── 通用 ──
 export interface Page<T> {
   items: T[]
   total: number
@@ -212,7 +205,6 @@ export interface ApiErrorBody {
   retry_after?: number
 }
 
-// ── 内容管理（M3） ──
 export interface GroupView {
   group_id: string
   platform: string

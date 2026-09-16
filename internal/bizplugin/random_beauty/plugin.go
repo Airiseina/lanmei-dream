@@ -29,6 +29,17 @@ const (
 
 // Plugin 是严格安全审核的 Pixiv 随机美图插件（预审核图池模式）。
 //
+// 插件 ID random_beauty；命令 /随机美图（无参数、无工具）。
+// 依赖：图源 Random Mage 兼容 API（New 时校验地址必须是 HTTPS 且无凭据，配置非法直接返回错误）、
+// 视觉审核服务（moderator，未配置时 fail-closed 不补图，仅能发送池内既有图片）、
+// Postgres 图池（db 由 PluginContext 在 OnInit 注入，不可用时取图一律回复失败提示）、
+// RustFS 对象存储（store 为 nil 时图池不可用，取图降级为失败提示）与 StateStore
+// （冷却计数；未注入或冷却参数 <=0 时不限流）。
+//
+// 安全策略：只发送视觉模型明确判定为安全且置信度达到阈值的图片，不确定即拒绝
+// （判定语义见 ai.ImageSafetyResult.IsSafe）；存储或数据库故障时禁止回退到实时管道，
+// 安全标准不因故障放松。
+//
 // 用户路径只读池（Postgres + RustFS）毫秒级出图；
 // 「候选 → 下载 → vision 审核」全部前置到补图后台 goroutine（见 refill.go）。
 type Plugin struct {
@@ -40,12 +51,9 @@ type Plugin struct {
 	db         *database.DB
 	logger     *zap.Logger
 
-	// 补图后台任务编排：
-	//   - refillCtx：补图专用上下文，OnStop 取消，绝不引用消息 ctx；
-	//   - wg：跟踪所有补图 goroutine，OnStop 等待其退出；
-	//   - sem：补图并发闸门（峰值 refillConcurrency）；
-	//   - seed：进程内只触发一次的种子补图入口；
-	//   - warnStoreUnavailable：对象存储缺失时只 Warn 一次。
+	// 补图后台编排：refillCtx 独立于消息 ctx，OnStop 取消并等待 wg 退出；
+	// sem 限制补图并发峰值，seed 保证进程内只触发一次种子补图，
+	// warnStoreUnavailable 保证对象存储缺失只告警一次。
 	refillCtx            context.Context
 	refillCancel         context.CancelFunc
 	wg                   sync.WaitGroup
@@ -151,6 +159,7 @@ func normalizedConfig(cfg config.RandomBeautyConfig) config.RandomBeautyConfig {
 	return cfg
 }
 
+// Info 返回随机美图插件元信息（ID random_beauty，命令 /随机美图）。
 func (p *Plugin) Info() pluginpkg.PluginInfo {
 	return pluginpkg.PluginInfo{
 		ID:          pluginID,
@@ -164,6 +173,8 @@ func (p *Plugin) Info() pluginpkg.PluginInfo {
 	}
 }
 
+// OnInit 初始化随机美图插件：注入数据库与日志，注册取图 Pass、Pipeline 和 Subtree，
+// 并把 StateStore 传给 Pass 用作按平台+会话+用户维度的冷却；上游与安全阈值在 New 阶段已归一化。
 func (p *Plugin) OnInit(ctx *pluginpkg.PluginContext) error {
 	p.db = ctx.DB
 	p.logger = ctx.Logger
@@ -222,13 +233,20 @@ func isRandomBeautyCommand(ctx *conduit.MessageContext) bool {
 	return ctx != nil && strings.TrimSpace(ctx.RawMsg) == "/随机美图"
 }
 
-// randomBeautyPass 用户取图 Pass：冷却检查 → 池内随机命中 → 直发既有审核图。
+// randomBeautyPass 是用户取图 Pass：通过冷却检查后从池中随机取一张既有审核图直接发送，
+// 不在用户路径做任何实时审核或补图。
 type randomBeautyPass struct {
 	plugin     *Plugin
 	stateStore conduit.StateStore
 	cooldown   time.Duration
 }
 
+// Execute 处理 /随机美图：先做冷却检查（StateStore SetIfNotExists，冷却期内回复限流提示，
+// 状态写入失败时放行），再从图池随机取一张已审核图片、读出字节并组装
+// [图片段 + 署名文本] 写入出站段键 bot.send.segments，最后异步补一张维持池水位（不阻塞用户路径）。
+// 由 plugin.random_beauty.pipeline.main 在 isRandomBeautyCommand 完全匹配 /随机美图 后调用。
+// 失败分支：对象存储未配置（仅告警一次）、数据库不可用、图池取图失败或对象读取失败，
+// 均回复失败提示；取图失败会触发一次性种子补图，但绝不回退到未经审核的实时管道。
 func (pass *randomBeautyPass) Execute(ctx *conduit.MessageContext) error {
 	p := pass.plugin
 	if p.store == nil {
@@ -245,7 +263,6 @@ func (pass *randomBeautyPass) Execute(ctx *conduit.MessageContext) error {
 		return nil
 	}
 
-	// 池内随机命中一张既有审核图。
 	rec, err := p.db.GetRandomBeautyImage(ctx.Ctx)
 	if err != nil {
 		p.logger.Warn("random_beauty: 图池取图失败", zap.Error(err))

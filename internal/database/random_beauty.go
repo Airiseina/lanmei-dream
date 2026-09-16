@@ -10,8 +10,6 @@ import (
 	"gorm.io/gorm"
 )
 
-// ── 随机美图预审核图池数据访问（random_beauty_pool 表）──
-
 // ErrRandomBeautyDuplicate 表示插入的图片已在池中（ImageKey 唯一冲突），
 // 调用方据此做补偿清理（删除刚上传的对象存储内容）。
 var ErrRandomBeautyDuplicate = errors.New("database: random beauty image already exists")
@@ -69,7 +67,7 @@ func (db *DB) InsertRandomBeautyImage(ctx context.Context, rec *model.RandomBeau
 	return nil
 }
 
-// DeleteRandomBeautyImage 按 ImageKey 删除池记录（当前补图流程未使用，供后续管理能力复用）。
+// DeleteRandomBeautyImage 按 ImageKey 删除池记录（当前补图流程未调用）。
 func (db *DB) DeleteRandomBeautyImage(ctx context.Context, imageKey string) error {
 	if db.Orm == nil {
 		return errors.New("database: orm is nil")

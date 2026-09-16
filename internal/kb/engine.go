@@ -27,6 +27,11 @@ type Engine struct {
 }
 
 // NewEngine 创建召回引擎。
+//
+// 参数：
+//   - weights：多路合并权重；权重 <=0 的模式在召回时整路跳过
+//   - embedder：向量计算（可为 nil，vector 模式降级为不可用）
+//   - logger：日志器，调用方需保证非 nil（引擎直接使用，不兜底）
 func NewEngine(weights RecallWeights, embedder embedding.Embedder, logger *zap.Logger) *Engine {
 	return &Engine{
 		providers: make(map[string]Provider),
@@ -37,6 +42,13 @@ func NewEngine(weights RecallWeights, embedder embedding.Embedder, logger *zap.L
 }
 
 // AddProvider 注册一个知识库及其 provider 实例。
+//
+// 参数：
+//   - kbb：知识库元信息
+//   - p：provider 实例；为 nil 时忽略本次注册
+//
+// 注意：并发安全；同一知识库 ID 重复注册时关闭旧实例并替换（配置热加载场景），
+// 知识库列表保持无重复项。
 func (e *Engine) AddProvider(kbb *KnowledgeBase, p Provider) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -60,6 +72,8 @@ func (e *Engine) AddProvider(kbb *KnowledgeBase, p Provider) {
 }
 
 // List 返回全部已注册知识库。
+//
+// 返回：知识库元信息的副本（保持注册顺序）；调用方修改不影响引擎内部状态。
 func (e *Engine) List() []KnowledgeBase {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
@@ -78,6 +92,11 @@ func (e *Engine) Count() int {
 }
 
 // Provider 按知识库 ID 返回对应 provider 实例。
+//
+// 参数：
+//   - kbID：知识库 ID（配置 bases[].id）
+//
+// 返回：provider 实例与是否存在；实例由引擎持有，调用方不要自行关闭。
 func (e *Engine) Provider(kbID string) (Provider, bool) {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
@@ -86,6 +105,8 @@ func (e *Engine) Provider(kbID string) (Provider, bool) {
 }
 
 // Close 关闭全部 provider。
+//
+// 注意：单个 provider 的 Close 错误会被忽略（仅用于资源释放），由 Service.Close 统一调用。
 func (e *Engine) Close() {
 	e.mu.RLock()
 	providers := make([]Provider, 0, len(e.providers))
@@ -104,23 +125,37 @@ type mergedItem struct {
 	score float64
 }
 
-// Recall 执行多路召回。
+// Recall 执行多路召回：解析目标 KB、补齐查询向量后并发调用各 provider，
+// 再按 rank 加权合并去重、筛选、排序截断。单个 provider 失败仅记日志返回空，不中断整体。
 //
-// 流程：目标 KB 解析 → 查询向量补齐 → 并发调用各 provider →
-// rank 加权合并去重 → 筛选 → 排序截断。
-// 单个 provider 失败仅记日志返回空，不中断整体（鲁棒性要求）。
+// 参数：
+//   - ctx：召回上下文；每个 provider 的调用另带 15 秒软超时
+//   - req：召回请求；req 为 nil 或 Query 为空时直接返回 nil, nil
+//
+// 返回：按合并分数降序的结果；无可用知识库或未召回任何内容时返回 nil, nil；
+// error 当前恒为 nil（provider 失败已在内部降级处理）
+//
+// 注意：
+//   - 加权：每个模式内第 n 名得 rankScore(n)=1/n 分，乘以该模式权重后跨模式累加，
+//     多路命中同一分块时分数累加（与 ai/memory 的多路召回算法一致，跨 provider 分数可比）；
+//   - 去重：键为 Provider+KnowledgeBaseID+ID，避免跨知识库错误合并同 ID 分块；
+//   - 阈值：Filter.MinScore 只对合并后的分数生效（provider 返回的原始 Score 不参与比较），
+//     权重 <=0 的模式整路跳过；
+//   - 降级：embedder 缺失或查询向量化失败时自动移除 vector 模式，provider 不支持的模式
+//     跳过并告警；
+//   - 排序与截断：分数降序，同分按更新时间（零值回退创建时间）新者优先；
+//     返回条数上限为 req.Limit，<=0 时使用默认值 5；下发给各 provider 的召回上限则取
+//     所属知识库的 RecallLimit（<=0 时默认 5），req.Limit 不改变单库召回上限。
 func (e *Engine) Recall(ctx context.Context, req *RecallRequest) ([]ScoredChunk, error) {
 	if req == nil || req.Query == "" {
 		return nil, nil
 	}
 
-	// 1. 目标 KB 解析（白名单 + 启用状态）
 	targets := e.targets(req.Filter)
 	if len(targets) == 0 {
 		return nil, nil
 	}
 
-	// 2. 召回模式与查询向量补齐
 	modes := normalizedModes(req.Modes)
 	queryVec := req.QueryVector
 	if containsMode(modes, RecallModeVector) && e.embedder != nil && queryVec == nil {
@@ -136,7 +171,6 @@ func (e *Engine) Recall(ctx context.Context, req *RecallRequest) ([]ScoredChunk,
 		modes = removeMode(modes, RecallModeVector)
 	}
 
-	// 3. 并发召回（每 KB 一个 goroutine，软超时保护）
 	results := make([]*RecallResult, len(targets))
 	var wg sync.WaitGroup
 	for i, kbb := range targets {
@@ -147,7 +181,6 @@ func (e *Engine) Recall(ctx context.Context, req *RecallRequest) ([]ScoredChunk,
 			if p == nil {
 				return
 			}
-			// 仅保留该 provider 支持的模式
 			caps := p.Capabilities()
 			allowed := make([]RecallMode, 0, len(modes))
 			for _, m := range modes {
@@ -181,7 +214,6 @@ func (e *Engine) Recall(ctx context.Context, req *RecallRequest) ([]ScoredChunk,
 	}
 	wg.Wait()
 
-	// 4. rank 加权合并去重
 	merged := make(map[string]*mergedItem, 64)
 	for _, rr := range results {
 		if rr == nil {
@@ -209,7 +241,6 @@ func (e *Engine) Recall(ctx context.Context, req *RecallRequest) ([]ScoredChunk,
 		}
 	}
 
-	// 5. 筛选
 	out := make([]ScoredChunk, 0, len(merged))
 	for _, item := range merged {
 		if !filterChunk(item.chunk, req.Filter) {
@@ -221,7 +252,6 @@ func (e *Engine) Recall(ctx context.Context, req *RecallRequest) ([]ScoredChunk,
 		out = append(out, ScoredChunk{Chunk: item.chunk, Score: item.score})
 	}
 
-	// 6. 排序截断
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].Score != out[j].Score {
 			return out[i].Score > out[j].Score

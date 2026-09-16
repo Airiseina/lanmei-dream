@@ -10,9 +10,12 @@ import (
 	"gorm.io/gorm"
 )
 
-// ── 表情库数据访问（sticker_library 表）──
-
-// CreateSticker 插入一条表情记录。
+// CreateSticker 插入一条表情记录（sticker_library 表）。
+//
+// 参数：
+//   - sticker：待写入记录；ObjectKey 受唯一索引约束。
+//
+// 返回：入库错误（ObjectKey 重复时为唯一键冲突）；db.Orm 未初始化时返回固定错误而不 panic。
 func (db *DB) CreateSticker(ctx context.Context, sticker *model.StickerLibrary) error {
 	if db.Orm == nil {
 		return errors.New("database: orm is nil")
@@ -25,13 +28,9 @@ func (db *DB) CreateSticker(ctx context.Context, sticker *model.StickerLibrary) 
 const stickerSimilarityThreshold = 0.15
 
 // SearchStickers 按标签检索表情，供 LLM pick_sticker 工具调用。
-// keyword 是 LLM 生成的情绪短语（如"委屈挽留"），而库内标签多为单词（如"委屈"），
-// 因此命中条件按 OR 组合三种：
-//   - 反向命中（核心）：某标签是情绪短语的子串（"委屈" ⊂ "委屈挽留"）；
-//   - 正向命中：情绪短语是某标签的子串（原 ILIKE 行为）；
-//   - 相似命中：pg_trgm 对展开后的独立标签逐个算 similarity 取最大值，超过阈值。
-//
-// 排序分 score：反向/正向命中强制置顶 1.0，否则取最大相似度；同分按最新优先。
+// keyword 是 LLM 生成的情绪短语而库内标签多为单词，故 OR 组合反向命中（标签为短语子串，
+// 核心）、正向命中（短语为标签子串）与 pg_trgm 相似命中；排序分对命中项置顶 1.0，
+// 否则取最大相似度，同分按最新优先。
 func (db *DB) SearchStickers(ctx context.Context, keyword string, limit int) ([]model.StickerLibrary, error) {
 	if db.Orm == nil {
 		return nil, errors.New("database: orm is nil")

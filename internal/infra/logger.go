@@ -10,9 +10,10 @@ import (
 	"github.com/DaWesen/lanmei-dream/internal/config"
 )
 
-// InitLogger 初始化全局 zap Logger
+// InitLogger 创建 zap Logger：JSON 编码、ISO8601 时间、带调用点与 error 级堆栈。
+// 级别按 cfg.Level 取 debug/warn/error，未知值回退 info；
+// cfg.Persistent 且 cfg.Path 非空时写入 lumberjack 轮转文件，否则写 stdout。
 func InitLogger(cfg *config.LogConfig) *zap.Logger {
-	// 解析日志级别
 	level := zap.NewAtomicLevelAt(zapcore.InfoLevel)
 	switch cfg.Level {
 	case "debug":

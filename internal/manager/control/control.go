@@ -1,12 +1,7 @@
-// Package control 提供 Conduit 运行时的控制平面：
-// 行为树/管线快照、DSL 编辑、配置版本管理与回滚。
+// Package control 提供 Conduit 运行时的控制平面：行为树/管线快照、DSL 编辑、配置版本管理与回滚。
 //
-// 设计原则：
-//   - 只读操作（快照）与写操作（编辑）分离；写操作必须经过严格校验，
-//     任一引用非法即整体拒绝，绝不留半提交状态；
-//   - 每次写操作前自动保存 ConfigRevision（scope=conduit），支持一键回滚；
-//   - 行为树中的 Condition 以"命名条件"引用（由 Descriptor 提供），
-//     面板只能引用已注册的条件，无法注入任意 Go 函数（安全边界）。
+// 写操作必须先整体校验、任一引用非法即拒绝，绝不留半提交状态，并在写前保存 ConfigRevision
+// （scope=conduit）以支持回滚；行为树 Condition 只能引用 Descriptor 注册的命名条件，面板无法注入任意 Go 函数。
 package control
 
 import (
@@ -18,8 +13,8 @@ import (
 	"github.com/DaWesen/lanmei-dream/internal/manager/store"
 )
 
-// Descriptor 描述 Bot 的 Conduit 运行时控制面。
-// 由 Bot 实例实现（结构满足接口即可，无需依赖本包），经 New 注入。
+// Descriptor 描述 Bot 的 Conduit 运行时控制面。由 Bot 实例实现（结构满足接口即可，
+// 无需依赖本包），经 New 注入。
 type Descriptor interface {
 	// Engine 返回底层 Conduit 引擎（管线/Pass/子树枚举与替换）。
 	Engine() *conduit.Engine
@@ -43,6 +38,7 @@ type Controller struct {
 }
 
 // New 创建控制器。
+// desc 由 Bot 实现（提供引擎/行为树/条件访问），s 用于读写配置修订，logger 可为 nil。
 func New(desc Descriptor, s *store.Store, logger *zap.Logger) *Controller {
 	return &Controller{desc: desc, store: s, logger: logger}
 }

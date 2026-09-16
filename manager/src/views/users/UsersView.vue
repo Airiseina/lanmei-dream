@@ -30,7 +30,6 @@ const pageSize = 20
 const stepUpVisible = ref(false)
 const pendingAction = ref<((token: string) => Promise<void>) | null>(null)
 
-// 封禁弹窗
 const banVisible = ref(false)
 const banForm = reactive({
   id: 0,
@@ -171,7 +170,6 @@ onMounted(load)
       </t-table>
     </t-card>
 
-    <!-- 封禁弹窗 -->
     <t-dialog v-model:visible="banVisible" :close-on-overlay-click="false" :footer="false" width="420px">
       <template #header>
         <div class="ban-dialog-title">封禁用户</div>
@@ -223,7 +221,6 @@ onMounted(load)
   font-size: 18px;
   font-weight: 600;
 }
-/* 原因输入框与按钮之间留出垂直间距；取消/确认按钮间距收紧 */
 .ban-actions {
   display: flex;
   justify-content: flex-end;

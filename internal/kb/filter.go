@@ -4,9 +4,15 @@ import (
 	"strings"
 )
 
-// filterChunk 在引擎层对单个分块应用筛选条件。
-// 时序/来源/标签/白名单等可下推条件在 LocalProvider 已做过 SQL 下推，
-// 此处作为兜底（对飞书等远程 provider 的结果同样生效），保证语义一致。
+// filterChunk 在引擎层对单个分块做筛选兜底：时序/来源/标签/白名单等条件
+// LocalProvider 已做 SQL 下推，此处保证对飞书等远程 provider 的结果同样生效。
+//
+// 语义：
+//   - f 为 nil 时全部通过；c 为 nil 时一律不通过；
+//   - KnowledgeIDs 命中任一即通过；
+//   - 时间区间为闭区间，分块取 UpdatedAt（零值回退 CreatedAt）；
+//   - Sources 精确匹配 meta.source，Tags 与 meta.tags 做去空白、忽略大小写的交集判断；
+//   - MinScore 不在这里处理，由引擎在合并分数后统一应用。
 func filterChunk(c *Chunk, f *RecallFilter) bool {
 	if c == nil {
 		return false
@@ -15,7 +21,6 @@ func filterChunk(c *Chunk, f *RecallFilter) bool {
 		return true
 	}
 
-	// 知识库白名单
 	if len(f.KnowledgeIDs) > 0 {
 		hit := false
 		for _, id := range f.KnowledgeIDs {
@@ -29,7 +34,6 @@ func filterChunk(c *Chunk, f *RecallFilter) bool {
 		}
 	}
 
-	// 时序筛选（以更新时间为准，未设置时退回创建时间）
 	t := c.UpdatedAt
 	if t.IsZero() {
 		t = c.CreatedAt
@@ -41,7 +45,6 @@ func filterChunk(c *Chunk, f *RecallFilter) bool {
 		return false
 	}
 
-	// 来源筛选
 	if len(f.Sources) > 0 {
 		src, _ := c.Meta["source"].(string)
 		if !stringInSlice(src, f.Sources) {
@@ -49,7 +52,6 @@ func filterChunk(c *Chunk, f *RecallFilter) bool {
 		}
 	}
 
-	// 标签筛选（meta.tags 命中任一）
 	if len(f.Tags) > 0 {
 		tags := metaStrings(c.Meta, "tags")
 		if !intersectAny(tags, f.Tags) {

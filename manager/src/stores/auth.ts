@@ -60,7 +60,6 @@ export const useAuthStore = defineStore('auth', {
       this.stepUpToken = ''
       this.stepUpExpiresAt = 0
     },
-    /** 登出 */
     async logout() {
       const refresh = getRefreshToken()
       if (refresh) await authApi.logout(refresh).catch(() => undefined)
@@ -72,7 +71,6 @@ export const useAuthStore = defineStore('auth', {
       this.me = null
       this.clearStepUp()
     },
-    /** 高危操作需 step-up；未验证时抛出提示 */
     requireStepUp(password: string, totpCode: string) {
       return this.stepUp(password, totpCode)
     },

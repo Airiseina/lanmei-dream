@@ -1,7 +1,15 @@
+# Onebots 网关配置（多平台 IM 适配层）。
+# 由 docker-compose 的 onebots 服务挂载到容器 /data/config.yaml；
+# 各协议以反向 WebSocket 连接蓝妹网关，地址须与 LANMEI_BOT_GATEWAY_LISTEN_ADDR 对应
+# （容器内使用服务名 lanmei，端口 8080）。
+
+# Onebots 管理服务（WebUI/设备码配对）端口；当前 compose 未映射到宿主机。
 port: 6727
 log_level: info
 timeout: 30
 general:
+  # 反向 WS 地址指向蓝妹 /onebot/v11 端点；access_token 须与 LANMEI_BOT_GATEWAY_ACCESS_TOKEN
+  # 一致，两侧都留空表示不鉴权；post_message_format=array 与 NapCat 保持相同的消息段格式。
   onebot.v11:
     use_http: false
     use_ws: false
@@ -11,6 +19,7 @@ general:
     enable_heartbeat: true
     heartbeat_interval: 15000
     post_message_format: array
+  # 同 onebot.v11，改走 /onebot/v12 端点（蓝妹网关同时挂载了该端点）。
   onebot.v12:
     use_http: false
     use_ws: false
@@ -18,6 +27,7 @@ general:
     ws_reverse_url: ws://lanmei:8080/onebot/v12
     access_token: ''
     heartbeat_interval: 15000
+  # satori / milky 协议当前未启用（http 与 ws 均为 false），保留占位。
   satori.v1:
     use_http: false
     use_ws: false

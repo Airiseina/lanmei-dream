@@ -8,8 +8,6 @@ import (
 	"github.com/DaWesen/lanmei-dream/internal/model"
 )
 
-// ─── L0: 原始对话 ───
-
 // CountConversations 统计用户在某维度（私聊 groupID="" 或指定群）的原始对话条数
 func (db *DB) CountConversations(ctx context.Context, userID int64, groupID string) (int, error) {
 	var count int64
@@ -44,8 +42,6 @@ func (db *DB) DeleteConversationsInRange(ctx context.Context, userID int64, grou
 	}
 	return nil
 }
-
-// ─── L1: Episode Summary ───
 
 // SaveEpisodeSummary 存储一条对话摘要
 func (db *DB) SaveEpisodeSummary(ctx context.Context, e *model.EpisodeSummary) error {
@@ -111,8 +107,6 @@ func (db *DB) DeleteEpisodesByID(ctx context.Context, userID int64, ids []int64)
 	return nil
 }
 
-// ─── L2: Topic Cluster ───
-
 // SaveTopicCluster 存储一条主题聚类
 func (db *DB) SaveTopicCluster(ctx context.Context, t *model.TopicCluster) error {
 	if err := db.Orm.WithContext(ctx).Create(t).Error; err != nil {
@@ -139,8 +133,6 @@ func (db *DB) GetRecentTopics(ctx context.Context, userID int64, limit int) ([]*
 	return topics, nil
 }
 
-// ─── 多级上下文组装 ───
-
 // LODContext 是多级上下文组装的结果
 type LODContext struct {
 	TopicBriefs      []string              // L2 主题一句话
@@ -149,13 +141,13 @@ type LODContext struct {
 	RawConversations []*model.Conversation // L0 原始对话
 }
 
-// GetLODContext 按 Token 预算组装多级上下文。
-// groupID 标识对话维度：私聊传 ""，群聊传群 ID —— 保证群聊上下文只引用本群历史，互不污染。
-// budget 是大致的 token 预算，函数按 L2→L1→L0 优先级填充
+// GetLODContext 按 Token 预算组装多级上下文，按 L2 → L1 → L0 的优先级填充。
+// groupID 标识对话维度：私聊传 ""，群聊传群 ID，保证群聊上下文只引用本群历史。
+// budget 为大致 token 预算。
 func (db *DB) GetLODContext(ctx context.Context, userID int64, groupID string, budget int) (*LODContext, error) {
 	result := &LODContext{}
 	used := 0
-	// 粗估：1 个中文字 ≈ 1.5 token，这里用字符数粗算
+	// 粗估：1 个中文字 ≈ 1.5 token，这里用字符数粗算。
 	charsPerToken := 1.5
 
 	// L2：主题 brief（最便宜，先填）
@@ -172,7 +164,6 @@ func (db *DB) GetLODContext(ctx context.Context, userID int64, groupID string, b
 		used += cost
 	}
 
-	// L1：episode brief + detailed
 	episodes, err := db.GetRecentEpisodes(ctx, userID, 10)
 	if err != nil {
 		return nil, fmt.Errorf("lod l1: %w", err)
@@ -213,8 +204,8 @@ func (db *DB) GetLODContext(ctx context.Context, userID int64, groupID string, b
 // GetRecentFacts 收集用户最近的长期事实画像：合并 L2 TopicCluster 与 L1 EpisodeSummary
 // 中带置信度的事实，跨条目三态合并（重复确认提升置信度）后按置信度降序返回前 limit 条。
 //
-// 仅私聊维度（压缩只产生私聊摘要），供对话上下文注入"用户画像"。
-// 返回的事实未过滤低置信度，由消费端按 FactMinConfidence / FactThinConfidence 门槛处理。
+// 仅私聊维度（压缩只产生私聊摘要），供对话上下文注入"用户画像"；返回结果未过滤低置信度，
+// 由消费端按 FactMinConfidence / FactThinConfidence 门槛处理。
 func (db *DB) GetRecentFacts(ctx context.Context, userID int64, limit int) ([]model.FactItem, error) {
 	if limit <= 0 {
 		return nil, nil

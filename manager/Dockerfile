@@ -1,9 +1,9 @@
-# ── 管理面板前端镜像：多阶段构建（node 构建 → nginx 托管）──
+# 管理面板前端镜像：多阶段构建（node 构建 → nginx 托管）。
 #
-# 构建上下文：manager/（docker-compose 中 build.context: ./manager）
-# 或：docker build -f manager/Dockerfile manager
+# 构建上下文为 manager/（docker compose 中即 build.context: ./manager），
+# 也可执行：docker build -f manager/Dockerfile manager
 
-# ── 阶段 1：前端构建 ──
+# 阶段 1：前端构建
 FROM node:24-alpine AS fe-builder
 
 WORKDIR /app
@@ -19,7 +19,7 @@ RUN npm ci --legacy-peer-deps --no-audit --no-fund
 COPY . .
 RUN npm run build
 
-# ── 阶段 2：nginx 托管 ──
+# 阶段 2：nginx 托管静态资源
 FROM nginx:1.31.3-alpine3.24
 
 # 站点配置（/api 反向代理到 lanmei:8090，SPA 回退等）

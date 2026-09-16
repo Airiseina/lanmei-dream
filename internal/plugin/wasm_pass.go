@@ -18,6 +18,11 @@ type WasmCommandPass struct {
 var _ conduit.Pass = (*WasmCommandPass)(nil)
 
 // Execute 根据 Extra 中的 event_type 调用 Guest 并将文本输出映射回当前事件目标。
+//
+// 参数：
+//   - ctx：Conduit 消息上下文，须带 event_type（tool_call 走工具分支，其余按 command 处理）
+//
+// 返回：权限不足、事件字段缺失或 Guest 调用失败时返回错误。
 func (p *WasmCommandPass) Execute(ctx *conduit.MessageContext) error {
 	eventType, _ := ctx.Extra["event_type"].(string)
 	switch EventType(eventType) {

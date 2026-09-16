@@ -13,9 +13,7 @@ import (
 	"github.com/DaWesen/lanmei-dream/internal/model"
 )
 
-// ─────────────────────────────────────────────
 // 登录 / 登出 / 刷新（公开）
-// ─────────────────────────────────────────────
 
 // passwordLoginReq 密码登录请求。
 type passwordLoginReq struct {
@@ -173,9 +171,7 @@ func webauthnErr(c fiber.Ctx, err error) error {
 	return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "passkey 验证失败"})
 }
 
-// ─────────────────────────────────────────────
 // 当前用户 / 会话管理（需登录）
-// ─────────────────────────────────────────────
 
 // Me 返回当前登录管理员信息与凭据状态。
 func (h *Handler) Me(c fiber.Ctx) error {
@@ -261,7 +257,10 @@ func (h *Handler) ListSessions(c fiber.Ctx) error {
 	return c.JSON(fiber.Map{"sessions": sessions})
 }
 
-// RevokeSession 吊销指定会话（本人或超管）。
+// RevokeSession 按会话 ID 吊销会话，需登录（protected 分组，无 step-up）。
+//
+// 注意：当前未校验会话归属，任何已登录管理员传入他人会话 ID 均可吊销；
+// ListSessions 对 admin_id 参数仅超管可用，两者口径不一致，接入权限收紧时需一并处理。
 func (h *Handler) RevokeSession(c fiber.Ctx) error {
 	admin := currentAdmin(c)
 	if admin == nil {
@@ -297,9 +296,7 @@ func (h *Handler) RevokeAllSessions(c fiber.Ctx) error {
 	return c.JSON(fiber.Map{"ok": true})
 }
 
-// ─────────────────────────────────────────────
 // 密码 / TOTP / Passkey 管理（需登录 + step-up）
-// ─────────────────────────────────────────────
 
 // changePasswordReq 修改密码请求。
 type changePasswordReq struct {

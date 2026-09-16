@@ -13,10 +13,6 @@ import (
 	"go.uber.org/zap"
 )
 
-// ============================================================
-// DailyQuotePlugin 每日一句插件
-// ============================================================
-
 const (
 	dailyQuoteAPIURL        = "https://v1.hitokoto.cn/"
 	dailyQuoteHTTPTimeout   = 10 * time.Second
@@ -24,18 +20,10 @@ const (
 	dailyQuoteSuppressAtKey = "bot.reply.suppress_requester_at"
 )
 
-// DailyQuotePlugin 调用一言接口返回一句话及其出处、作者。
+// DailyQuotePlugin 调用一言（hitokoto）接口返回一句话及其出处、作者，失败时回复兜底文案。
 //
-// 行为树：
-//
-//	subtree.daily_quote → Sequence(
-//	  isDailyQuoteCommand,
-//	  Action("pipeline.plugin.daily_quote.main"),
-//	)
-//
-// 管线：
-//
-//	pipeline.plugin.daily_quote.main → [dailyQuotePass]
+// 插件 ID daily_quote；命令 /每日一句（无参数、无工具）；仅依赖外部一言接口，
+// 请求超时 10 秒、响应体上限 1 MiB，接口失败时回复「每日一句获取失败，请稍后再试~」。
 type DailyQuotePlugin struct {
 	client *http.Client
 	logger *zap.Logger
@@ -115,6 +103,10 @@ type dailyQuotePass struct {
 	logger *zap.Logger
 }
 
+// Execute 获取每日一句：请求一言接口，成功时输出正文、出处与作者；
+// 同时置上下文键 bot.reply.suppress_requester_at 抑制命令回调对发起者的 @。
+// 由 plugin.daily_quote.pipeline.main 在 isDailyQuoteCommand 完全匹配 /每日一句 后调用；
+// 请求或解析失败时记 Warn 并回复兜底文案，不返回错误。
 func (pass *dailyQuotePass) Execute(ctx *conduit.MessageContext) error {
 	conduit.Set(ctx, dailyQuoteSuppressAtKey, true)
 	quote, err := pass.fetch(ctx)

@@ -4,118 +4,108 @@ import (
 	"fmt"
 )
 
-// Permission 权限标识符，格式 <facility>:<action>。
-//
-// 设计借鉴了 Tauri v2 的权限模型：
-//   - 采用 "设施:动作" 的二维命名，便于按设施分组管理和审计
-//   - 每个权限是原子的、不可再分的，插件只能拥有或不拥有某个权限
-//   - 权限本身只表达"能做什么"，具体"在什么范围内做"由 Scope 约束
-//
-// 例如：
-//   - "state:read" 表示可以读取状态存储
-//   - "http:get" 表示可以发起 HTTP GET 请求
-//   - 但具体能读取哪些 key、能请求哪些 host，由对应的 Scope 决定
+// Permission 是 <facility>:<action> 格式的原子权限标识（借鉴 Tauri v2 权限模型），
+// 不可再分；它只表达"能做什么"，"在什么范围内做"由 Scope 约束
+// （如 "state:read" 表示能读状态存储，但可读哪些 key 取决于 Scope）。
 type Permission string
 
 const (
-	// state 设施：状态存储操作
-	// 插件可使用键值存储持久化自己的状态数据
-	PermStateRead   Permission = "state:read"   // 读取状态值
-	PermStateWrite  Permission = "state:write"  // 写入状态值
-	PermStateDelete Permission = "state:delete" // 删除状态键
-	PermStateAtomic Permission = "state:atomic" // 原子操作（CAS、incr_by、set_if_not_exists）
+	// state 设施：状态存储操作，插件可用键值存储持久化自身状态。
+	PermStateRead Permission = "state:read"
 
-	// db 设施：数据库操作
-	// 使用 IndexedDB 隔离模型：每个插件只能访问自己的命名空间（plugin_<pluginID>_ 前缀）
-	PermDBRead  Permission = "db:read"  // 数据库读取
-	PermDBWrite Permission = "db:write" // 数据库写入（insert/update/delete）
+	// PermStateWrite state 设施：写入或更新状态键（state_set）。
+	PermStateWrite Permission = "state:write"
 
-	// http 设施：HTTP 网络请求
-	// GET 和 POST 分离为独立权限，实现最小权限原则
-	PermHTTPGet  Permission = "http:get"  // HTTP GET 请求
-	PermHTTPPost Permission = "http:post" // HTTP POST 请求
+	// PermStateDelete state 设施：删除状态键（state_delete）。
+	PermStateDelete Permission = "state:delete"
 
-	// command 设施：命令处理
-	// 允许插件注册并响应用户命令（如 /签到、/查询）
-	PermCommandHandle Permission = "command:handle" // 处理用户命令
+	// PermStateAtomic state 设施：原子操作（CAS、incr_by、set_if_not_exists），供读改写在并发下安全执行。
+	PermStateAtomic Permission = "state:atomic"
 
-	// tool 设施：AI 工具
-	// 允许插件注册为 LLM 可调用的工具，或调用其他工具
-	PermToolRegister Permission = "tool:register" // 注册 AI 工具
-	PermToolCall     Permission = "tool:call"     // 调用 AI 工具
+	// db 设施：数据库操作，采用 IndexedDB 隔离模型，
+	// 每个插件只能访问自己的命名空间（plugin_<pluginID>_ 前缀）。
+	PermDBRead Permission = "db:read"
 
-	// message 设施：消息发送
-	// 允许插件主动向用户发送消息
-	PermMessageReply Permission = "message:reply" // 回复用户消息
+	// PermDBWrite db 设施：在隔离命名空间内写入（insert/update/delete）。
+	PermDBWrite Permission = "db:write"
+
+	// http 设施：GET 与 POST 拆分为独立权限，实现最小权限原则。
+	PermHTTPGet Permission = "http:get"
+
+	// PermHTTPPost http 设施：发起 POST 请求（写操作，与只读的 GET 分列）。
+	PermHTTPPost Permission = "http:post"
+
+	// command 设施：允许插件注册并响应用户命令（如 /签到、/查询）。
+	PermCommandHandle Permission = "command:handle"
+
+	// tool 设施：允许插件注册为 LLM 可调用的工具，或调用其他工具。
+	PermToolRegister Permission = "tool:register"
+
+	// PermToolCall tool 设施：调用其他工具，与 tool:register 分列为独立权限。
+	PermToolCall Permission = "tool:call"
+
+	// message 设施：允许插件主动向用户发送消息。
+	PermMessageReply Permission = "message:reply"
 )
 
-// Scope 对权限的运行时范围约束。
-//
-// 设计原理（借鉴 Tauri v2）：
-// Permission 表达"能做什么"，Scope 表达"在什么范围内做"。
-// 例如：
-//   - Permission=http:get + Scope{allow_hosts: ["api.example.com"]}
-//     → 只允许请求 api.example.com，而非任意域名
-//   - Permission=state:read + Scope{key_prefix: "user_"}
-//     → 只允许读取 "user_" 前缀的 key
-//
-// Params 中的键值对由各设施的 ScopeChecker 解释，
-// 不同的设施定义各自的参数格式（如 key_prefix、allow_hosts、tables）。
+// Scope 对权限施加运行时范围约束（借鉴 Tauri v2）：Permission 表达"能做什么"，
+// Scope 表达"在什么范围内做"——如 http:get + allow_hosts 只允许请求
+// api.example.com，state:read + key_prefix 只允许读 "user_" 前缀的 key。
+// Params 由各设施的 ScopeChecker 解释，参数格式因设施而异
+// （如 key_prefix、allow_hosts、tables）。
 type Scope struct {
-	Permission Permission        `json:"permission"`       // 约束所属的权限
-	Params     map[string]string `json:"params,omitempty"` // 约束参数（由各设施的 ScopeChecker 解释）
+	Permission Permission        `json:"permission"`
+	Params     map[string]string `json:"params,omitempty"` // 由各设施的 ScopeChecker 解释
 }
 
-// PermissionSet 预定义权限集，将常用权限组合打包。
-//
-// 设计目的：
-//   - 降低插件开发者的授权配置复杂度——选择一个权限集即可获得一组相关权限
-//   - 提供合理的默认值，避免开发者遗漏必要权限或过度授权
-//   - 权限集可以附带默认 Scope，为常见场景提供开箱即用的约束
-//
-// 使用方式：
-//   - 插件在 manifest 中声明所需的权限集标识符（如 "state:default"）
-//   - 也可以额外声明个别权限和自定义 Scope
-//   - ResolvePermissions 函数将权限集和显式权限合并为最终权限列表
+// PermissionSet 将常用权限组合打包，降低授权配置复杂度并提供合理默认值，
+// 避免遗漏必要权限或过度授权；插件在 manifest 中声明权限集标识符即可，
+// 也可额外声明个别权限和自定义 Scope，最终由 ResolvePermissions 合并。
 type PermissionSet struct {
-	Identifier  string       `json:"identifier"`       // 权限集唯一标识符（如 "state:default"）
-	Description string       `json:"description"`      // 人类可读的描述
-	Permissions []Permission `json:"permissions"`      // 包含的权限列表
+	Identifier  string       `json:"identifier"` // 如 "state:default"
+	Description string       `json:"description"`
+	Permissions []Permission `json:"permissions"`
 	Scopes      []Scope      `json:"scopes,omitempty"` // 附加的默认 Scope 约束
 }
 
-// 预定义权限集
 var (
+	// SetStateDefault 权限集 state:default：状态存储基础读写。
 	SetStateDefault = PermissionSet{
 		Identifier:  "state:default",
 		Description: "状态存储基础读写",
 		Permissions: []Permission{PermStateRead, PermStateWrite},
 	}
+	// SetStateFull 权限集 state:full：状态存储完全访问，含删除与原子操作。
 	SetStateFull = PermissionSet{
 		Identifier:  "state:full",
 		Description: "状态存储完全访问（含删除和原子操作）",
 		Permissions: []Permission{PermStateRead, PermStateWrite, PermStateDelete, PermStateAtomic},
 	}
+	// SetDBDefault 权限集 db:default：插件隔离命名空间内的数据库基础读写。
 	SetDBDefault = PermissionSet{
 		Identifier:  "db:default",
 		Description: "数据库基础读写（隔离命名空间）",
 		Permissions: []Permission{PermDBRead, PermDBWrite},
 	}
+	// SetHTTPReadOnly 权限集 http:read-only：仅允许 GET。
 	SetHTTPReadOnly = PermissionSet{
 		Identifier:  "http:read-only",
 		Description: "HTTP 只读访问（GET）",
 		Permissions: []Permission{PermHTTPGet},
 	}
+	// SetHTTPFull 权限集 http:full：允许 GET 与 POST。
 	SetHTTPFull = PermissionSet{
 		Identifier:  "http:full",
 		Description: "HTTP 完全访问（GET + POST）",
 		Permissions: []Permission{PermHTTPGet, PermHTTPPost},
 	}
+	// SetCommandBasic 权限集 command:basic：命令处理与消息回复。
 	SetCommandBasic = PermissionSet{
 		Identifier:  "command:basic",
 		Description: "命令处理 + 消息回复",
 		Permissions: []Permission{PermCommandHandle, PermMessageReply},
 	}
+	// SetToolProvider 权限集 tool:provider：AI 工具注册与调用。
 	SetToolProvider = PermissionSet{
 		Identifier:  "tool:provider",
 		Description: "AI 工具注册与调用",
@@ -123,7 +113,7 @@ var (
 	}
 )
 
-// AllPermissionSets 所有预定义权限集的映射
+// AllPermissionSets 汇总全部预定义权限集，键为 PermissionSet.Identifier，供 ResolvePermissions 按标识符查找。
 var AllPermissionSets = map[string]*PermissionSet{
 	SetStateDefault.Identifier: &SetStateDefault,
 	SetStateFull.Identifier:    &SetStateFull,
@@ -134,21 +124,15 @@ var AllPermissionSets = map[string]*PermissionSet{
 	SetToolProvider.Identifier: &SetToolProvider,
 }
 
-// ResolvePermissions 解析权限集标识符和显式权限为最终的权限列表。
-//
-// 处理逻辑：
-//  1. 逐个解析权限集标识符，从 AllPermissionSets 映射中查找对应的 PermissionSet
-//  2. 将权限集中的权限去重后加入结果列表
-//  3. 将显式声明的权限去重后追加到结果列表
-//  4. 未知权限集标识符返回错误（fail-closed 策略）
+// ResolvePermissions 将权限集标识符（sets，如 ["state:default"]）与显式权限
+// （explicit）解析合并为去重后的权限列表；未知权限集标识符返回错误（fail-closed，
+// 调用方应中止授权流程，不得按部分结果继续）。
 //
 // 参数：
-//   - sets: 权限集标识符列表（如 ["state:default", "http:read-only"]）
-//   - explicit: 显式声明的权限列表（如 [PermStateDelete]）
+//   - sets：权限集标识符列表，每项必须存在于 AllPermissionSets
+//   - explicit：权限集之外额外声明的单项权限
 //
-// 返回：
-//   - []Permission: 去重后的完整权限列表
-//   - error: 遇到未知权限集标识符时返回错误
+// 返回：按 sets 展开顺序、再追加 explicit 的去重权限列表；存在未知权限集时返回错误且不返回部分结果。
 func ResolvePermissions(sets []string, explicit []Permission) ([]Permission, error) {
 	seen := make(map[Permission]bool)
 	var result []Permission
@@ -176,56 +160,32 @@ func ResolvePermissions(sets []string, explicit []Permission) ([]Permission, err
 	return result, nil
 }
 
-// PermissionRequest 插件在 manifest 中声明的权限请求。
-//
-// 设计借鉴了 Android 的权限声明模型：
-//   - Sets：引用预定义权限集（批量声明）
-//   - Permissions：声明个别权限（精细控制）
-//   - Scopes：为特定权限添加运行时约束
-//   - Required：区分必需权限和可选权限——可选权限在用户拒绝后仍可运行
-//   - Reason：人类可读的权限用途说明（用于授权确认界面）
+// PermissionRequest 是插件在 manifest 中声明的权限请求（借鉴 Android 权限声明模型）：
+// Sets/Permissions 分别声明权限集与个别权限，Scopes 附加运行时约束，
+// Required 区分必需与可选权限（可选权限被拒绝后插件仍可运行），Reason 用于授权确认界面。
 type PermissionRequest struct {
-	Sets        []string     `json:"sets,omitempty"`        // 权限集标识符列表
-	Permissions []Permission `json:"permissions,omitempty"` // 显式权限列表
-	Scopes      []Scope      `json:"scopes,omitempty"`      // Scope 约束列表
-	Required    bool         `json:"required"`              // 是否为必需权限（false 表示可选）
-	Reason      string       `json:"reason"`                // 权限用途说明
+	Sets        []string     `json:"sets,omitempty"`
+	Permissions []Permission `json:"permissions,omitempty"`
+	Scopes      []Scope      `json:"scopes,omitempty"`
+	Required    bool         `json:"required"` // false 表示可选权限
+	Reason      string       `json:"reason"`   // 权限用途说明，展示于授权确认界面
 }
 
-// Capability 插件能力授权，将权限和 Scope 绑定到特定插件安装实例。
-//
-// 设计借鉴了 Tauri v2 的 Capability 模型：
-//   - Capability 是授权的载体，连接了"谁（PluginID + InstallationID）"
-//     和"能做什么（PermissionSets + Permissions + Scopes）"
-//   - 同一个插件的不同安装实例可以有不同的 Capability，实现同插件不同权限
-//   - PermissionSets 和 Permissions 都会被 ResolvePermissions 解析为最终的权限列表
-//   - Scopes 为解析后的权限提供运行时范围约束
-//
-// 生命周期：
-//  1. 插件在 manifest 中声明 PermissionRequest
-//  2. 用户安装时确认授权
-//  3. 系统将授权结果存储为 Capability
-//  4. 运行时 ScopeChecker 和各 Access 组件基于 Capability 执行权限检查
+// Capability 是插件能力授权（借鉴 Tauri v2），将权限与 Scope 绑定到具体安装实例：
+// 它连接"谁（PluginID + InstallationID）"与"能做什么（PermissionSets + Permissions
+// + Scopes）"，同一插件的不同安装实例可有不同授权。PermissionSets 与 Permissions
+// 由 ResolvePermissions 解析，Scopes 提供运行时约束，供 ScopeChecker 与各 Access 组件判定。
 type Capability struct {
-	PluginID       string       `json:"plugin_id"`                 // 插件标识符
-	InstallationID string       `json:"installation_id,omitempty"` // 安装实例标识符（同插件可多次安装）
-	PermissionSets []string     `json:"permission_sets"`           // 授权的权限集列表
-	Permissions    []Permission `json:"permissions,omitempty"`     // 额外授权的个别权限
-	Scopes         []Scope      `json:"scopes,omitempty"`          // 运行时 Scope 约束
+	PluginID       string       `json:"plugin_id"`
+	InstallationID string       `json:"installation_id,omitempty"` // 同插件可多次安装，授权互不相同
+	PermissionSets []string     `json:"permission_sets"`
+	Permissions    []Permission `json:"permissions,omitempty"`
+	Scopes         []Scope      `json:"scopes,omitempty"`
 }
 
-// ResourceQuota 运行时资源配额，限制单个插件的资源消耗。
-//
-// 设计原理：
-// WASM 插件在宿主进程中运行，如果不加以限制，恶意或有缺陷的插件可能
-// 耗尽系统资源（内存、CPU、I/O）。ResourceQuota 从多个维度对资源使用进行限制：
-//   - 内存限制：防止单个插件占用过多内存
-//   - CPU 限制：防止单次调用执行时间过长
-//   - 状态限制：防止状态存储无限增长
-//   - 频率限制：防止插件过于频繁地调用宿主功能（防 DDoS）
-//   - 并发限制：防止插件同时执行过多任务
-//
-// 这些配额值是保守的默认值，可根据插件的实际需求在 Capability 中调整。
+// ResourceQuota 限制单个插件的运行时资源消耗。WASM 插件与宿主同进程运行，
+// 不加限制时恶意或有缺陷的插件可能耗尽内存、CPU 与 I/O，故从内存、CPU、状态、
+// 频率、并发等维度设限；字段默认值偏保守，可按插件实际需求在 Capability 中调整。
 type ResourceQuota struct {
 	MaxMemoryMB       int   `json:"max_memory_mb"`        // WASM 实例最大内存（MB），默认 16
 	MaxCPUMs          int   `json:"max_cpu_ms"`           // 单次调用最大 CPU 时间（ms），默认 3000

@@ -7,30 +7,22 @@ import (
 	"github.com/DaWesen/lanmei-dream/internal/gateway"
 )
 
-// ── NoticeGatePass：互动事件预留节点 ──
-
-// NoticeGatePass 是互动事件（进群/戳一戳/退群/撤回/禁言等）的预留兜底节点。
+// NoticeGatePass 是互动事件（进群/戳一戳/退群/撤回/禁言等）的预留兜底节点：
+// 事件上下文已由 OnMessage 写入黑板（KeyEventType/KeyEventData 等），此处仅记录事件日志
+// （含操作者/被操作者等细节），不产出任何回复。
 //
-// 职责（本轮）：
-//  1. 事件上下文已在 OnMessage 阶段完整写入黑板（KeyEventType/KeyEventData 等）；
-//  2. 记录事件日志（含操作者/被操作者等细节）；
-//  3. 不产出任何回复 —— 具体互动逻辑（进群欢迎、戳一戳回应等）由插件子树实现，
-//     插件通过 IsNotice 条件 + 黑板块字段消费事件。
-//
-// 插件消费范式（见 docs/multimodal-design.md 第 7.3 节）：
-//
-//	subtree := conduit.NewSequence(
-//	    conduit.NewCondition(bot.IsNotice),
-//	    conduit.NewCondition(func(ctx *conduit.MessageContext) bool {
-//	        return bot.EventTypeFromCtx(ctx) == gateway.EventTypeGroupIncrease
-//	    }),
-//	    conduit.NewAction("pipeline.plugin.welcome"),
-//	)
+// 具体互动逻辑（进群欢迎、戳一戳回应等）由插件子树实现：插件通过 IsNotice 条件 +
+// 黑板块字段消费事件（消费范式见 docs/multimodal-design.md 第 7.3 节）。
 type NoticeGatePass struct {
 	Logger *zap.Logger
 }
 
 // Execute 记录事件日志并静默结束（不回复）。
+//
+// 位置：pipeline.notice 唯一 Pass（notice/request 事件经行为树 IsNotice 条件进入）。
+//
+// 依赖上下文键：读取 Extra 的 KeyEventType/KeyEventData/KeyPlatform 与 ctx.UserID/ctx.GroupID；
+// 不写入任何黑板数据。事件处理出错时 Bot.makeEventCallback 只记日志、绝不向群里回复。
 func (p *NoticeGatePass) Execute(ctx *conduit.MessageContext) error {
 	eventType := EventTypeFromCtx(ctx)
 	data := EventDataFromCtx(ctx)

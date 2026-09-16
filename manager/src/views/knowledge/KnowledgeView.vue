@@ -125,7 +125,6 @@ onMounted(() => {
       </t-button>
     </div>
 
-    <!-- 知识库卡片 -->
     <t-row :gutter="16" class="mb-16">
       <t-col v-for="b in bases" :key="b.id" :xs="12" :sm="8" :md="6" :lg="4">
         <t-card
@@ -146,7 +145,6 @@ onMounted(() => {
       </t-col>
     </t-row>
 
-    <!-- 分块列表 -->
     <t-card title="知识分块">
       <t-space class="mb-16">
         <t-select

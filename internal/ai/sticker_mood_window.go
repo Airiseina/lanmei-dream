@@ -27,11 +27,11 @@ type scopeState struct {
 }
 
 // MoodWindow 表情情绪流滑动窗口（轻量短期记忆，纯内存不持久化，重启清零）。
-// 按 scope 隔离（群聊 groupID / 私聊 "dm:"+平台用户ID），
-// 供提示词注入"最近的表情情绪历史"，约束 LLM 发表情的频率与重复度。
+// 按 scope 隔离（群聊 groupID / 私聊 "dm:"+平台用户ID），供提示词注入"最近的表情情绪历史"，
+// 约束 LLM 发表情的频率与重复度。
 //
-// scopes map 不淘汰旧 scope（沿袭旧回复计数器的相同策略）：
-// 条目数量级 = 群/私聊会话数，每个 scope 仅几十字节，增长量可接受。
+// scopes map 不淘汰旧 scope（沿袭旧回复计数器的策略）：条目数 = 会话数，
+// 每个 scope 仅几十字节，增长量可接受。
 type MoodWindow struct {
 	mu     sync.Mutex
 	scopes map[string]*scopeState
@@ -65,7 +65,7 @@ func (w *MoodWindow) Record(scope, emotion string) {
 }
 
 // Snapshot 生成注入提示词的表情情绪历史摘要。
-//   - 该 scope 从未发过图（entries 为空）：提示"可主动发"，鼓励情绪合适时首次发表情；
+//   - 该 scope 从未发过图：提示"可主动发"，鼓励情绪合适时首次发表情；
 //   - 已有记录：给出距上次发图的轮数 + 最近几条情绪记录（含距今轮数与相对时间），
 //     供 LLM 自主控制发图节奏（别刷屏、别重复发相近情绪）。
 func (w *MoodWindow) Snapshot(scope string) string {
@@ -76,12 +76,8 @@ func (w *MoodWindow) Snapshot(scope string) string {
 		return "本会话尚未主动发表情，当前情绪合适时可主动发"
 	}
 
-	// 距今轮数推导（倒序累加 gap）：
-	// rounds 是"距最近一次发图的轮数"，故最新 entry（第 1 新）距今 = rounds；
-	// gap 的语义是"本条记录发图时距上一次（更旧一条）发图隔的轮数"，存在每条 entry 自身。
-	// 因此每往旧走一条，累加"较新那条"的 gap：
-	//   第 k 新距今 = rounds + gap₁ + gap₂ + … + gap₍k₋₁₎（gapᵢ 为第 i 新记录的 gap）。
-	// 即倒序遍历（新→旧）：第 1 条只取 rounds，之后每往旧走一条累加那条（较新条目）的 gap。
+	// 距今轮数 = rounds（最新一条）+ 新→旧累加各条较新记录的 gap：
+	// 第 k 新距今 = rounds + gap₁ + … + gap₍k₋₁₎。
 	parts := make([]string, 0, moodSnapshotMax)
 	acc := st.rounds
 	now := time.Now()

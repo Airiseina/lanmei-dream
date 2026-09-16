@@ -18,10 +18,11 @@ const startupSyncTimeout = 30 * time.Second
 // defaultAutoRecallLimit 隐式召回注入条数的默认值。
 const defaultAutoRecallLimit = 3
 
-// Service 知识库系统对外门面：
-//   - 加载配置并构建各 provider（可插拔）
-//   - 提供召回入口（隐式 RAG 与 kb_search 工具共用）
-//   - 提供 LLM 工具注册（主动召回）
+// Service 是知识库系统对外门面：按配置构建可插拔 provider，对外提供召回入口
+// （隐式 RAG 与 kb_search 工具共用）与 LLM 工具注册（主动召回）。
+//
+// 各方法对 nil 接收者安全：未启用知识库（NewService 返回 nil）时召回恒为空、列表为空，
+// 调用方无需判空即可直接使用。
 type Service struct {
 	engine       *Engine
 	defaultModes []RecallMode
@@ -29,11 +30,22 @@ type Service struct {
 	logger       *zap.Logger
 }
 
-// NewService 依据配置构建知识库服务。
+// NewService 依据配置构建知识库服务；provider 工厂需在调用前通过 RegisterProvider 注册。
+// 单个知识库配置非法或构造失败时跳过并告警，不影响其它库；无任何可用知识库时仍返回
+// Service（召回恒为空），由调用方决定是否启用。
 //
-// 注意：provider 工厂需在调用前通过 RegisterProvider 注册（main 中完成）。
-// 单个知识库配置非法/构造失败时跳过并告警，不影响其它库；
-// 若没有任何可用知识库，仍返回 Service（召回恒为空），由调用方决定是否启用。
+// 参数：
+//   - ctx：构造上下文，同时用于各 provider 的构造与启动同步
+//   - cfg：知识库配置；为 nil 时直接返回 (nil, nil)，表示未配置知识库
+//   - orm：本地 provider 的数据库连接（可为 nil，local provider 构造会失败并跳过）
+//   - embedder：向量计算（可为 nil，vector 模式降级）
+//   - logger：日志器（nil 时兜底为 zap.NewNop）
+//
+// 返回：cfg 为 nil 时返回 (nil, nil)；否则返回可用的 Service（error 当前恒为 nil，
+// 单库失败已内部跳过并告警）
+//
+// 注意：多路召回权重取配置值，仅当三项权重全为 0 时回退内置默认值；
+// 启动同步带 30 秒软超时，失败仅告警不阻塞启动。
 func NewService(ctx context.Context, cfg *config.KnowledgeConfig, orm *gorm.DB, embedder embedding.Embedder, logger *zap.Logger) (*Service, error) {
 	if cfg == nil {
 		return nil, nil
@@ -42,8 +54,8 @@ func NewService(ctx context.Context, cfg *config.KnowledgeConfig, orm *gorm.DB, 
 		logger = zap.NewNop()
 	}
 
-	// 多路召回权重：直接采用配置值（viper SetDefault 已提供 1.0/0.8/0.5 默认）。
-	// 仅当全部为 0（配置与默认均未提供）时回退内置默认值。
+	// 多路召回权重直接采用配置值（viper SetDefault 已提供 1.0/0.8/0.5 默认）；
+	// 仅当三项全为 0（配置与默认均未提供）时回退内置默认值。
 	weights := RecallWeights{
 		Vector: cfg.Weights.Vector,
 		Fuzzy:  cfg.Weights.Fuzzy,
@@ -113,6 +125,13 @@ func NewService(ctx context.Context, cfg *config.KnowledgeConfig, orm *gorm.DB, 
 }
 
 // Recall 执行召回（隐式 RAG 与 kb_search 工具共用入口）。
+//
+// 参数：
+//   - ctx：召回上下文
+//   - req：召回请求；Modes 传 s.DefaultModes() 即按配置的默认模式召回
+//
+// 返回：按合并分数降序的召回结果；未启用知识库（s 为 nil）或 Query 为空时返回 nil, nil；
+// 详见 Engine.Recall 的加权/去重/阈值语义
 func (s *Service) Recall(ctx context.Context, req *RecallRequest) ([]ScoredChunk, error) {
 	if s == nil || s.engine == nil {
 		return nil, nil
@@ -146,6 +165,16 @@ func (s *Service) List() []KnowledgeBase {
 
 // Sync 触发内容重同步（管理面板"重新同步"入口）。
 // kbID 为空时同步全部实现了 Syncer 的知识库；单个失败不中断其余。
+//
+// 参数：
+//   - ctx：同步上下文，由调用方控制超时
+//   - kbID：目标知识库 ID；为空时同步全部支持同步的知识库
+//
+// 返回：指定 kbID 时，库不存在或 provider 不支持同步、同步失败均返回错误；
+// kbID 为空时返回首个失败知识库的错误（其余继续同步），全部成功返回 nil
+//
+// 注意：未启用知识库（s 为 nil）时直接返回 nil；同步与召回可能并发执行，
+// 实现的并发安全由 Provider 保证。
 func (s *Service) Sync(ctx context.Context, kbID string) error {
 	if s == nil || s.engine == nil {
 		return nil
@@ -186,6 +215,13 @@ func (s *Service) Close() {
 
 // RegisterTools 将主动召回工具注册进 AI 工具注册表。
 // 注册后自动参与 eino 工具调用循环与意图分析工具列表。
+//
+// 参数：
+//   - reg：AI 工具注册表；为 nil 时直接返回 nil
+//
+// 返回：工具重名等注册失败时返回错误，已注册的工具不回滚
+//
+// 注意：kb_search 始终注册；kb_add 仅在存在 local provider 知识库时注册（远程 provider 不支持写入）。
 func (s *Service) RegisterTools(reg *tool.Registry) error {
 	if reg == nil {
 		return nil

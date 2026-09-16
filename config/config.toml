@@ -1,16 +1,26 @@
-# ============================================
-# Lanmei 主配置文件（仅含非敏感配置）
-# 敏感信息（API Key、数据库密码等）通过环境变量设置
-# 环境变量前缀：LANMEI_，例如 LANMEI_AI_LLM_API_KEY
-# ============================================
+# Lanmei 主配置文件：只放非敏感配置，API Key / 密码等敏感信息通过环境变量注入。
+# 环境变量前缀为 LANMEI_（如 LANMEI_AI_LLM_API_KEY），同名环境变量优先于本文件。
+# 各键的代码默认值见 internal/config/init.go 的 setDefaults。
 
 [bot]
+# 机器人昵称；为空时代码回退为"蓝妹"
 nickname = "蓝妹"
+# 超级用户，格式 platform:userID 逗号分隔（如 qq:123456,wechat:wxid_xxx）；留空则无超管
 super_users = ""
+# 注意：当前代码未读取 mention_suffix，本项无实际效果（历史遗留键）
 mention_suffix = ""
 
 [bot.gateway]
+# 网关监听地址；容器内须为 0.0.0.0
 listen_addr = "0.0.0.0:8080"
+# access_token 不在本文件配置，仅通过环境变量 LANMEI_BOT_GATEWAY_ACCESS_TOKEN 设置，
+# 留空表示不鉴权（仅建议本地开发）。
+
+# 群聊话题（Topic）系统未在本文件展开，当前沿用代码默认值：
+# bot.topic.enabled=true、topic_window_msgs=20、cooling_timeout_minutes=30、
+# semantic_threshold=0.5、credit_enabled=true、linguistic_strong/weak_threshold=0.7/0.4、
+# archive_interval_seconds=60；nicknames 为空时使用 bot.nickname。
+# 总开关可用环境变量 LANMEI_TOPIC_ENABLED 覆盖，其余键需要时自行新增 [bot.topic] 分组。
 
 [bot.stream]
 # 流式段落发送间隔配置（模拟真人打字节奏，避免平台乱序）
@@ -20,16 +30,19 @@ min_interval_ms = 1000   # 最小间隔（毫秒）
 max_interval_ms = 5000  # 最大间隔（毫秒），0 表示不限
 jitter_pct = 0.25        # 间隔抖动比例（0.0-1.0），0 表示无抖动
 
-# ============================================
 # 多媒体（RustFS 对象存储 + 视觉理解）
 # 视觉模型复用主 LLM 的 base_url / api_key（OpenAI 兼容多模态端点），
 # 用于：图片消息的 AI 描述（MediaPass）、表情入库自动打标（/添加表情）。
 # 注意：vision_model 留空会回退主对话模型（纯文本模型无法识图），启用视觉必须显式指定。
-# ============================================
+# 存储端点与凭据（endpoint / access_key / secret_key / bucket / region）由环境变量
+# LANMEI_MEDIA_* 注入；未配置时媒体管线降级（仅记录，不缓存、不描述）。
 [bot.media]
 vision_enabled = true
 vision_model = "deepseek-v4-flash-vision-exp"
 
+# 日志：level 取值 debug/info/warn/error（默认 info）。
+# persistent=false 仅输出到控制台；true 时写入 path，并按 max_size（单文件上限，MB）、
+# max_age（保留天数）、max_backups（旧文件个数）轮转，compression 控制旧文件是否压缩。
 [log]
 level = "info"
 persistent = false
@@ -40,12 +53,13 @@ max_age = 30
 max_backups = 10
 
 [plugin]
+# Wasm 动态插件根目录（管理面板安装的插件存放于此）
 root_dir = "./data/plugins"
-# 网易云点歌 API 服务地址（ncm-api），为空时点歌插件不可用
+# 网易云点歌 API 服务地址（ncm-api），为空时 /music 提示"音乐服务未配置"
 ncm_url = ""
 # 点歌结果发送方式（适配不同反向代理工具）：
-#   auto = QQ/NapCat 发音乐卡片段，其余平台发文字链接（默认）
-#   card = 强制发 OB11 music 段（要求实现支持，如 llonebot）
+#   auto = 发语音 record 段（OneBot 端自动转码，点击即听），取不到音频时降级文字链接（默认）
+#   card = 强制发 OB11 music 段（音乐卡片，需工具支持签名，如配好 musicSignUrl 的 NapCat）
 #   link = 强制发文字链接（最通用）
 music_send_mode = "auto"
 
@@ -66,25 +80,35 @@ music = true       # 网易云点歌插件
 sticker = true     # 自定义表情库插件
 turtle_soup = true # 海龟汤文字游戏插件
 random_beauty = true # 严格安全审核的 Pixiv 随机美图插件
+# 未列出的开关取代码默认值：answer_question（编程答题）、daily_quote（每日一句）默认开启，
+# 其余未列出的内置插件默认关闭。
 
-# 随机美图：使用 Random Mage 兼容 API，安全过滤与视觉审核不可关闭
+# 随机美图：使用 Random Mage 兼容 API，安全过滤与视觉审核是代码级安全下限，不可关闭。
+# 依赖对象存储与视觉审核：对象存储未配置时图池不可用（取图直接降级提示）；
+# 视觉审核未配置时无法补图，只能发送池内既有图片。
 [plugin.random_beauty]
 api_base_url = "https://i.mukyu.ru"
-timeout_seconds = 18 # 单次插件请求总预算，同时限制上游 HTTP；给 Conduit 留 2 秒收尾
+timeout_seconds = 18 # 补图单张的候选+下载预算（秒），同时是上游 HTTP 客户端超时；取值 1~30，超范围回退 18
 max_attempts = 2 # 获取、下载、文件校验或视觉审核失败时重试，硬上限 2
+# 同一用户两次取图的最小间隔（秒），按平台+会话+用户维度生效；<0 回退 30
 cooldown_seconds = 30
+# 单张图片字节上限；>10MB 或 <=0 一律回退 10MB
 max_image_bytes = 10485760
+# 候选图片最小宽度、最小高度与最少收藏数（元数据过滤）；非法值分别回退 720、720、100
 min_width = 720
 min_height = 720
 min_bookmarks = 100
+# 视觉审核判定"安全"的置信度下限（0~1），超范围回退 0.9
 safe_confidence = 0.9
+# 补图单张视觉审核超时（秒）；取值 1~20，超范围回退 8
 moderation_timeout_seconds = 8
+# 未列出的键取代码默认值：pool_init_size=100（图池种子目标张数，夹在 10~500）、
+# refill_moderation_timeout_seconds=25（补图单张审核含上传预算，夹在 5~30）。
 
-# ============================================
-# 管理面板服务
+# 管理面板服务。
 # 认证敏感配置（LANMEI_MANAGER_ADMIN_USERNAME / LANMEI_MANAGER_ADMIN_PASSWORD / LANMEI_MANAGER_SECRET_KEY）
 # 仅通过环境变量注入，不写入本文件。
-# ============================================
+# enabled=false 时面板不启动；docker-compose 用 LANMEI_MANAGER_ENABLED=true 覆盖本项。
 [manager]
 enabled = false                    # 管理面板总开关
 listen_addr = "0.0.0.0:8090"       # 面板监听地址（生产建议绑定内网/VPN 网段）
@@ -101,36 +125,34 @@ max_login_fails = 5                # 连续登录失败锁定阈值
 login_lock_minutes = 15            # 登录锁定分钟数
 # trusted_proxies = ["10.0.0.0/8", "192.168.0.0/16"]  # 位于反向代理后时配置
 
-# ============================================
-# Prompt 系统路径声明
-# ============================================
+# Prompt 系统：dir 为提示词根目录，config 为提示词主配置（均相对程序运行目录）。
 [prompts]
 dir = "./prompts"
 config = "./prompts/prompts.toml"
 
-# ============================================
-# Skill 系统路径声明
-# ============================================
+# Skill 系统：dir 为技能目录（每个技能一个子目录，含 manifest.toml 与 SKILL.md），
+# config 为技能启用开关文件（见 config/skills.toml）。
 [skills]
 dir = "./skills"
 config = "./config/skills.toml"
 
-# ============================================
-# 编程答题题库路径声明
-# 目录结构：quizdata/<语言目录>/*.json（目录名即语言标识）
+# 编程答题题库。
+# 目录结构：quizdata/<语言目录>/*.json（目录名即语言标识）。
 # 新增语言 = 新增目录 + JSON 文件，无需改代码；文件变更会被热更新。
-# ============================================
+# dir 缺失或无可解析题目时 /答题 提示题库为空，不影响启动。
 [quiz]
 dir = "./quizdata"
 
-# ============================================
-# 知识库系统
-# 总开关：enabled = true 后按 bases 列表构建各知识库。
-# 召回模式：vector=向量 / fuzzy=模糊 / time=时间（多路命中按 weights 加权合并）。
-# ============================================
+# 知识库系统：启用后按 bases 列表构建各知识库。
+# 代码默认 enabled=false（此处显式打开）；LANMEI_KNOWLEDGE_ENABLED 与
+# LANMEI_KNOWLEDGE_AUTO_RECALL_LIMIT 环境变量优先于本文件。
 [knowledge]
+# 总开关：关闭时不构建任何 bases，代码默认为 false（此处显式打开）
 enabled = true                     # 知识库总开关
+# 可选 vector（向量）/fuzzy（模糊）/time（时间），多路命中按下面 weights 加权合并；
+# 空数组表示使用各 provider 的全部能力
 default_recall_modes = ["vector", "fuzzy"]  # 隐式召回与 kb_search 的默认模式
+# 取值 <=0 时回退 3
 auto_recall_limit = 3               # 每轮对话隐式召回注入的条数
 
 [knowledge.weights]
@@ -138,7 +160,7 @@ vector = 1.0                        # 向量召回权重
 fuzzy = 0.8                         # 模糊召回权重
 time = 0.5                          # 时间召回权重
 
-# ── 本地知识库（PostgreSQL + pgvector + pg_trgm）──
+# 本地知识库：PostgreSQL + pgvector 向量召回 + pg_trgm 模糊召回，docs_dir 下文件自动同步。
 [[knowledge.bases]]
 id = "main"
 name = "主知识库"
@@ -156,8 +178,8 @@ fuzzy_threshold = 0.1               # 模糊召回最低相似度阈值
 #   检索命中后由 LLM 组织回答（即"AI检索"行为）。
 csv_skip_header = true              # 是否跳过 CSV 首行表头
 
-# ── 飞书知识库（Wiki，应用身份访问）──
-# 凭据支持 "env:VAR_NAME" 语法从环境变量读取，避免敏感信息入库
+# 飞书知识库（Wiki，应用身份访问）。
+# 凭据支持 "env:VAR_NAME" 语法从环境变量读取，避免敏感信息入库。
 # [[knowledge.bases]]
 # id = "feishu-main"
 # name = "飞书知识库"

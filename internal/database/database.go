@@ -26,9 +26,8 @@ func (db *DB) SetUserCache(c UserCache) { db.userCache = c }
 
 // Connect 创建 GORM 连接并验证连通性
 func Connect(ctx context.Context, connString string, logger *zap.Logger) (*DB, error) {
-	// gorm 默认 logger 的 IgnoreRecordNotFoundError=false，会把"记录不存在"
-	// 当作错误打印（如插件 KV 首次读写、用户首条消息等正常业务分支），
-	// 这里显式开启忽略，仅保留慢 SQL 与真实错误日志。
+	// gorm 默认 logger 会把"记录不存在"当错误打印，而插件 KV 首次读写、
+	// 用户首条消息等正常业务分支都会命中；故显式忽略，仅保留慢 SQL 与真实错误日志。
 	orm, err := gorm.Open(postgres.Open(connString), &gorm.Config{
 		Logger: gormlogger.New(log.New(os.Stdout, "\r\n", log.LstdFlags), gormlogger.Config{
 			SlowThreshold:             200 * time.Millisecond,

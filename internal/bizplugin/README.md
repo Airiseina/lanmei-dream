@@ -2,17 +2,30 @@
 
 ## 职责
 
-存放蓝妹的 Go 内置业务插件。每个插件实现 `pluginpkg.Plugin` 接口（`Info` / `OnInit` / `OnStart` / `OnStop`），在 `OnInit` 中注册 Pass、Pipeline、行为树 Subtree 到 Conduit 引擎，由 `cmd/lanmei/main.go` 统一注册。
+存放蓝妹的 Go 内置业务插件。每个插件实现 `pluginpkg.Plugin` 接口（`Info` / `OnInit` / `OnStart` / `OnStop`），在 `OnInit` 中注册 Pass、Pipeline、行为树 Subtree 到 Conduit 引擎；插件由 `BusinessRegistry.RegisterBuiltins`（registry.go）按 `[plugin.builtins]` 开关统一注册，`cmd/lanmei/main.go` 只负责创建注册表并注入依赖。
 
 ## 插件列表
 
 | 插件 | 文件 | 类型 | 说明 |
 |------|------|------|------|
-| `signin` | signin.go | 命令类 | 每日签到，通过斜杠命令触发 |
+| `signin` | signin.go | 命令类 | 每日签到与试试手气，积分持久化在受限 KV；工具 `signin_status`、`signin_random` |
+| `signin_rank` | signin.go | 命令类 | 签到积分排行榜（与 signin 同文件） |
 | `welcome` | welcome.go | **事件类（模范示例）** | 新人入群欢迎（@新人 + 文案 + 图片，走出站段通道） |
 | `poke` | poke.go | **事件类** | 戳一戳回复（@戳人者 + 随机文案，走出站段通道） |
 | `three_g` | three_g.go | **关键词触发类** | 消息含 3G/3g 时科普重邮 3G（@对方 + 固定文本，走出站段通道） |
+| `zhaoxin_group` | zhaoxin_group.go | 命令类 | `/招新群` 回复蓝山工作室各部门招新交流群群号（走出站段通道） |
+| `cat` | cat.go | 命令类 | `/哈基米`、`/猫猫` 随机猫猫图片；工具 `cat_image` |
+| `balogo` | balogo.go | 命令类 | `/balogo` 生成蔚蓝档案风格 LOGO；工具 `balogo_generate` |
+| `ping` | ping.go | 命令类 | `/ping` 连通性测试；工具 `ping` |
+| `github_card` | github_card.go | **关键词触发类** | 检测到 GitHub 链接自动返回卡片预览（无命令、无工具） |
+| `music` | music.go | 命令类 | `/music` 网易云点歌；工具 `music_search`；依赖 `[plugin].ncm_url` |
+| `sticker` | sticker.go | 命令类 | 表情收藏、删除、发送与列表；工具 `pick_sticker`；依赖对象存储与视觉服务 |
+| `turtle_soup` | turtle_soup.go | 命令类 | 海龟汤文字游戏（`/开汤`、`/问`、`/猜`、`/认输`）；依赖 LLM 客户端 |
+| `answer_question` | answer_question.go | 命令类 | `/答题` 多语言编程选择题抢答；题库目录来自 `[quiz].dir` |
+| `daily_quote` | daily_quote.go | 命令类 | `/每日一句` 调用一言（hitokoto）接口 |
 | `random_beauty` | random_beauty/ | **外部 API 命令类** | `/随机美图` 获取 Pixiv 插画；固定分级、元数据、文件与视觉四层审核，审核失败时拒绝发送 |
+
+各插件的配置开关名（与插件 ID 不完全同名，如 `signin_rank` 对应 `rank`）与依赖注入项见 [PLUGIN_DEVELOPMENT.md](../../PLUGIN_DEVELOPMENT.md) 第 7 节。
 
 `welcome` 是**消费 QQ 事件的模范示例**——事件类插件均参照其结构开发。下文完整说明从上游事件接入到下游插件消费的链路。
 
@@ -62,7 +75,11 @@ NormalizedMessage（+ EventType / EventSubType / EventData）
 #### 3.1 结构（与 signin 模板一致）
 
 ```go
-type WelcomePlugin struct { logger *zap.Logger }
+// 实际实现另持有对象存储依赖（未配置时欢迎图降级为纯文本）
+type WelcomePlugin struct {
+    store  *media.ObjectStore
+    logger *zap.Logger
+}
 
 func (p *WelcomePlugin) Info() pluginpkg.PluginInfo {
     return pluginpkg.PluginInfo{
@@ -98,7 +115,7 @@ func isGroupIncreaseEvent(ctx *conduit.MessageContext) bool {
 ```go
 // 1. 注册 Pass（业务逻辑）
 passID := pluginpkg.PassID("welcome", "welcome")
-ctx.Engine.RegisterPass(passID, &welcomePass{logger: p.logger})
+ctx.Engine.RegisterPass(passID, &welcomePass{store: p.store, logger: p.logger})
 ctx.Registry.TrackPass("welcome", passID)
 
 // 2. 注册动态管线（通过 Pass ID 引用，支持热替换）
@@ -139,17 +156,16 @@ func (pass *welcomePass) Execute(ctx *conduit.MessageContext) error {
         return nil
     }
 
-    // 出站段通道：[@新人 + 固定文案 + 固定图片] 一条消息
-    conduit.Set(ctx, "bot.send.segments", []map[string]any{
-        {"type": "at",    "data": map[string]any{"user_id": newUserID}},
-        {"type": "text",  "data": map[string]any{"text": content}},
-        {"type": "image", "data": map[string]any{"file": welcomeImageURL}},
-    })
+    // 出站段通道：[@新人 + 固定文案 + 欢迎图] 一条消息
+    //（图片上传 RustFS 失败时 buildWelcomeSegments 自动省略图片段，降级为文本欢迎语）
+    conduit.Set(ctx, sendSegmentsKey, buildWelcomeSegments(newUserID, content, pass.welcomeImageFile(ctx.Ctx)))
     return nil
 }
 ```
 
-**出站段通道（富文本发送）**：普通文本用 `AppendOutput`；需要富媒体（at / image 组合）时用 `conduit.Set(ctx, "bot.send.segments", []map[string]any{...})` 写入 OneBot 原生段列表，由 bot 回调读取后按段发送（v11/v12 协议差异自动收敛，见 spec `lanmei-rich-send-spec.md` 方案 C）。规则：
+> 上面的 `sendSegmentsKey` 是 welcome.go 中的常量（值为 `"bot.send.segments"`），`buildWelcomeSegments` / `welcomeImageFile` 为实际实现；示例只保留主流程，完整代码见 [welcome.go](welcome.go)。
+
+**出站段通道（富文本发送）**：普通文本用 `AppendOutput`；需要富媒体（at / image 组合）时用 `conduit.Set(ctx, "bot.send.segments", []map[string]any{...})` 写入 OneBot 原生段列表，由 bot 回调读取后按段发送（v11/v12 协议差异自动收敛；键定义见 `internal/bot/passes.go` 的 `KeySendSegments`）。规则：
 
 - 键 `"bot.send.segments"`，值 `[]map[string]any`，每段 `{"type": "...", "data": {...}}`，**顺序即发送顺序**
 - 永远按 OneBot 12 语义组装（at 段用 `user_id`），插件不感知协议
@@ -163,13 +179,22 @@ func (pass *welcomePass) Execute(ctx *conduit.MessageContext) error {
 内置业务插件由 `BusinessRegistry`（见 `internal/bizplugin/registry.go`）按配置开关统一注册，替代逐插件硬编码 if 块：
 
 ```go
-bizReg := bizplugin.NewBusinessRegistry(&cfg.Plugin.Builtins, pluginReg, inf.DB, logger)
+bizReg := bizplugin.NewBusinessRegistry(&cfg.Plugin.Builtins, pluginReg, logger)
+// 依赖注入（对象存储、视觉服务、LLM、题库、点歌配置等，未配置时对应插件降级或不可用）
+bizReg.SetNCMURL(cfg.Plugin.NCMURL)
+bizReg.SetMusicSendMode(cfg.Plugin.MusicSendMode)
+bizReg.SetObjectStore(inf.ObjectStore)
+bizReg.SetVisionService(visionSvc)
+bizReg.SetLLMClient(llmClient)
+bizReg.SetQuizDir(cfg.Quiz.Dir)
+bizReg.SetRandomBeautyConfig(cfg.Plugin.RandomBeauty)
+bizReg.SetTurtleSoupTimeout(time.Duration(cfg.Bot.TurtleSoupTimeoutSeconds) * time.Second)
 if err := bizReg.RegisterBuiltins(); err != nil {
     logger.Fatal("内置业务插件注册失败", zap.Error(err))
 }
 ```
 
-`[plugin.builtins]` 配置节控制各插件启停（`signin` / `welcome`），改配置即可生效、无需改代码。注册表在注册前先查 Registry 是否已被同名 wasm 插件占用（wasm 优先，避免 ID 冲突）；插件生命周期（Init/Start/Stop）统一由 Registry 管理。
+`[plugin.builtins]` 配置节控制各插件启停（开关名见 `internal/config` 的 `PluginBuiltinsConfig`，完整列表见 [PLUGIN_DEVELOPMENT.md](../../PLUGIN_DEVELOPMENT.md) 第 7 节），改配置即可生效、无需改代码。注册表在注册前先查 Registry 是否已被同名 wasm 插件占用（wasm 优先，避免 ID 冲突）；插件生命周期（Init/Start/Stop）统一由 Registry 管理。
 
 新增内置插件步骤：实现 `Plugin` 接口 → 在 `registry.go` 的 `RegisterBuiltins` 追加注册分支（含配置开关）→ 在 `config.go` 的 `PluginBuiltinsConfig` 加开关字段。
 
@@ -200,7 +225,7 @@ go run ./cmd/lanmei
 
 - 插件结构、注册顺序、Track 清理等规范详见 [PLUGIN_DEVELOPMENT.md](../../PLUGIN_DEVELOPMENT.md)（Go 内置插件章节）
 - 回复统一 `conduit.AppendOutput`（纯文本）或 `conduit.Set("bot.send.segments", 段列表)`（富文本），Pass 内禁止直接发送
-- 跨 Pass 传数据用 `conduit.Set/Get`，key 带插件前缀（如 `plugin.welcome.xxx`）
+- 跨 Pass 传数据用 `conduit.Set/Get`，key 带 `plugin.<插件ID>.` 前缀（如 `plugin.signin.result`）；存 Redis 用 `pluginpkg.StoreKey(pluginID, key)`，业务数据优先用 `PluginContext.KV`（宿主按 pluginID 隔离）
 - 事件键直接使用字符串字面量（键定义见 `internal/bot/passes.go`），**不 import bot / gateway 包**
 
 ## 关键依赖

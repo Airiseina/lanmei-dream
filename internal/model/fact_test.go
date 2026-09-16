@@ -133,7 +133,7 @@ func TestMergeFactsConflictFloor(t *testing.T) {
 	}
 }
 
-// TestMergeFactsSameKeyDifferentValueNotConflict 同 Key 但 value 相同 → 走确认分支而非矛盾。
+// TestMergeFactsSameKeyConfirm 同 Key 但 value 相同，走确认分支而非矛盾分支。
 func TestMergeFactsSameKeyConfirm(t *testing.T) {
 	merged := MergeFacts(
 		[]FactItem{{Key: "宠物", Value: "用户喜欢猫", Confidence: 0.8}},

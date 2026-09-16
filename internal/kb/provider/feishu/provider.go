@@ -1,17 +1,11 @@
-// Package feishu 实现基于飞书知识库（Wiki）的 Provider。
+// Package feishu 实现基于飞书知识库（Wiki）的 Provider，提供 vector/fuzzy/time 召回。
 //
-// 能力：
-//   - vector：向量召回（本地对文档内容实时向量化 + 余弦相似度排序，结果缓存）
-//   - fuzzy：模糊召回（对标题/内容的本地 token 命中评分）
-//   - time：时间召回（按节点最近编辑时间倒序）
+// 飞书开放平台不提供服务端向量检索，故通过 Wiki API 拉取知识空间节点树
+// （SpaceNode.List）与文档纯文本（Document.RawContent）在本地计算召回，
+// 文档与向量均带 TTL 内存缓存，避免每次查询都打飞书接口。
 //
-// 由于飞书开放平台不提供服务端向量检索，本 Provider 通过 Wiki API 拉取
-// 知识空间节点树（SpaceNode.List）+ 文档纯文本（Document.RawContent），
-// 在本地完成召回计算。文档与向量均带 TTL 内存缓存，避免每次查询都打飞书接口。
-//
-// 认证：使用应用身份（tenant access token），SDK 依据接口声明的 token 类型自动换取。
-// 需在飞书开放平台为企业自建应用开通 Wiki 与文档的读取权限，
-// 并将应用添加为目标知识空间的成员（管理员）。
+// 认证使用应用身份（tenant access token，SDK 按接口声明的 token 类型自动换取），
+// 需为企业自建应用开通 Wiki 与文档读取权限，并将应用添加为目标知识空间成员。
 package feishu
 
 import (
@@ -42,12 +36,12 @@ const (
 
 // cachedDoc 一条已拉取的飞书文档（节点 + 纯文本）。
 type cachedDoc struct {
-	nodeToken string    // 节点 token（作为 Chunk.ID）
-	title     string    // 文档标题
-	content   string    // 文档纯文本
-	url       string    // 文档访问链接
-	createdAt time.Time // 文档创建时间
-	updatedAt time.Time // 文档最近编辑时间
+	nodeToken string // 节点 token（作为 Chunk.ID）
+	title     string
+	content   string
+	url       string
+	createdAt time.Time
+	updatedAt time.Time
 }
 
 // Provider 基于飞书知识库的 Provider。
@@ -56,18 +50,18 @@ type Provider struct {
 	kb       *kbpkg.KnowledgeBase
 	embedder embedding.Embedder // 可为 nil（vector 模式自动禁用）
 
-	spaceID        string        // 目标知识空间 ID（空则取第一个有权限的空间）
-	nodeToken      string        // 起始节点 token（空则从空间根节点开始）
-	maxNodes       int           // 拉取节点数上限
-	fuzzyThreshold float64       // 模糊召回最低分数
-	cacheTTL       time.Duration // 文档/向量缓存有效期
-	fetchTimeout   time.Duration // 单次全量拉取软超时
-	workers        int           // 拉取文档内容并发数
+	spaceID        string // 目标知识空间 ID（空则取第一个有权限的空间）
+	nodeToken      string // 起始节点 token（空则从空间根节点开始）
+	maxNodes       int
+	fuzzyThreshold float64
+	cacheTTL       time.Duration
+	fetchTimeout   time.Duration
+	workers        int
 
-	mu         sync.Mutex           // 保护 docs/fetchedAt/embeddings
-	docs       []*cachedDoc         // 已拉取文档（拉取失败且缓存非空时保留旧值降级）
-	loaded     bool                 // 是否已完成首次成功拉取（空文档空间也视为已加载）
-	fetchedAt  time.Time            // 最近一次成功拉取时间
+	mu         sync.Mutex   // 保护 docs/fetchedAt/embeddings
+	docs       []*cachedDoc // 已拉取文档（拉取失败且缓存非空时保留旧值降级）
+	loaded     bool         // 是否已完成首次成功拉取（空文档空间也视为已加载）
+	fetchedAt  time.Time
 	embeddings map[string][]float32 // nodeToken -> 内容向量（惰性计算）
 
 	logger *zap.Logger
@@ -117,7 +111,7 @@ func New(_ context.Context, kbb *kbpkg.KnowledgeBase, cfg map[string]any, deps k
 	}, nil
 }
 
-// Name 实现 kb.Provider
+// Name 实现 kb.Provider。
 func (p *Provider) Name() string { return providerName }
 
 // Capabilities 实现 kb.Provider。

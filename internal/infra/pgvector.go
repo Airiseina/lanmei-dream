@@ -21,13 +21,15 @@ type PGVectorStore struct {
 	orm *gorm.DB
 }
 
-// NewPGVectorStore 创建基于 pgvector 的记忆存储
+// NewPGVectorStore 创建基于 pgvector 的记忆存储。
+// db 为共享的 GORM 连接（表由 database.Migrate 建好），本存储不接管其生命周期。
 func NewPGVectorStore(db *gorm.DB) *PGVectorStore {
 	return &PGVectorStore{orm: db}
 }
 
 // Store 存储一条记忆（含向量）。
 // mem.GroupID 非空时写入群级记忆（user_id=0 的场景由调用方自行设置）。
+// 插入失败时原样返回 GORM 错误。
 func (s *PGVectorStore) Store(ctx context.Context, mem *memory.Memory) error {
 	row := &model.MemoryVector{
 		UserID:    mem.UserID,
@@ -49,12 +51,12 @@ func memoryGroupScope(groupID string, userID int64) (scope string, args []any) {
 	return "(group_id = ?) OR (user_id = ? AND group_id = '')", []any{groupID, userID}
 }
 
-// Retrieve 根据查询向量检索最相关的 N 条记忆（向量召回）
+// Retrieve 根据查询向量检索最相关的 N 条记忆（向量召回）。
+// 按余弦距离（<=>）升序取 limit 条；检索范围见 memoryGroupScope。
+// 查询失败时以 pgvector retrieve 前缀包装返回错误。
 func (s *PGVectorStore) Retrieve(ctx context.Context, queryVec []float32, userID int64, groupID string, limit int) ([]*memory.Memory, error) {
-	// 向量以参数形式传入并显式 ::vector 转换：参数化后以 text 到达，
-	// <=> 操作符无法从 $n 推断 vector 类型，缺 cast 会报
-	// operator does not exist: vector <=> text。
-	// （kb/provider/local 的向量召回是同模式的既有正确实现。）
+	// 显式 ::vector 转换：向量参数化后以 text 到达，<=> 无法从 $n 推断 vector
+	// 类型，缺 cast 会报 operator does not exist: vector <=> text。
 	vecStr := formatVector(queryVec)
 	scope, args := memoryGroupScope(groupID, userID)
 
@@ -70,7 +72,8 @@ func (s *PGVectorStore) Retrieve(ctx context.Context, queryVec []float32, userID
 	return rowsToMemories(rows), nil
 }
 
-// Delete 删除指定 ID 的记忆
+// Delete 删除指定 ID 的记忆。
+// id 为十进制主键字符串，解析失败时返回错误；目标不存在时不报错（影响 0 行）。
 func (s *PGVectorStore) Delete(ctx context.Context, id string) error {
 	pk, err := strconv.ParseInt(id, 10, 64)
 	if err != nil {
@@ -82,13 +85,11 @@ func (s *PGVectorStore) Delete(ctx context.Context, id string) error {
 // RetrieveByKeyword 根据关键词全文搜索检索记忆（关键词召回）
 // 使用 PostgreSQL tsvector 全文搜索，simple 配置按空白切割适合中文
 func (s *PGVectorStore) RetrieveByKeyword(ctx context.Context, query string, userID int64, groupID string, limit int) ([]*memory.Memory, error) {
-	// 将查询文本转换为 tsquery：按空白分割，用 & (AND) 连接
 	tsQuery := toSimpleTSQuery(query)
 	if tsQuery == "" {
 		return nil, nil
 	}
 	scope, args := memoryGroupScope(groupID, userID)
-	// 拼装 WHERE：scope AND search_vec @@ to_tsquery('simple', ?)
 	whereSQL := scope + " AND search_vec @@ to_tsquery('simple', ?)"
 	args = append(args, tsQuery)
 
@@ -122,12 +123,10 @@ func (s *PGVectorStore) RetrieveByTime(ctx context.Context, userID int64, groupI
 	return rowsToMemories(rows), nil
 }
 
-// toSimpleTSQuery 将自然语言查询转为 simple 配置的 tsquery。
-//
-// 按 Unicode 空白分割后用 & (AND) 连接各词项；单词项时直接返回词项本身。
-// 注意：词项必须先收集再用 " & " 连接，不能逐项追加 "&" 后缀——
-// 否则 "你好啊" 会变成 "你好啊&"（& 是 tsquery 前缀操作符，后无操作数时
-// PostgreSQL 报 "no operand in tsquery"）。
+// toSimpleTSQuery 将自然语言查询转为 simple 配置的 tsquery：按空白分割后用
+// & (AND) 连接各词项。
+// 必须先收集全部词项再连接，不能逐项追加 "&" 后缀——否则末词会变成 "词&"，
+// PostgreSQL 因缺操作数报 "no operand in tsquery"。
 func toSimpleTSQuery(query string) string {
 	var parts []string
 	for _, w := range splitWhitespace(query) {
@@ -141,7 +140,7 @@ func toSimpleTSQuery(query string) string {
 	return strings.Join(parts, " & ")
 }
 
-// splitWhitespace 按空白字符分割字符串（模拟 strings.Fields 但返回可遍历切片）
+// splitWhitespace 按空白字符（空格/制表/换行）分割字符串。
 func splitWhitespace(s string) []string {
 	var fields []string
 	var buf []rune

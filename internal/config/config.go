@@ -67,9 +67,10 @@ type PluginConfig struct {
 	NCMURL string `mapstructure:"ncm_url"`
 
 	// MusicSendMode 点歌结果的发送方式（适配不同反向代理工具）：
-	//   - auto（默认）：QQ/NapCat 平台发 OB11 music 段（音乐卡片），其余平台发文字链接
-	//   - card：强制发 music 段（要求 OneBot 实现支持 music 段，如 llonebot）
-	//   - link：强制发文字链接（最通用，任何工具都能展示）
+	//   - auto（默认，含空值）：发语音（record 段，OneBot 端自动转码，点击即听）；
+	//     取不到音频（VIP/版权受限）时降级为文字链接
+	//   - card：强制发 OB11 music 段（真正的音乐卡片，需工具支持签名，如配好 musicSignUrl 的 NapCat）
+	//   - link：强制纯文字链接
 	MusicSendMode string `mapstructure:"music_send_mode"`
 
 	// Builtins 内置业务插件开关（配置驱动注册，替代 main.go 硬编码注册）

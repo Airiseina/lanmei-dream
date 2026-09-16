@@ -20,7 +20,8 @@ import (
 	"go.uber.org/zap"
 )
 
-// WasmManager 负责 Wasm 文件托管、安装记录和运行时生命周期。
+// WasmManager 是 Wasm 插件的管理入口，负责文件托管、安装记录与运行时生命周期；
+// 所有管理操作都要求 actor 持有对应插件管理动作，并继承注册表与权限判定器。
 type WasmManager struct {
 	rootDir    string
 	limits     RuntimeLimits
@@ -32,7 +33,17 @@ type WasmManager struct {
 	logger     *zap.Logger
 }
 
-// NewWasmManager 创建插件管理器，并确保受控目录存在。
+// NewWasmManager 创建插件管理器，并确保受控根目录存在。
+//
+// 参数：
+//   - cfg：插件配置，RootDir 必填（Wasm 文件与安装目录均在其下）
+//   - db：数据库连接，用于持久化安装记录
+//   - registry：插件注册表，加载后的插件注册于此
+//   - authorizer：权限判定器，管理操作按 actor 校验动作
+//   - logger：日志器
+//   - limits：运行时限制；为 nil 时使用 DefaultLimits
+//
+// 返回：管理器实例；配置/参数缺失或根目录创建失败时返回错误。
 func NewWasmManager(cfg *config.PluginConfig, db *database.DB, registry *Registry, authorizer Authorizer, logger *zap.Logger, limits *RuntimeLimits) (*WasmManager, error) {
 	if cfg == nil || strings.TrimSpace(cfg.RootDir) == "" {
 		return nil, fmt.Errorf("插件 root_dir 不能为空")
@@ -66,7 +77,15 @@ func NewWasmManager(cfg *config.PluginConfig, db *database.DB, registry *Registr
 	}, nil
 }
 
-// Install 从公网 HTTPS 直链下载 Wasm，只创建 Enabled=false 安装记录。
+// Install 从公网 HTTPS 直链下载 Wasm，校验元数据后创建 Enabled=false 的安装记录。
+// 此阶段使用全拒绝 Host Function 的临时实例做检查，不注册插件、不授予权限；加载需另行调用 Load。
+//
+// 参数：
+//   - ctx：下载与检查上下文
+//   - actor：发起安装的主体，须持有 plugin.install
+//   - sourceURL：Wasm 直链，必须是公网 HTTPS 地址（拒绝私网/回环地址、用户凭据与 fragment）
+//
+// 返回：新建的安装记录（Enabled=false）；权限不足、下载失败、元数据校验失败或落库失败时返回错误。
 func (m *WasmManager) Install(ctx context.Context, actor, sourceURL string) (*model.PluginInstallation, error) {
 	if err := m.authorizer.Require(actor, ActionPluginInstall); err != nil {
 		return nil, fmt.Errorf("安装插件权限校验: %w", err)
@@ -138,7 +157,15 @@ func (m *WasmManager) Install(ctx context.Context, actor, sourceURL string) (*mo
 	return installation, nil
 }
 
-// Load 实例化并注册一个安装记录，但不启用、不调用 start。
+// Load 实例化安装记录、校验托管文件、完成 plugin_info/init 握手并注册到 Registry，但不启用、不调用 start。
+//
+// 参数：
+//   - ctx：创建与初始化上下文
+//   - actor：发起加载的主体，须持有 plugin.load
+//   - installationID：安装实例 ID
+//
+// 返回：权限不足、安装记录不存在、文件校验/实例创建/元数据或必需角色校验/init 握手/注册失败时返回错误；
+// 失败路径会关闭已创建的实例，不留半加载状态。
 func (m *WasmManager) Load(ctx context.Context, actor, installationID string) error {
 	if err := m.authorizer.Require(actor, ActionPluginLoad); err != nil {
 		return fmt.Errorf("加载插件权限校验: %w", err)
@@ -229,7 +256,14 @@ func (m *WasmManager) Load(ctx context.Context, actor, installationID string) er
 	return nil
 }
 
-// Start 启用已加载插件并调用可选 start。
+// Start 启用已加载插件：执行 OnInit 注册、调用可选 lanmei_start，并持久化 Enabled=true。
+//
+// 参数：
+//   - ctx：上下文
+//   - actor：发起启用的主体，须持有 plugin.start
+//   - installationID：安装实例 ID
+//
+// 返回：权限不足、安装记录不存在、初始化/启动失败或启用状态落库失败时返回错误。
 func (m *WasmManager) Start(ctx context.Context, actor, installationID string) error {
 	if err := m.authorizer.Require(actor, ActionPluginStart); err != nil {
 		return fmt.Errorf("启动插件权限校验: %w", err)
@@ -250,7 +284,14 @@ func (m *WasmManager) Start(ctx context.Context, actor, installationID string) e
 	return nil
 }
 
-// Unload 停止并注销插件，保留安装文件、策略和状态。
+// Unload 停止并注销插件，保留安装文件、Casbin 策略与状态数据；先置 Enabled=false 再注销。
+//
+// 参数：
+//   - ctx：上下文
+//   - actor：发起卸载的主体，须持有 plugin.unload
+//   - installationID：安装实例 ID
+//
+// 返回：权限不足、安装记录不存在、禁用状态落库失败或注销/关闭失败时返回错误。
 func (m *WasmManager) Unload(ctx context.Context, actor, installationID string) error {
 	if err := m.authorizer.Require(actor, ActionPluginUnload); err != nil {
 		return fmt.Errorf("卸载插件权限校验: %w", err)
@@ -278,7 +319,14 @@ func (m *WasmManager) Unload(ctx context.Context, actor, installationID string) 
 	return nil
 }
 
-// LoadEnabled 恢复所有 Enabled=true 安装。单插件失败不阻断其他插件。
+// LoadEnabled 逐个恢复 Enabled=true 的安装（Load → InitPlugin → StartPlugin），
+// 单个插件失败不阻断其他插件：失败者回滚注册、置 Enabled=false 并写入 LoadError。
+//
+// 参数：
+//   - ctx：上下文
+//   - actor：发起恢复的主体，须持有 plugin.load
+//
+// 返回：权限校验失败或安装列表查询失败时返回错误；单插件恢复失败不返回错误，记录到该安装记录。
 func (m *WasmManager) LoadEnabled(ctx context.Context, actor string) error {
 	if err := m.authorizer.Require(actor, ActionPluginLoad); err != nil {
 		return fmt.Errorf("恢复插件权限校验: %w", err)
@@ -306,7 +354,14 @@ func (m *WasmManager) LoadEnabled(ctx context.Context, actor string) error {
 	return nil
 }
 
-// Delete 删除安装记录和托管文件；调用前必须已卸载。
+// Delete 删除安装记录和托管文件；插件仍处于加载状态时拒绝，防止误删运行中插件的文件。
+//
+// 参数：
+//   - ctx：上下文
+//   - actor：发起删除的主体，须持有 plugin.delete
+//   - installationID：安装实例 ID
+//
+// 返回：权限不足、安装记录不存在、插件未卸载（ErrPluginNotLoaded）或删除失败时返回错误。
 func (m *WasmManager) Delete(ctx context.Context, actor, installationID string) error {
 	if err := m.authorizer.Require(actor, ActionPluginDelete); err != nil {
 		return fmt.Errorf("删除插件权限校验: %w", err)

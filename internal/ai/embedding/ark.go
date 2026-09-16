@@ -11,11 +11,8 @@ import (
 	"time"
 )
 
-// VolcEmbedder 火山方舟多模态 Embedding 客户端。
-//
-// 适配 doubao-embedding-vision 系列模型：请求 POST {base}/embeddings/multimodal，
-// 输入格式 input=[{"type":"text","text":"..."}]，响应为 OpenAI 兼容结构
-// {"data":[{"embedding":[...]}]}。
+// VolcEmbedder 火山方舟多模态 Embedding 客户端，适配 doubao-embedding-vision 系列。
+// 请求 POST {base}/embeddings/multimodal，入参 input=[{"type":"text","text":"..."}]。
 type VolcEmbedder struct {
 	baseURL   string
 	apiKey    string

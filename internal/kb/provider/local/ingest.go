@@ -28,7 +28,7 @@ const llmSourcePrefix = "llm:"
 // CSV 关键词可能超长，截断避免整批 upsert 因 value too long 失败。
 const maxTitleRunes = 256
 
-// fileRowCSV CSV 数据行的 source_id 后缀分隔符：相对路径#行号。
+// fileRowSep 是 CSV 数据行 source_id 的后缀分隔符：相对路径#行号。
 const fileRowSep = "#"
 
 var (
@@ -39,7 +39,7 @@ var (
 // fileEntry 一个待摄入的知识文件条目。
 // Markdown 文件整文件为一个分块（row=-1）；CSV 文件按行拆分（row>=0）。
 type fileEntry struct {
-	path string // 绝对路径
+	path string
 	rel  string // 相对 docs_dir 路径（/ 分隔）
 	row  int    // CSV 数据行号（0 起）；-1 表示整文件（Markdown）
 	// CSV 行内容（Markdown 文件为空）
@@ -57,12 +57,9 @@ func (e fileEntry) sourceID() string {
 }
 
 // Sync 实现 kb.Syncer：将 docs_dir 下的 Markdown/CSV 文件同步为知识分块（幂等）。
-//
-//   - Markdown：整文件为一个分块（解析标题/front-matter）；
-//   - CSV：按行拆分（A 列=关键词、B 列=回复，每行一个分块，可跳过表头）；
-//   - 内容未变化的分块跳过（不重复嵌入）；
-//   - 已删除的文件/行从库中移除；
-//   - source_id 以 "llm:" 开头的行（kb_add 工具录入）不受文件同步影响。
+// Markdown 整文件为一个分块（解析标题/front-matter）；CSV 按行拆分（A 列=关键词、
+// B 列=回复，可跳过表头）。内容未变化的分块跳过而不重复嵌入，已删除的文件/行从库中移除；
+// source_id 以 "llm:" 开头的行（kb_add 工具录入）不受文件同步影响。
 func (p *Provider) Sync(ctx context.Context) error {
 	if p.docsDir == "" {
 		return nil
@@ -243,11 +240,9 @@ func (p *Provider) deleteMissing(ctx context.Context, files []fileEntry) error {
 	return q.Where("source_id NOT IN ?", current).Delete(&model.KnowledgeChunk{}).Error
 }
 
-// walkFiles 递归收集 docs_dir 下的知识文件条目：
-//   - .md 文件 → 整文件一个条目（row=-1）；
-//   - .csv 文件 → 按行拆分为多个条目（row=0,1,...）。
-//
-// 单个 CSV 解析失败时记录告警并跳过该文件，不中断整体扫描。
+// walkFiles 递归收集 docs_dir 下的知识文件条目：.md 整文件为一个条目（row=-1），
+// .csv 按行拆分为多个条目（row=0,1,...）。单个 CSV 解析失败时记录告警并跳过该文件，
+// 不中断整体扫描。
 func (p *Provider) walkFiles(root string) []fileEntry {
 	var files []fileEntry
 	_ = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
@@ -285,12 +280,9 @@ func (p *Provider) walkFiles(root string) []fileEntry {
 	return files
 }
 
-// parseCSVFile 解析 CSV 文件为逐行知识条目（与飞书表格结构同构）：
-//
-//		| 关键词(A) | 回复(B) | 匹配形式(C，忽略) |
-//
-//	  - 兼容 UTF-8 BOM；默认跳过首行表头（skipHeader）；
-//	  - 空行跳过；行号从 0 起，作为 source_id 的后缀保证行级唯一。
+// parseCSVFile 解析 CSV 文件为逐行知识条目，结构与飞书表格同构：A=关键词、B=回复，
+// 第三列（匹配形式）忽略。兼容 UTF-8 BOM，默认跳过首行表头（skipHeader），空行跳过；
+// 行号从 0 起，作为 source_id 的后缀保证行级唯一。
 func parseCSVFile(path, rel string, skipHeader bool) ([]fileEntry, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -323,7 +315,7 @@ func parseCSVFile(path, rel string, skipHeader bool) ([]fileEntry, error) {
 			reply = strings.TrimSpace(rec[1])
 		}
 		if keyword == "" && reply == "" {
-			continue // 空行跳过
+			continue
 		}
 		entries = append(entries, fileEntry{
 			path:    path,
@@ -336,10 +328,9 @@ func parseCSVFile(path, rel string, skipHeader bool) ([]fileEntry, error) {
 	return entries, nil
 }
 
-// parseMarkdown 解析 Markdown 的标题与 front-matter 元数据。
-//
-//   - 标题：首个 "# " 一级标题；缺失则用文件名（去掉扩展名）；
-//   - meta：固定注入 source="file:<相对路径>"，可选读取 front-matter 的 tags。
+// parseMarkdown 解析 Markdown 的标题与 front-matter 元数据：标题取首个 "# " 一级标题，
+// 缺失则用文件名（去掉扩展名）；meta 固定注入 source="file:<相对路径>"，
+// 并可选读取 front-matter 的 tags。
 func parseMarkdown(text, rel string) (string, map[string]any) {
 	meta := map[string]any{"source": "file:" + filepath.ToSlash(rel)}
 	body := text

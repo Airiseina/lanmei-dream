@@ -9,31 +9,12 @@ import (
 	"go.uber.org/zap"
 )
 
-// ============================================================
-// ZhaoxinGroupPlugin 招新群导航插件
-// ============================================================
-
-// ZhaoxinGroupPlugin 实现招新群导航：用户在询问招新群号时，
-// 回复蓝山工作室各部门招新交流群群号列表。
+// ZhaoxinGroupPlugin 实现招新群导航：命中"招新群"等关键词、或 /招新群 命令（含意图分析路由的重入）
+// 时回复 [@对方 + 各部门招新交流群群号列表] 一条消息，不做防刷限流；
+// 直接读 MessageContext 的 RawMsg，不依赖 bot/gateway 包。
 //
-// 功能：
-//   - 消息含招新相关关键词（如"招新群"、"招新交流群"）时直接触发
-//   - 自然语言询问（如"招新群号是什么"）经意图分析路由到 /招新群 命令后触发
-//   - 回复 [@对方 + 招新群群号列表] 一条消息（经出站段通道发送），at 与文本间保留一个空格
-//   - 不做防刷限流
-//
-// 行为树：
-//
-//	subtree.zhaoxin_group → Selector [
-//	  Sequence(ContainsZhaoxinKeyword, Action("pipeline.plugin.zhaoxin_group.main"))
-//	  Sequence(IsZhaoxinCommand,      Action("pipeline.plugin.zhaoxin_group.main"))
-//	]
-//
-// 管线（动态模式，支持运行时热替换）：
-//
-//	pipeline.plugin.zhaoxin_group.main → [zhaoxinGroupPass]
-//
-// 消息文本读取：插件不依赖 bot/gateway 包，直接读 MessageContext 的 RawMsg（原始文本）。
+// 插件 ID zhaoxin_group；命令 /招新群，无工具；不依赖对象存储、LLM、视觉服务、
+// StateStore 或受限 KV（群号列表为固定文案）。
 type ZhaoxinGroupPlugin struct {
 	logger *zap.Logger
 }
@@ -61,7 +42,6 @@ func (p *ZhaoxinGroupPlugin) Info() pluginpkg.PluginInfo {
 
 // OnInit 初始化招新群导航插件，注册 Pass、Pipeline 和 Subtree。
 func (p *ZhaoxinGroupPlugin) OnInit(ctx *pluginpkg.PluginContext) error {
-	// 注册 Pass（依赖直接注入 Pass 结构体）
 	passID := pluginpkg.PassID("zhaoxin_group", "navigate")
 	pass := &zhaoxinGroupPass{logger: p.logger}
 
@@ -69,20 +49,16 @@ func (p *ZhaoxinGroupPlugin) OnInit(ctx *pluginpkg.PluginContext) error {
 		return fmt.Errorf("register zhaoxin_group pass: %w", err)
 	}
 
-	// 跟踪 Pass，卸载时自动清理
 	ctx.Registry.TrackPass("zhaoxin_group", passID)
 
-	// 注册动态管线（通过 Pass ID 引用，支持运行时热替换）
 	pipelineID := pluginpkg.PipelineID("zhaoxin_group", "main")
 	pl := conduit.NewPipelineFromIDs(pipelineID, passID)
 	if err := ctx.Engine.RegisterPipeline(pl); err != nil {
 		return fmt.Errorf("register pipeline: %w", err)
 	}
 
-	// 跟踪 Pipeline，卸载时自动清理
 	ctx.Registry.TrackPipeline("zhaoxin_group", pipelineID)
 
-	// 注册行为树子树：关键词或 /招新群 命令双路触发
 	subtree := conduit.NewSelector(
 		conduit.NewSequence(
 			conduit.NewCondition(containsZhaoxinKeyword),
@@ -105,10 +81,6 @@ func (p *ZhaoxinGroupPlugin) OnStart(_ *pluginpkg.PluginContext) error { return 
 
 // OnStop 招新群导航插件无需清理资源。
 func (p *ZhaoxinGroupPlugin) OnStop(_ *pluginpkg.PluginContext) error { return nil }
-
-// ============================================================
-// 条件判断
-// ============================================================
 
 // zhaoxinKeywords 招新相关触发关键词。
 // 仅覆盖招新语境（"招新群"子串已含"招新群号"、"招新群是多少"等），
@@ -137,10 +109,6 @@ func isZhaoxinCommand(ctx *conduit.MessageContext) bool {
 	return strings.TrimSpace(ctx.RawMsg) == "/招新群"
 }
 
-// ============================================================
-// Pass 实现
-// ============================================================
-
 // zhaoxinGroupMessage 招新群群号列表（固定文案）
 const zhaoxinGroupMessage = `✨ 蓝山工作室招新交流群 ✨
 📦 产品策划部：1103609889
@@ -159,6 +127,12 @@ type zhaoxinGroupPass struct {
 	logger *zap.Logger
 }
 
+// Execute 回复招新群导航：记录日志后经出站段键 bot.send.segments 组装
+// [@对方 + 各部门招新群群号列表] 一条消息发送（at 段永远按 OneBot 12 语义用 user_id，
+// 协议差异由 hub.SendSegments 收敛）。
+// 由 plugin.zhaoxin_group.pipeline.main 在 containsZhaoxinKeyword 命中关键词
+// 或 isZhaoxinCommand 命中 /招新群（含意图分析路由的重入）后调用，不做防刷限流；
+// UserID 为空（异常情况）时降级为纯文本群号列表。
 func (pass *zhaoxinGroupPass) Execute(ctx *conduit.MessageContext) error {
 	pass.logger.Info("zhaoxin_group: 触发招新群导航",
 		zap.String("user", ctx.UserID),
@@ -174,11 +148,11 @@ func (pass *zhaoxinGroupPass) Execute(ctx *conduit.MessageContext) error {
 		return nil
 	}
 
-	// 出站段：[@对方 + 群号列表]，at 与文本间保留一个空格（text 段开头空格实现），
-	// 永远按 OneBot 12 语义组装（at 段用 user_id），协议差异由 bot 回调经 hub.SendSegments 收敛
+	// 出站段：[@对方 + 群号列表]，永远按 OneBot 12 语义组装（at 段用 user_id）；
+	// at 与正文间的空格由 hub.SendSegments 统一补齐，协议差异也在该层收敛
 	conduit.Set(ctx, sendSegmentsKey, []map[string]any{
 		{"type": "at", "data": map[string]any{"user_id": ctx.UserID}},
-		{"type": "text", "data": map[string]any{"text": " " + zhaoxinGroupMessage}},
+		{"type": "text", "data": map[string]any{"text": zhaoxinGroupMessage}},
 	})
 	return nil
 }

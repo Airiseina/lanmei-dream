@@ -4,10 +4,9 @@ import "time"
 
 // RandomBeautyPool 随机美图预审核图池表（random_beauty_pool）。
 //
-// 存储「候选 → 下载 → vision 审核」全流程通过后的成品图：
-//   - 图片字节存 RustFS（对象存储），本表只存对象键与元数据；
-//   - 用户取图毫秒级从本表随机命中，安全审核成本全部前置到补图后台；
-//   - ImageKey 即上游候选 LocalPath，唯一索引用于查重，防止同一作品重复入库。
+// 存储「候选 → 下载 → vision 审核」全流程通过后的成品图：图片字节存 RustFS，本表只存
+// 对象键与元数据，用户取图时毫秒级随机命中，安全审核成本全部前置到补图后台。
+// ImageKey 即上游候选 LocalPath，唯一索引用于查重，防止同一作品重复入库。
 type RandomBeautyPool struct {
 	ID          uint      `json:"id"           gorm:"primaryKey;autoIncrement;comment:图片ID"`
 	ImageKey    string    `json:"image_key"    gorm:"not null;size:512;uniqueIndex;comment:上游候选 LocalPath（唯一，查重键）"`
@@ -24,5 +23,5 @@ type RandomBeautyPool struct {
 	CreatedAt   time.Time `json:"created_at"   gorm:"autoCreateTime;comment:创建时间"`
 }
 
-// TableName 指定表名。
+// TableName 指定 GORM 表名为 random_beauty_pool。
 func (RandomBeautyPool) TableName() string { return "random_beauty_pool" }

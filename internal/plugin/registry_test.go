@@ -54,8 +54,6 @@ func (noopPass) Execute(_ *conduit.MessageContext) error { return nil }
 
 var _ conduit.Pass = noopPass{}
 
-// ── 定向生命周期 ──
-
 func TestRegistryInitPluginSingle(t *testing.T) {
 	store := newMemStateStore()
 	cmdSys := command.New()
@@ -146,8 +144,6 @@ func TestRegistryStopPluginNotStartedNoOps(t *testing.T) {
 	}
 }
 
-// ── 批量复用定向 ──
-
 func TestRegistryBatchCallsUsesSingle(t *testing.T) {
 	store := newMemStateStore()
 	engine := conduit.New(store)
@@ -174,8 +170,6 @@ func TestRegistryBatchCallsUsesSingle(t *testing.T) {
 		}
 	}
 }
-
-// ── 命令注册到并发安全 System ──
 
 func TestRegistryInitPluginRegistersCommand(t *testing.T) {
 	store := newMemStateStore()

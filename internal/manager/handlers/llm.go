@@ -12,9 +12,7 @@ import (
 	"github.com/DaWesen/lanmei-dream/internal/model"
 )
 
-// ─────────────────────────────────────────────
 // LLM Provider 管理（super + step-up 写操作）
-// ─────────────────────────────────────────────
 
 // ProviderReq Provider 读写请求体（APIKey 仅写入时使用，查询永远脱敏）。
 type ProviderReq struct {
@@ -47,6 +45,7 @@ type ProviderView struct {
 }
 
 // ListProviders 列出全部 Provider（APIKey 脱敏）。
+// 权限：登录即可，不要求超管。
 func (h *Handler) ListProviders(c fiber.Ctx) error {
 	list, err := h.store.ListLLMProviders(c.Context())
 	if err != nil {
@@ -305,11 +304,8 @@ func toProviderView(p *model.LLMProvider) ProviderView {
 	}
 }
 
-// ─────────────────────────────────────────────
-// Token 用量与计费统计
-// ─────────────────────────────────────────────
-
 // UsageSummary 按维度汇总 token 用量（by=model|provider|scene|user_id|group_id|platform）。
+// 权限：登录即可，不要求超管；时间范围缺省为最近 24 小时。
 func (h *Handler) UsageSummary(c fiber.Ctx) error {
 	by := store.Dimension(c.Query("by", "model"))
 	if !by.Valid() {
@@ -335,6 +331,7 @@ func (h *Handler) UsageSummary(c fiber.Ctx) error {
 }
 
 // UsageSeries 用量时间序列（step=minute|hour|day）。
+// 权限：登录即可，不要求超管；时间范围缺省为最近 24 小时。
 func (h *Handler) UsageSeries(c fiber.Ctx) error {
 	step := c.Query("step", "hour")
 	switch step {

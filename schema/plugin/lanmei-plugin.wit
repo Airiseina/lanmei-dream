@@ -1,6 +1,10 @@
+/// WIT 概念定义对应的 ABI 版本与包命名见文件末尾 world 的说明。
+/// 注意：本文件是 `lanmei.plugin/v1` JSON ABI 的概念模型，宿主实际按字面导出名/导入名调用，
+/// 与 JSON 的字段映射见 internal/plugin/wasm_abi.md 的「WIT 与 JSON ABI 的对应」。
 package lanmei:plugin;
 
-/// 插件元信息
+/// 插件元信息（WIT 概念模型；JSON ABI 中宿主传入 `{"host_abi_version":"..."}`，
+/// 并以 `lanmei_plugin_info` 导出返回 plugin-info-response）
 record plugin-info {
     abi-version: string,
     id: string,
@@ -9,32 +13,33 @@ record plugin-info {
     version: string,
 }
 
-/// 命令声明
+/// 命令声明（JSON ABI：`commands[]` 元素为 `{"name","description"}`；命令名不含 `/`、空白与控制字符）
 record command-decl {
     name: string,
     description: string,
 }
 
-/// 工具参数属性
+/// 工具参数属性（WIT 概念模型；JSON ABI 的 ToolDecl 当前不传输参数 schema）
 record property-schema {
     type: string,
     description: string,
 }
 
-/// 工具参数定义
+/// 工具参数定义（WIT 概念模型；JSON ABI 当前不下发工具参数）
 record parameter-schema {
     properties: list<tuple<string, property-schema>>,
     required: list<string>,
 }
 
-/// 工具声明
+/// 工具声明（JSON ABI：`tools[]` 元素为 `{"name","description"}`，`parameters` 当前不传输）
 record tool-decl {
     name: string,
     description: string,
     parameters: option<parameter-schema>,
 }
 
-/// 权限请求
+/// 权限请求（能力声明模型，对应 internal/plugin/capability.go 的 PermissionRequest；
+/// JSON ABI 当前以 `requested_roles` 传输角色申请，元素为 `{role, required, reason}`）
 record permission-request {
     sets: list<string>,
     permissions: list<string>,
@@ -43,7 +48,8 @@ record permission-request {
     reason: string,
 }
 
-/// 完整的插件信息响应
+/// 完整的插件信息响应（JSON ABI 字段：abi_version / id / name / description / version /
+/// commands / tools / requested_roles，详见 internal/plugin/wasm_abi.md）
 record plugin-info-response {
     abi-version: string,
     id: string,
@@ -55,18 +61,19 @@ record plugin-info-response {
     requested-permissions: list<permission-request>,
 }
 
-/// 用户信息
+/// 用户信息（JSON ABI：`{"id","nickname"}`，nickname 可缺省；由宿主填充）
 record user-info {
     id: string,
     nickname: option<string>,
 }
 
-/// 群组信息
+/// 群组信息（JSON ABI：私聊时 `group` 为 null）
 record group-info {
     id: string,
 }
 
-/// 消息信息
+/// 消息信息（JSON ABI：`{"message_id","text","raw","user","group","is_group"}`；
+/// 身份与群组信息由宿主填充，不可信任 Guest 自行构造的副本）
 record message-info {
     message-id: option<string>,
     text: string,
@@ -76,7 +83,7 @@ record message-info {
     is-group: bool,
 }
 
-/// 命令信息
+/// 命令信息（JSON ABI：`{"name","args","raw_args","raw_message"}`，仅 command 事件填充）
 record command-info {
     name: string,
     args: list<string>,
@@ -84,20 +91,22 @@ record command-info {
     raw-message: string,
 }
 
-/// 工具调用信息
+/// 工具调用信息（JSON ABI：`{"tool_name","arguments","call_id"}`，
+/// `arguments` 为 JSON 编码后的字符串，仅 tool_call 事件填充）
 record tool-call-info {
     tool-name: string,
     arguments: string,
     call-id: string,
 }
 
-/// 事件类型
+/// 事件类型（JSON ABI：`event_type` 字符串取 `"command"` 或 `"tool_call"`）
 variant event-type {
     command,
     tool-call,
 }
 
-/// 处理请求
+/// 处理请求（JSON ABI：`command` 始终存在，tool_call 事件中为空对象；
+/// `tool_call` 仅在 tool_call 事件出现，command 事件中缺省）
 record handle-request {
     abi-version: string,
     event-id: string,
@@ -108,19 +117,22 @@ record handle-request {
     tool-call: option<tool-call-info>,
 }
 
-/// 输出项
+/// 输出项（JSON ABI：`{"type","content"}`，type 目前仅支持 `"text"`，
+/// 单条不超过 4096 UTF-8 字节）
 record output-item {
     type: string,
     content: string,
 }
 
-/// 处理响应
+/// 处理响应（JSON ABI：`{"handled","outputs"}`；handled=false 时 outputs 必须为空，
+/// 输出不得指定目标用户或群，tool_call 事件的 outputs[0].content 作为工具返回值）
 record handle-response {
     handled: bool,
     outputs: list<output-item>,
 }
 
-/// 初始化请求
+/// 初始化请求（JSON ABI：`config` 为对象 map<string,string>；granted_roles 与
+/// effective_actions 由宿主从策略读取，Guest 不可伪造）
 record init-request {
     abi-version: string,
     plugin-id: string,
@@ -130,30 +142,32 @@ record init-request {
     effective-actions: list<string>,
 }
 
-/// 通用 OK 响应
+/// 通用 OK 响应（JSON ABI：`{"ok":bool,"error":"..."}`，成功时 error 缺省）
 record generic-ok-response {
     ok: bool,
     error: option<string>,
 }
 
-/// 状态获取请求
+/// 状态获取请求（JSON ABI：key 为 Guest 逻辑 key，宿主按 `plugin:<installation_id>:` 前缀隔离，
+/// 不得含 plugin_id、安装 ID、`/`、`..` 或控制字符）
 record state-get-request {
     key: string,
 }
 
-/// 状态设置请求
+/// 状态设置请求（JSON ABI：ttl_ms=0 表示永不过期，正数最大 30 天，负数无效）
 record state-set-request {
     key: string,
     value: string,
     ttl-ms: s64,
 }
 
-/// 状态删除请求
+/// 状态删除请求（key 规则同 state-get-request）
 record state-delete-request {
     key: string,
 }
 
-/// 原子操作 CAS 请求
+/// 原子操作 CAS 请求（JSON ABI：`{"key","old_value","new_value","ttl_ms"}`，
+/// 成功 data 为 `{"swapped":bool}`；运行时校验动作 state.write）
 record compare-and-swap-request {
     key: string,
     old-value: string,
@@ -161,79 +175,103 @@ record compare-and-swap-request {
     ttl-ms: s64,
 }
 
-/// 原子操作 IncrBy 请求
+/// 原子操作 IncrBy 请求（JSON ABI：`{"key","delta"}`，成功 data 为 `{"value":int64}`；
+/// 运行时校验动作 state.write）
 record incr-by-request {
     key: string,
     delta: s64,
 }
 
-/// 原子操作 SetIfNotExists 请求
+/// 原子操作 SetIfNotExists 请求（JSON ABI：`{"key","value","ttl_ms"}`，
+/// 成功 data 为 `{"set":bool}`；运行时校验动作 state.write）
 record set-if-not-exists-request {
     key: string,
     value: string,
     ttl-ms: s64,
 }
 
-/// HTTP GET 请求
+/// HTTP GET 请求（宿主当前未提供对应 Host Function，Guest 导入会导致实例化失败）
 record http-get-request {
     url: string,
     headers: list<tuple<string, string>>,
 }
 
-/// HTTP POST 请求
+/// HTTP POST 请求（宿主当前未提供对应 Host Function，Guest 导入会导致实例化失败）
 record http-post-request {
     url: string,
     headers: list<tuple<string, string>>,
     body: list<u8>,
 }
 
-/// 数据库查询请求
+/// 数据库查询请求（宿主当前未提供对应 Host Function，Guest 导入会导致实例化失败）
 record db-query-request {
     table: string,
     query-json: string,
 }
 
-/// 数据库执行请求
+/// 数据库执行请求（宿主当前未提供对应 Host Function，Guest 导入会导致实例化失败）
 record db-exec-request {
     table: string,
     exec-json: string,
 }
 
-/// Host Function 错误
+/// Host Function 错误（JSON ABI：`error.code` 取 invalid_request / permission_denied /
+/// key_too_large / value_too_large / ttl_out_of_range / state_unavailable / internal_error，
+/// `message` 仅供排障）
 record host-error {
     code: string,
     message: string,
 }
 
-/// Host Function 响应信封
+/// Host Function 响应信封（JSON ABI 用 ok/data/error 信封表达该 variant：
+/// 成功 `{"ok":true,"data":...}`，失败 `{"ok":false,"error":{...}}`）
 variant host-response {
     ok(option<list<u8>>),
     err(host-error),
 }
 
-/// 插件必须导出的接口
+/// 插件必须导出的接口（宿主按字面导出名 lanmei_plugin_info / lanmei_init / lanmei_handle /
+/// lanmei_start / lanmei_stop 调用，载荷为 UTF-8 JSON；见 internal/plugin/wasm_abi.go 常量）
 interface plugin {
+    /// 返回插件元信息；可能被多次调用，必须无副作用（导出名 lanmei_plugin_info）
     plugin-info: func(host-abi-version: string) -> plugin-info-response;
+    /// 一次性初始化；返回 ok=false 则宿主放弃加载（导出名 lanmei_init）
     init: func(request: init-request) -> generic-ok-response;
+    /// 处理 command / tool_call 事件；同一实例的导出调用串行执行（导出名 lanmei_handle）
     handle: func(request: handle-request) -> handle-response;
+    /// 可选启动通知；导出不存在时宿主跳过（导出名 lanmei_start）
     start: func(started-at: string) -> generic-ok-response;
+    /// 可选停止通知；失败只记录，不阻止卸载（导出名 lanmei_stop）
     stop: func(reason: string) -> generic-ok-response;
 }
 
-/// 宿主提供给插件的接口
+/// 宿主提供给插件的接口（JSON ABI 中导入名如 `state_get`，命名空间固定 `lanmei:host/v1`，
+/// 签名 `(PTR i64) -> (PTR i64)`，请求/响应均为 UTF-8 JSON；当前仅实现状态存储 6 个函数）
 interface host {
+    /// 读取本安装实例的逻辑 key（动作 state.read）
     state-get: func(request: state-get-request) -> host-response;
+    /// 写入状态（动作 state.write；ttl_ms=0 表示永不过期）
     state-set: func(request: state-set-request) -> host-response;
+    /// 删除状态（动作 state.delete）
     state-delete: func(request: state-delete-request) -> host-response;
+    /// 仅当当前值等于 old-value 时写入（动作 state.write）
     compare-and-swap: func(request: compare-and-swap-request) -> host-response;
+    /// 自增（动作 state.write）
     incr-by: func(request: incr-by-request) -> host-response;
+    /// 键不存在时写入（动作 state.write）
     set-if-not-exists: func(request: set-if-not-exists-request) -> host-response;
+    /// HTTP GET（宿主当前未实现）
     http-get: func(request: http-get-request) -> host-response;
+    /// HTTP POST（宿主当前未实现）
     http-post: func(request: http-post-request) -> host-response;
+    /// 数据库查询（宿主当前未实现）
     db-query: func(request: db-query-request) -> host-response;
+    /// 数据库执行（宿主当前未实现）
     db-exec: func(request: db-exec-request) -> host-response;
 }
 
+/// 插件 world：导出 plugin 接口、导入 host 接口。
+/// package 名 `lanmei:plugin` 仅用于 WIT 组织，运行时 ABI 版本号为 `lanmei.plugin/v1`。
 world lanmei-plugin {
     export plugin;
     import host;

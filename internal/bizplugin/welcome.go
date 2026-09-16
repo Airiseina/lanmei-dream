@@ -12,29 +12,12 @@ import (
 	"go.uber.org/zap"
 )
 
-// ============================================================
-// WelcomePlugin 入群欢迎插件
-// ============================================================
-
-// WelcomePlugin 实现新人入群欢迎功能，是消费 QQ 通知事件的模范示例。
+// WelcomePlugin 实现新人入群欢迎：收到 group_increase 事件时，一条消息内 @ 新人 +
+// 固定文案 + 欢迎图。欢迎图内嵌于二进制、懒上传 RustFS（内容寻址幂等），不可用时逐级降级纯文本，
+// 不依赖外链图床；所有群生效，不做按群配置与防刷限流。事件键由 bot 层写入黑板 Extra，插件不导 bot/gateway 包。
 //
-// 功能：
-//   - 新人入群（group_increase）时发送欢迎消息
-//   - 一条消息内 @ 新人 + 固定欢迎文案 + 固定图片（经出站段通道发送）
-//   - 图片内嵌于二进制、开机懒上传至 RustFS（内容寻址幂等），发送时预签名转 base64；
-//     RustFS 不可用时降级纯文本，不再依赖任何外链图床
-//   - 所有群都欢迎，不做按群配置、不做防刷限流
-//
-// 行为树：
-//
-//	subtree.welcome → Sequence(IsGroupIncreaseEvent, Action("pipeline.plugin.welcome.main"))
-//
-// 管线（动态模式，支持运行时热替换）：
-//
-//	pipeline.plugin.welcome.main → [welcomePass]
-//
-// 事件信息读取：插件不依赖 bot/gateway 包，直接从黑板 Extra 读取事件键
-// （"bot.event.type" / "bot.event.data"，由 bot 层 OnMessage 写入）。
+// 插件 ID welcome；无命令、无工具；依赖 RustFS 对象存储（store 为 nil 时跳过欢迎图，仅发文本欢迎语），
+// 不使用 LLM、视觉服务、StateStore 与受限 KV。
 type WelcomePlugin struct {
 	store  *media.ObjectStore // RustFS 对象存储（未配置时欢迎图降级为纯文本）
 	logger *zap.Logger
@@ -58,7 +41,6 @@ func (p *WelcomePlugin) Info() pluginpkg.PluginInfo {
 
 // OnInit 初始化入群欢迎插件，注册 Pass、Pipeline 和 Subtree。
 func (p *WelcomePlugin) OnInit(ctx *pluginpkg.PluginContext) error {
-	// 注册 Pass（依赖直接注入 Pass 结构体）
 	passID := pluginpkg.PassID("welcome", "welcome")
 	pass := &welcomePass{store: p.store, logger: p.logger}
 
@@ -66,20 +48,16 @@ func (p *WelcomePlugin) OnInit(ctx *pluginpkg.PluginContext) error {
 		return fmt.Errorf("register welcome pass: %w", err)
 	}
 
-	// 跟踪 Pass，卸载时自动清理
 	ctx.Registry.TrackPass("welcome", passID)
 
-	// 注册动态管线（通过 Pass ID 引用，支持运行时热替换）
 	pipelineID := pluginpkg.PipelineID("welcome", "main")
 	pl := conduit.NewPipelineFromIDs(pipelineID, passID)
 	if err := ctx.Engine.RegisterPipeline(pl); err != nil {
 		return fmt.Errorf("register pipeline: %w", err)
 	}
 
-	// 跟踪 Pipeline，卸载时自动清理
 	ctx.Registry.TrackPipeline("welcome", pipelineID)
 
-	// 注册行为树子树：入群事件路由
 	subtree := conduit.NewSequence(
 		conduit.NewCondition(isGroupIncreaseEvent),
 		conduit.NewAction(pipelineID),
@@ -97,20 +75,16 @@ func (p *WelcomePlugin) OnStart(_ *pluginpkg.PluginContext) error { return nil }
 // OnStop 入群欢迎插件无需清理资源。
 func (p *WelcomePlugin) OnStop(_ *pluginpkg.PluginContext) error { return nil }
 
-// ============================================================
-// 条件判断
-// ============================================================
-
 // 黑板事件键（由 bot 层 OnMessage 写入，键定义见 internal/bot/passes.go）。
 // 插件按"不导包"约定直接使用字符串字面量。
 const (
-	eventKeyType = "bot.event.type" // string 规范化事件类型
-	eventKeyData = "bot.event.data" // map[string]any 事件全字段
+	eventKeyType = "bot.event.type"
+	eventKeyData = "bot.event.data"
 )
 
 // 出站段键（由 bot 层回调读取后按段发送，键定义见 internal/bot/passes.go）。
 // 插件按"不导包"约定直接使用字符串字面量。
-const sendSegmentsKey = "bot.send.segments" // []map[string]any OneBot 原生段列表（at/text/image 组合）
+const sendSegmentsKey = "bot.send.segments"
 
 // welcomeImage 欢迎配图（蓝山工作室 2026 秋季招新横幅）。
 // 内嵌于二进制：发送前懒上传 RustFS（内容寻址幂等），不再依赖外链图床。
@@ -127,10 +101,6 @@ func isGroupIncreaseEvent(ctx *conduit.MessageContext) bool {
 	return eventType == groupIncreaseEventType
 }
 
-// ============================================================
-// Pass 实现
-// ============================================================
-
 // welcomeMessage 固定欢迎文案（作为 @ 新人后的文本段）
 const welcomeMessage = "欢迎来到蓝山招新群！ヾ(≧▽≦*)o，有什么想问的都可以问我呦，发送/help试试呀 (´,,•ω•,,)♡"
 
@@ -143,8 +113,13 @@ type welcomePass struct {
 	logger *zap.Logger
 }
 
+// Execute 发送入群欢迎：记录新人 / 拉人者日志后，经出站段键 bot.send.segments 组装
+// [@新人 + 固定文案 + 欢迎图] 一条消息发送（at 段永远按 OneBot 12 语义用 user_id，
+// 协议差异由 hub.SendSegments 收敛）。
+// 由 plugin.welcome.pipeline.main 在 isGroupIncreaseEvent 命中 group_increase 事件后调用；
+// 事件缺 user_id（异常事件）时降级为不 @ 任何人的纯文本欢迎语，
+// 欢迎图取用失败（RustFS 未配置 / 上传或预签名失败）时降级为 [@新人 + 文案]。
 func (pass *welcomePass) Execute(ctx *conduit.MessageContext) error {
-	// 模范示例：从事件数据读取入群者/拉人者/子类型，记录消费信息
 	eventData, _ := ctx.Extra[eventKeyData].(map[string]any)
 	pass.logger.Info("welcome: 新人入群",
 		zap.Any("user_id", eventData["user_id"]),
@@ -165,8 +140,8 @@ func (pass *welcomePass) Execute(ctx *conduit.MessageContext) error {
 		return nil
 	}
 
-	// 出站段：[@新人 + 固定文案 (+ 固定图片)]，永远按 OneBot 12 语义组装（at 段用 user_id），
-	// 协议差异（v11 的 at→qq、动作选择）由 bot 回调经 hub.SendSegments 收敛
+	// 出站段：[@新人 + 固定文案 + 固定图片]，永远按 OneBot 12 语义组装（at 段用 user_id）；
+	// at 与正文间的空格由 hub.SendSegments 统一补齐，协议差异也在该层收敛
 	conduit.Set(ctx, sendSegmentsKey, buildWelcomeSegments(newUserID, content, pass.welcomeImageFile(ctx.Ctx)))
 	return nil
 }

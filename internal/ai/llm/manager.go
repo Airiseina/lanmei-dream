@@ -10,15 +10,11 @@ import (
 	"go.uber.org/zap"
 )
 
-// ─────────────────────────────────────────────────────────────
-// ProviderManager：多 Provider 注册 + 活跃 Provider 原子热切换
-// ─────────────────────────────────────────────────────────────
-
-// ProviderManager 是 LLMClient 的托管实现。
-// 所有业务组件（ChatService / IntentAnalyzer / Compressor / TopicManager）统一注入
-// 同一个 ProviderManager，切换活跃 Provider 时对调用方零感知（原子替换委托目标）。
+// ProviderManager 是 LLMClient 的托管实现：多个业务组件注入同一个实例，
+// 切换活跃 Provider 时对调用方零感知（原子替换委托目标）。
+// 它同时实现 LLMClient、EinoCapable 与 StreamingLLMClient，可直接作为业务组件的依赖注入。
 //
-// 并发安全：所有读路径在 RLock 下取出当前委托客户端引用后立即释放锁，
+// 并发安全：读路径在 RLock 下取出当前委托客户端引用后立即释放锁，
 // 进行中的请求持有旧 client 引用可安全完成，不被切换中断。
 type ProviderManager struct {
 	mu        sync.RWMutex
@@ -50,8 +46,8 @@ func (m *ProviderManager) SetUsageHook(hook UsageHook) {
 	}
 }
 
-// BuildClient 为一个 Provider 构建 EinoClient（网络初始化仅做配置装配，不发起请求）。
-// 供内部与外部（连通性测试）复用。
+// buildClientLocked 为指定 Provider 构建 EinoClient，仅做配置装配、不发起网络请求
+// （调用方需持写锁）。
 func (m *ProviderManager) buildClientLocked(p *Provider) (*EinoClient, error) {
 	if p == nil || p.Name == "" {
 		return nil, fmt.Errorf("llm: provider 未配置")
@@ -80,7 +76,11 @@ func (m *ProviderManager) buildClientLocked(p *Provider) (*EinoClient, error) {
 
 // SetProviders 全量替换 Provider 列表，并保持当前活跃 Provider 不变。
 // activeName 为空时选择第一个 enabled 且优先级最高的 Provider 作为活跃。
-// 返回当前活跃 Provider 名（可能为空 = 无可用 Provider）。
+//
+// 参数：
+//   - providers：全量 Provider 列表；nil 或空项会被跳过
+//
+// 返回：当前活跃 Provider 名（可能为空 = 无可用 Provider）；活跃客户端构建失败时返回错误。
 func (m *ProviderManager) SetProviders(providers []*Provider) (string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -177,9 +177,9 @@ func (m *ProviderManager) current() LLMClient {
 	return m.client
 }
 
-// ── LLMClient 接口实现 ──
-
 // Chat 委托给当前活跃客户端。
+//
+// 返回：无可用 Provider 时返回错误；其余情况原样返回活跃客户端的结果与错误。
 func (m *ProviderManager) Chat(ctx context.Context, req *ChatRequest) (*ChatResponse, error) {
 	c := m.current()
 	if c == nil {
@@ -187,8 +187,6 @@ func (m *ProviderManager) Chat(ctx context.Context, req *ChatRequest) (*ChatResp
 	}
 	return c.Chat(ctx, req)
 }
-
-// ── EinoCapable 接口实现 ──
 
 // SupportsToolCalling 委托当前活跃客户端。
 func (m *ProviderManager) SupportsToolCalling() bool {
@@ -229,8 +227,6 @@ func (m *ProviderManager) ModelName() string {
 	}
 	return c.ModelName()
 }
-
-// ── StreamingLLMClient 接口实现 ──
 
 // StreamChat 委托当前活跃客户端。
 func (m *ProviderManager) StreamChat(ctx context.Context, req *ChatRequest) (*schema.StreamReader[*schema.Message], error) {

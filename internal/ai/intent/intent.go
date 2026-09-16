@@ -1,15 +1,7 @@
-// Package intent 实现意图分析系统，用于在消息进入对话流程前判断用户意图。
+// Package intent 实现意图分析：在消息进入对话流程前用 LLM 分类并路由。
 //
-// 意图分析是消息路由的核心环节：用户消息可能不是简单的聊天，
-// 而是命令调用（如"帮我签到"）或工具调用（如"今天天气怎么样"）。
-// 意图分析器通过 LLM 对消息进行分类，将消息路由到正确的处理通道：
-//   - IntentChat → 进入 ChatService 的 RAG 对话流程
-//   - IntentCommand → 路由到命令处理器执行对应命令
-//   - IntentTool → 路由到工具注册表调用对应 AI 工具
-//   - IntentIgnore → 丢弃消息（如表情包、系统通知等无需回复的内容）
-//
-// 降级策略：当 LLM 不可用或返回无效结果时，所有消息降级为 IntentChat，
-// 确保系统在异常情况下仍能正常提供对话服务。
+// 结果分为 chat（RAG 对话）、command（命令处理器）、tool（工具注册表）、
+// ignore（丢弃）四类；LLM 不可用或返回无效结果时统一降级为 chat。
 package intent
 
 import (
@@ -22,38 +14,30 @@ import (
 	"github.com/DaWesen/lanmei-dream/internal/ai/llm"
 )
 
-// Intent 表示意图分析的分类结果。
-//
-// 四种意图类型覆盖了消息路由的所有场景：
-//   - chat：通用对话，进入 LLM 对话流程
-//   - command：命令调用，匹配 CommandDef 中的命令名
-//   - tool：工具调用，匹配 ToolDef 中的工具名
-//   - ignore：无需回复，跳过后续处理
+// Intent 表示意图分析的分类结果，四种取值覆盖全部消息路由场景。
+// 它是封闭集合：LLM 返回非法值时由 parseResult 统一降级为 IntentChat。
 type Intent string
 
 const (
-	IntentChat    Intent = "chat"    // 闲聊/角色扮演/一般提问
-	IntentCommand Intent = "command" // 命令调用（如"帮我签到"→命中"签到"命令）
-	IntentTool    Intent = "tool"    // 工具调用（如"今天天气怎么样"→命中"weather"工具）
-	IntentIgnore  Intent = "ignore"  // 无需回复（如系统通知、表情包、无意义重复等）
+	// IntentChat 闲聊/角色扮演/一般提问，路由到对话管线（roleplay）。
+	IntentChat Intent = "chat"
+	// IntentCommand 命令调用（如"帮我签到"→命中"签到"命令），路由到命令执行管线。
+	IntentCommand Intent = "command"
+	// IntentTool 工具调用（如"今天天气怎么样"→命中"weather"工具）；当前与 IntentChat 同样路由到
+	// 对话管线，由流式工具循环执行工具而非直接回复。
+	IntentTool Intent = "tool"
+	// IntentIgnore 无需回复（如系统通知、表情包、无意义重复等），路由到静默保存管线。
+	IntentIgnore Intent = "ignore"
 )
 
-// Result 是意图分析的完整结果，包含意图分类和附加信息。
+// Result 是意图分析的完整结果。
 //
-// 字段说明：
-//   - Intent：意图类型（chat/command/tool/ignore）
-//   - CommandName：当 Intent=command 时，命中的命令名；否则为空
-//   - ToolName：当 Intent=tool 时，命中的工具名；否则为空
-//   - Confidence：LLM 对此次分类的置信度（0~1），低于阈值时可触发二次确认
-//
-// 群聊提及判断字段（同一 LLM 调用返回，用于话题系统"是否应回复"决策）：
-//   - IsTalkingToBot：用户是否在"跟机器人说话"（期望机器人回应）
-//   - MentionRole：提及的语言学方式（见 topic 包 MentionRole，字符串表示）
-//   - MentionConfidence：提及判断的置信度（0~1）
-//   - MentionEvidence：提及判断的依据（一句话，is_talking_to_bot=true 时必填；
-//     供话题系统按证据类型分档与日志可观测，避免仅凭裸置信度决策）
+// 群聊提及判断字段（IsTalkingToBot/MentionRole/MentionConfidence/MentionEvidence）
+// 与意图分类由同一次 LLM 调用返回，供话题系统决策是否回复：
+// MentionEvidence 是判断依据的一句话说明（is_talking_to_bot=true 时必填），
+// 供按证据分档与日志排查，避免仅凭裸置信度决策。
 type Result struct {
-	Intent      Intent   `json:"intent"`     // 意图类型
+	Intent      Intent   `json:"intent"`
 	CommandName string   `json:"command"`    // 当 Intent=command 时，命中的命令名
 	CommandArgs []string `json:"args"`       // 当 Intent=command 时，从消息中提取的命令参数（如"发个Go的表情"→["Go"]）
 	ToolName    string   `json:"tool"`       // 当 Intent=tool 时，命中的工具名
@@ -80,46 +64,32 @@ type JudgeContext struct {
 }
 
 // Analyzer 通过 LLM 分析用户消息的意图。
-//
-// 工作原理：
-//   - 将可用命令列表和工具列表注入到 system prompt 中
-//   - LLM 根据用户消息内容，从 chat/command/tool/ignore 四种意图中选择最匹配的
-//   - 返回结构化的 JSON 结果，包含意图类型、命中的命令/工具名和置信度
-//
-// 与命令/工具系统的集成：
-//   - commands 参数来自命令注册表，定义了所有可用的用户命令
-//   - tools 参数来自工具注册表（AI Tool），定义了所有可调用的 AI 工具
-//   - Analyzer 不执行命令或工具，只负责分类——执行由上层路由逻辑完成
+// 命令与工具列表注入 system prompt 供 LLM 语义匹配；Analyzer 只负责分类，
+// 不执行命令或工具，执行由上层路由逻辑完成。
 type Analyzer struct {
 	llmClient llm.LLMClient
-	commands  []CommandDef  // 可用命令列表（注入到 prompt 中供 LLM 匹配）
-	tools     []ToolDef     // 可用工具列表（注入到 prompt 中供 LLM 匹配）
-	timeout   time.Duration // 单次 LLM 调用超时（<=0 表示不设独立超时，沿用父上下文）
+	commands  []CommandDef
+	tools     []ToolDef
+	timeout   time.Duration // <=0 表示不设独立超时，沿用父上下文
 }
 
-// CommandDef 描述一个可用命令，用于构建意图分析 prompt。
-// LLM 会根据命令名和描述判断用户消息是否匹配某个命令。
+// CommandDef 描述一个可用命令（命令名 + 描述），用于构建意图分析 prompt。
+// LLM 据其判断用户消息是否匹配某个命令。
 type CommandDef struct {
-	Name        string // 命令名（如 "签到"）
-	Description string // 命令描述（如 "每日签到领取积分"）
+	Name        string
+	Description string
 }
 
-// ToolDef 描述一个 AI 工具，用于构建意图分析 prompt。
-// LLM 会根据工具名和描述判断用户消息是否需要调用某个工具。
+// ToolDef 描述一个 AI 工具（工具名 + 描述），用于构建意图分析 prompt。
+// LLM 据其判断用户消息是否需要调用某个工具。
 type ToolDef struct {
-	Name        string // 工具名（如 "weather"）
-	Description string // 工具描述（如 "查询天气信息"）
+	Name        string
+	Description string
 }
 
-// NewAnalyzer 创建意图分析器。
-//
-// 参数：
-//   - llmClient: LLM 客户端，为 nil 时 Analyze 降级返回 IntentChat
-//   - commands: 可用命令定义列表
-//   - tools: 可用工具定义列表
-//   - timeout: 单次 LLM 调用超时（<=0 表示不设独立超时，沿用父上下文）。
-//     意图分析只是路由前置步骤，不应吃满整条消息的处理预算；
-//     给独立短超时可在 LLM 故障时快速降级，避免后续对话管线失去剩余时间。
+// NewAnalyzer 创建意图分析器；llmClient 为 nil 时 Analyze 降级返回 IntentChat。
+// timeout 为单次 LLM 调用超时（<=0 表示沿用父上下文）：意图分析只是路由前置步骤，
+// 给独立短超时可在 LLM 故障时快速降级，避免后续对话管线失去剩余时间。
 func NewAnalyzer(llmClient llm.LLMClient, commands []CommandDef, tools []ToolDef, timeout time.Duration) *Analyzer {
 	return &Analyzer{
 		llmClient: llmClient,
@@ -139,33 +109,16 @@ func (a *Analyzer) UpdateTools(tools []ToolDef) {
 	a.tools = tools
 }
 
-// Analyze 分析用户消息的意图；群聊消息传入 judgeCtx 时，
-// 同一 LLM 调用同时完成"是否在跟机器人说话"的提及判断。
-//
-// 处理流程：
-//  1. LLM 未配置 → 降级返回 IntentChat（所有消息走聊天）
-//  2. 构建意图分析 system prompt（包含可用命令和工具列表，群聊时含提及判断规则）
-//  3. 调用 LLM 进行意图分类
-//  4. 解析 LLM 返回的 JSON 结果
-//
-// 降级策略：LLM 调用失败或返回无效结果时，降级为 IntentChat，
-// 确保系统不会因为意图分析故障而无法响应用户。
-//
-// 参数：
-//   - ctx: 上下文
-//   - userMsg: 用户消息文本
-//   - judgeCtx: 群聊提及判断上下文（私聊传 nil）
-//
-// 返回：
-//   - *Result: 意图分析结果
-//   - error: LLM 调用失败时返回错误
+// Analyze 分析用户消息的意图；群聊传入 judgeCtx 时，同一次 LLM 调用顺便完成
+// "是否在跟机器人说话"的提及判断（私聊传 nil）。
+// LLM 未配置、调用失败或返回无效结果时均降级为 IntentChat，
+// 保证意图分析故障不影响对话服务。
 func (a *Analyzer) Analyze(ctx context.Context, userMsg string, judgeCtx *JudgeContext) (*Result, error) {
 	if a.llmClient == nil {
-		// LLM 未配置，降级：所有消息都当聊天处理
+		// LLM 未配置，降级为 chat
 		return &Result{Intent: IntentChat, Confidence: 1.0}, nil
 	}
 
-	// 构建包含命令、工具（群聊时含提及判断规则）的 system prompt
 	prompt := a.buildPrompt(judgeCtx)
 	user := userMsg
 	if judgeCtx != nil && len(judgeCtx.Recent) > 0 {
@@ -173,8 +126,6 @@ func (a *Analyzer) Analyze(ctx context.Context, userMsg string, judgeCtx *JudgeC
 		user = formatJudgeUser(userMsg, judgeCtx.Recent)
 	}
 
-	// 独立短超时：意图分析不应吃满消息处理预算（父 ctx 可能为消息级 20s 超时）。
-	// 超时后快速失败并降级为 chat，保证后续对话管线仍有剩余时间可用。
 	llmCtx := ctx
 	cancel := func() {}
 	if a.timeout > 0 {
@@ -187,9 +138,8 @@ func (a *Analyzer) Analyze(ctx context.Context, userMsg string, judgeCtx *JudgeC
 			{Role: llm.RoleSystem, Content: prompt},
 			{Role: llm.RoleUser, Content: user},
 		},
-		// 意图分类不需要推理，禁用思考：避免推理模型（如 deepseek-v4-flash）的
-		// 思考开销拖慢调用导致 8s 超时（opencode 网关下实测超时被 at 兜底救回，
-		// 但不 @ 时会把提及误判为未提及）。
+		// 意图分类不需要推理，禁用思考：推理模型的思考开销会拖慢调用导致超时，
+		// 进而把提及误判为未提及。
 		DisableThinking: boolPtr(true),
 	})
 	if err != nil {
@@ -215,18 +165,9 @@ func formatJudgeUser(userMsg string, recent []JudgeMessage) string {
 	return sb.String()
 }
 
-// buildPrompt 构建意图分析的 system prompt。
-//
-// prompt 包含五个部分：
-//  1. 角色定义：告知 LLM 它是一个意图分类器（群聊时同时是提及判断器）
-//  2. 可用意图：列出 chat/command/tool/ignore 四种意图及含义
-//  3. 可用命令/工具：从 Analyzer 的 commands 和 tools 列表动态注入
-//  4. 群聊提及判断规则：仅 judgeCtx 非 nil 时注入（覆盖呼格/主语/祈使宾语/
-//     关系从句/条件句/话题标记/情感对象/转述等句式 + 指代消解说明）
-//  5. 输出格式：要求 LLM 仅输出 JSON，并提供示例
-//
-// 这种 prompt 设计使 LLM 能基于命令/工具的语义描述进行匹配，
-// 而非简单的关键词匹配，从而提高意图识别的准确率。
+// buildPrompt 构建意图分析的 system prompt：命令/工具列表按语义描述动态注入，
+// 群聊时额外注入提及判断规则（judgeCtx 非 nil）。
+// 按语义描述匹配而非关键词匹配，是意图识别准确率的关键。
 func (a *Analyzer) buildPrompt(judgeCtx *JudgeContext) string {
 	var sb strings.Builder
 
@@ -241,7 +182,6 @@ func (a *Analyzer) buildPrompt(judgeCtx *JudgeContext) string {
 ## 可用命令
 `)
 
-	// 动态注入命令列表，让 LLM 了解每个命令的语义
 	if len(a.commands) == 0 {
 		sb.WriteString("（暂无可用命令）\n")
 	} else {
@@ -250,7 +190,6 @@ func (a *Analyzer) buildPrompt(judgeCtx *JudgeContext) string {
 		}
 	}
 
-	// 动态注入工具列表，让 LLM 了解每个工具的功能
 	sb.WriteString("\n## 可用工具\n")
 	if len(a.tools) == 0 {
 		sb.WriteString("（暂无可用工具）\n")
@@ -260,7 +199,6 @@ func (a *Analyzer) buildPrompt(judgeCtx *JudgeContext) string {
 		}
 	}
 
-	// 群聊提及判断规则（judgeCtx 非 nil 时注入）
 	if judgeCtx != nil && len(judgeCtx.BotNames) > 0 {
 		sb.WriteString("\n## 群聊提及判断\n")
 		sb.WriteString("机器人名称为：")
@@ -318,17 +256,10 @@ mention_evidence 规则：
 }
 
 // parseResult 解析 LLM 返回的意图分析 JSON。
-//
-// 容错处理：
-//   - LLM 可能将 JSON 包裹在 markdown 代码块（```json ... ```）中，
-//     通过定位第一个 "{" 和最后一个 "}" 来提取有效 JSON
-//   - 严格解析失败（如某字段类型不符）时走宽容路径：意图/命令等字段照常提取，
-//     float 字段单独归一化（垃圾值 → 0.5），坏字段不拖垮整条结果
-//     （对齐蒸馏管线"宽容但不抛：一条结论没写好不该让整批白跑"）
-//   - 完全无法解析时降级为 IntentChat（置信度 0.5，表示不确定）
-//   - 意图值不在预定义范围内时降级为 IntentChat
+// 容错：LLM 可能把 JSON 包在 markdown 代码块里，用首尾花括号定位提取；
+// 严格解析失败时走宽容路径（float 字段单独归一化，坏字段不拖垮整条结果）；
+// 完全无法解析或意图值非法时降级为 IntentChat。
 func parseResult(raw string) (*Result, error) {
-	// 提取 JSON 部分（容错：LLM 可能包裹在 ```json ... ``` 中）
 	raw = strings.TrimSpace(raw)
 	if start := strings.Index(raw, "{"); start != -1 {
 		if end := strings.LastIndex(raw, "}"); end > start {
@@ -338,25 +269,22 @@ func parseResult(raw string) (*Result, error) {
 
 	var result Result
 	if err := json.Unmarshal([]byte(raw), &result); err != nil {
-		// 严格解析失败：宽容重试（float 字段独立归一化，坏字段不拖垮意图）
 		looseResult, ok := parseResultLoose(raw)
 		if !ok {
-			// 解析失败，降级为 chat（置信度 0.5 表示低确定性）
+			// 降级为 chat（0.5 表示低确定性）
 			return &Result{Intent: IntentChat, Confidence: 0.5}, nil
 		}
 		result = *looseResult
 	}
 
-	// 校验意图值，防止 LLM 返回非法意图类型
 	switch result.Intent {
 	case IntentChat, IntentCommand, IntentTool, IntentIgnore:
-		// valid
+		// 合法值，无需处理
 	default:
-		// 未知意图降级为 chat
 		result.Intent = IntentChat
 	}
 
-	// 置信度字段 clamp 到 [0,1]，防止 LLM 返回越界值
+	// clamp 到 [0,1]，防止 LLM 返回越界值
 	result.Confidence = clamp01(result.Confidence)
 	result.MentionConfidence = clamp01(result.MentionConfidence)
 

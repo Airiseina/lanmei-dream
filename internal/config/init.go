@@ -37,17 +37,10 @@ func Init() (*Config, error) {
 	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
 	v.AutomaticEnv()
 
-	// ── 关键修复：Viper.Sub() 不传播 AutomaticEnv ──
-	// 当 Unmarshal 处理嵌套结构体（如 AIConfig）时，v.Sub("ai") 创建的子 Viper
-	// 是全新的实例，不会继承父 Viper 的 AutomaticEnv 设置。
-	// 因此只存在于环境变量而不在 config.toml 中的键（如 ai.llm_api_key）
-	// 无法被子 Viper 解析到，导致 Unmarshal 后对应字段为空。
-	//
-	// 解决方案：在 Unmarshal 前将 LANMEI_ 前缀环境变量按正确映射写入 Viper，
-	// 确保 Sub() 能通过 allKeys 找到它们。
-	// 注意：不能简单地 ReplaceAll("_", ".") 反推，因为部分键名本身包含下划线
-	//（如 llm_api_key, super_users），这个映射是 Viper 内部 (cfgKey → envVar)
-	// 的单向变换，不可逆。
+	// Viper.Sub() 不传播 AutomaticEnv：Unmarshal 嵌套结构体（如 AIConfig）时子 Viper
+	// 不会继承父级的 AutomaticEnv，只存在于环境变量而未写入 config.toml 的键会解析为空。
+	// 故在 Unmarshal 前把 LANMEI_ 环境变量按显式映射写入 Viper，确保 Sub() 能找到它们；
+	// 该映射不可由 ReplaceAll("_", ".") 反推，因为部分键名本身含下划线（如 llm_api_key）。
 	envToCfg := map[string]string{
 		"LANMEI_DATABASE_URL":                    "database.url",
 		"LANMEI_REDIS_ADDR":                      "redis.addr",
@@ -89,14 +82,12 @@ func Init() (*Config, error) {
 		}
 	}
 
-	// 命令行参数绑定
 	pflag.CommandLine.VisitAll(func(f *pflag.Flag) {
 		if f.Name != "config" {
 			_ = v.BindPFlag(f.Name, f)
 		}
 	})
 
-	// 解析为结构体
 	var cfg Config
 	if err := v.Unmarshal(&cfg); err != nil {
 		return nil, fmt.Errorf("解析配置失败: %w", err)
@@ -118,29 +109,24 @@ func initFlags() {
 	pflag.Int("log.max_backups", 0, "最多保留的旧日志文件数")
 	pflag.String("plugin.root_dir", "", "Wasm 插件根目录")
 	pflag.String("plugin.ncm_url", "", "网易云音乐 API 服务地址（点歌插件）")
-	// Prompts 路径
 	pflag.String("prompts.dir", "", "Prompt 系统目录")
 	pflag.String("prompts.config", "", "Prompt 配置文件路径")
-	// Skills 路径
 	pflag.String("skills.dir", "", "Skill 目录")
 	pflag.String("skills.config", "", "Skill 配置文件路径")
-	// Quiz 题库路径
 	pflag.String("quiz.dir", "", "编程答题题库目录")
 }
 
 func setDefaults(v *viper.Viper) {
-	// Bot 默认值
 	v.SetDefault("bot.nickname", "蓝妹")
 	v.SetDefault("bot.super_users", "")
 	v.SetDefault("bot.gateway.listen_addr", "0.0.0.0:8080")
 	v.SetDefault("bot.intent_timeout_seconds", 8)        // 意图分析独立超时 8s，LLM 故障时快速降级，避免吃满消息预算
 	v.SetDefault("bot.turtle_soup_timeout_seconds", 120) // 海龟汤异步出题/判定最长等待 120s（独立 context，不占消息预算）
 	v.SetDefault("bot.stream.typing_speed_ms", 150)      // 150ms/字，模拟打字速度
-	v.SetDefault("bot.stream.min_interval_ms", 1000)     // 最小 1 秒
-	v.SetDefault("bot.stream.max_interval_ms", 5000)     // 最大 5 秒（长消息段间隔上限，避免过久等待）
-	v.SetDefault("bot.stream.jitter_pct", 0.25)          // ±25% 抖动
+	v.SetDefault("bot.stream.min_interval_ms", 1000)
+	v.SetDefault("bot.stream.max_interval_ms", 5000) // 长消息段间隔上限，避免过久等待
+	v.SetDefault("bot.stream.jitter_pct", 0.25)
 
-	// 多媒体（RustFS）默认值
 	v.SetDefault("bot.media.endpoint", "http://localhost:9000")
 	v.SetDefault("bot.media.bucket", "lanmei-media")
 	v.SetDefault("bot.media.region", "us-east-1")
@@ -170,7 +156,6 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("plugin.random_beauty.pool_init_size", 100)
 	v.SetDefault("plugin.random_beauty.refill_moderation_timeout_seconds", 25)
 
-	// 群聊 topic 系统默认值
 	v.SetDefault("bot.topic.enabled", true)
 	v.SetDefault("bot.topic.nicknames", []string{})
 	v.SetDefault("bot.topic.topic_window_msgs", 20)
@@ -181,7 +166,6 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("bot.topic.linguistic_weak_threshold", 0.4)
 	v.SetDefault("bot.topic.archive_interval_seconds", 60)
 
-	// Log 默认值
 	v.SetDefault("log.level", "info")
 	v.SetDefault("log.persistent", false)
 	v.SetDefault("log.path", "./logs/lanmei.log")
@@ -190,20 +174,16 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("log.max_age", 30)
 	v.SetDefault("log.max_backups", 10)
 
-	// Plugin 默认值
 	v.SetDefault("plugin.root_dir", "./data/plugins")
 	v.SetDefault("plugin.ncm_url", "")
 	v.SetDefault("plugin.music_send_mode", "auto") // auto/card/link，见 PluginConfig.MusicSendMode
 
-	// Prompts 默认路径
 	v.SetDefault("prompts.dir", "./prompts")
 	v.SetDefault("prompts.config", "./prompts/prompts.toml")
 
-	// Skills 默认路径
 	v.SetDefault("skills.dir", "./skills")
 	v.SetDefault("skills.config", "./config/skills.toml")
 
-	// Quiz 默认题库路径
 	v.SetDefault("quiz.dir", "./quizdata")
 
 	// Knowledge 默认值（知识库默认关闭，需在配置中显式启用）

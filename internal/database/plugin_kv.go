@@ -11,11 +11,9 @@ import (
 
 // PluginKVStore 受限 KV 存储：供插件持久化私有业务数据（PostgreSQL 后端）。
 //
-// 设计定位类似前端 IndexedDB：只暴露 Get/Set/Delete/List 基础键值操作，
-// 按 pluginID 隔离命名空间，不将裸 *gorm.DB 交给插件自由操作，
-// 避免插件绕过约束直接读写数据库。
-//
-// 与 conduit.StateStore（Redis，易失）的区别：本存储落 PostgreSQL，重启不丢失。
+// 类似前端 IndexedDB，只暴露 Get/Set/Delete/List 基础操作并按 pluginID 隔离命名空间，
+// 不下放裸 *gorm.DB，避免插件绕过约束直接读写数据库。
+// 与 conduit.StateStore（Redis，易失）不同，本存储落 PostgreSQL，重启不丢。
 type PluginKVStore struct {
 	orm *gorm.DB
 }

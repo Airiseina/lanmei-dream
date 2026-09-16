@@ -129,7 +129,6 @@ func TestRecordSessionIgnoresNotice(t *testing.T) {
 func TestRecordSessionIgnoresSelf(t *testing.T) {
 	b := &Bot{sessions: make(map[string]*sessionInfo)}
 
-	// 用户消息正常记录
 	user := msgFor(gateway.MessageTypeMessage, true, gateway.PlatformQQ, "g1", "uA", "m1", time.Now().Add(-time.Second))
 	b.recordSession(user)
 	if len(b.sessions) != 1 {

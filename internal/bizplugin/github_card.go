@@ -9,23 +9,9 @@ import (
 	"github.com/zrurf/conduit"
 )
 
-// ============================================================
-// GitHubCardPlugin GitHub卡片插件
-// ============================================================
-
-// GitHubCardPlugin 检测消息中的 GitHub 仓库链接，自动返回 OpenGraph 预览卡片。
+// GitHubCardPlugin 检测消息中的 GitHub 仓库链接，自动返回 OpenGraph 预览卡片图片（无需命令触发）。
 //
-// 功能：
-//   - 自动触发：消息中包含 GitHub 仓库 URL 时自动响应
-//   - 返回 OpenGraph 预览卡片图片
-//
-// 行为树：
-//
-//	subtree.github_card → Sequence(hasGitHubURL, Action("pipeline.plugin.github_card"))
-//
-// 管线：
-//
-//	pipeline.plugin.github_card → [githubCardPass]
+// 插件 ID github_card；无命令、无工具；仅依赖外部 opengraph.githubassets.com 图床（无本地配置项）。
 type GitHubCardPlugin struct{}
 
 // NewGitHubCardPlugin 创建 GitHub 卡片插件。
@@ -42,13 +28,12 @@ func (p *GitHubCardPlugin) Info() pluginpkg.PluginInfo {
 		Version:     "1.0.0",
 		Commands:    nil, // 无斜杠命令，自动触发
 		SubtreeID:   pluginpkg.SubtreeID("github_card"),
-		Tools:       nil, // 无 AI 工具
+		Tools:       nil,
 	}
 }
 
 // OnInit 初始化 GitHub 卡片插件，注册 Pass、Pipeline 和 Subtree。
 func (p *GitHubCardPlugin) OnInit(ctx *pluginpkg.PluginContext) error {
-	// 注册 Pass
 	passID := pluginpkg.PassID("github_card", "main")
 	pass := &githubCardPass{}
 
@@ -57,7 +42,6 @@ func (p *GitHubCardPlugin) OnInit(ctx *pluginpkg.PluginContext) error {
 	}
 	ctx.Registry.TrackPass("github_card", passID)
 
-	// 注册管线
 	pipelineID := pluginpkg.PipelineID("github_card", "main")
 	pl := conduit.NewPipelineFromIDs(pipelineID, passID)
 	if err := ctx.Engine.RegisterPipeline(pl); err != nil {
@@ -65,7 +49,6 @@ func (p *GitHubCardPlugin) OnInit(ctx *pluginpkg.PluginContext) error {
 	}
 	ctx.Registry.TrackPipeline("github_card", pipelineID)
 
-	// 注册行为树子树：GitHub URL 正则匹配路由
 	subtree := conduit.NewSequence(
 		conduit.NewCondition(hasGitHubURL),
 		conduit.NewAction(pipelineID),
@@ -83,10 +66,6 @@ func (p *GitHubCardPlugin) OnStart(_ *pluginpkg.PluginContext) error { return ni
 // OnStop GitHub 卡片插件无需清理资源。
 func (p *GitHubCardPlugin) OnStop(_ *pluginpkg.PluginContext) error { return nil }
 
-// ============================================================
-// 条件判断
-// ============================================================
-
 // githubURLRe 匹配 GitHub 仓库 URL。
 // 示例：github.com/user/repo、www.github.com/org/project/issues/1
 var githubURLRe = regexp.MustCompile(
@@ -98,16 +77,15 @@ func hasGitHubURL(ctx *conduit.MessageContext) bool {
 	return githubURLRe.MatchString(ctx.RawMsg)
 }
 
-// ============================================================
-// Pass 实现
-// ============================================================
-
 // githubCardExtractKey 是 MessageContext 中提取到的 GitHub 路径的键。
 const githubCardExtractKey = "plugin.github_card.path"
 
 // githubCardPass 从消息中提取 GitHub 仓库 URL，构建 OpenGraph 卡片链接并输出。
 type githubCardPass struct{}
 
+// Execute 检测消息中的 GitHub 仓库链接，生成带随机缓存键的 OpenGraph 卡片图片 URL 并输出。
+// 由 plugin.github_card.pipeline.main 在 hasGitHubURL 命中后调用（无命令、无参数、不做去重）；
+// 正则未匹配时静默返回；随机数生成失败时降级用固定缓存键 "0"，不影响出图。
 func (pass *githubCardPass) Execute(ctx *conduit.MessageContext) error {
 	match := githubURLRe.FindStringSubmatch(ctx.RawMsg)
 	if len(match) < 2 {
@@ -131,10 +109,6 @@ func (pass *githubCardPass) Execute(ctx *conduit.MessageContext) error {
 	})
 	return nil
 }
-
-// ============================================================
-// 辅助函数
-// ============================================================
 
 // randomHex 生成 n 字节的随机十六进制字符串。
 func randomHex(n int) (string, error) {

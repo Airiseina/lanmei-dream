@@ -7,76 +7,137 @@
 
         <!-- 外部 -->
         <mxCell id="ext" value="外部" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;verticalAlign=top;fontStyle=1" vertex="1" parent="1">
-          <mxGeometry x="40" y="40" width="200" height="120" as="geometry"/>
+          <mxGeometry x="40" y="40" width="220" height="160" as="geometry"/>
         </mxCell>
-        <mxCell id="qq" value="IM 平台" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf" vertex="1" parent="1">
-          <mxGeometry x="60" y="80" width="160" height="40" as="geometry"/>
+        <mxCell id="im" value="IM 平台（QQ / 微信 / Telegram / ...）" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf" vertex="1" parent="1">
+          <mxGeometry x="60" y="75" width="180" height="35" as="geometry"/>
         </mxCell>
-        <mxCell id="llonebot" value="Onebots / NapCat" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf" vertex="1" parent="1">
-          <mxGeometry x="60" y="130" width="160" height="40" as="geometry"/>
+        <mxCell id="onebots" value="Onebots（OneBot 12）" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf" vertex="1" parent="1">
+          <mxGeometry x="60" y="120" width="180" height="35" as="geometry"/>
+        </mxCell>
+        <mxCell id="napcat" value="NapCat（OneBot 11）" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf" vertex="1" parent="1">
+          <mxGeometry x="60" y="165" width="180" height="35" as="geometry"/>
         </mxCell>
 
         <!-- 蓝妹服务 -->
         <mxCell id="svc" value="蓝妹服务" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;verticalAlign=top;fontStyle=1" vertex="1" parent="1">
-          <mxGeometry x="320" y="40" width="280" height="220" as="geometry"/>
+          <mxGeometry x="300" y="40" width="420" height="300" as="geometry"/>
         </mxCell>
-        <mxCell id="main" value="main.go" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656" vertex="1" parent="1">
-          <mxGeometry x="400" y="80" width="120" height="40" as="geometry"/>
+        <mxCell id="main" value="main.go 组装" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656" vertex="1" parent="1">
+          <mxGeometry x="320" y="75" width="180" height="35" as="geometry"/>
         </mxCell>
-        <mxCell id="bot" value="bot.Bot" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366" vertex="1" parent="1">
-          <mxGeometry x="340" y="140" width="100" height="40" as="geometry"/>
+        <mxCell id="gw" value="gateway.Server 反向 WS 网关" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366" vertex="1" parent="1">
+          <mxGeometry x="520" y="75" width="180" height="35" as="geometry"/>
+        </mxCell>
+        <mxCell id="bot" value="bot.Bot（异步 Submit + 回调发送）" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366" vertex="1" parent="1">
+          <mxGeometry x="320" y="130" width="180" height="35" as="geometry"/>
+        </mxCell>
+        <mxCell id="engine" value="Conduit Engine（行为树 + 管线）" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366" vertex="1" parent="1">
+          <mxGeometry x="520" y="130" width="180" height="35" as="geometry"/>
         </mxCell>
         <mxCell id="cmdsys" value="command.System" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366" vertex="1" parent="1">
-          <mxGeometry x="340" y="200" width="100" height="40" as="geometry"/>
+          <mxGeometry x="320" y="185" width="180" height="35" as="geometry"/>
         </mxCell>
-        <mxCell id="rp" value="roleplay" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366" vertex="1" parent="1">
-          <mxGeometry x="480" y="140" width="100" height="40" as="geometry"/>
+        <mxCell id="topic" value="topic.Manager 话题系统" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366" vertex="1" parent="1">
+          <mxGeometry x="520" y="185" width="180" height="35" as="geometry"/>
         </mxCell>
-        <mxCell id="signin" value="signin" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366" vertex="1" parent="1">
-          <mxGeometry x="480" y="200" width="100" height="40" as="geometry"/>
+        <mxCell id="manager" value="manager.Manager 管理面板（Fiber /api + 前端）" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366" vertex="1" parent="1">
+          <mxGeometry x="320" y="240" width="380" height="35" as="geometry"/>
         </mxCell>
 
         <!-- AI 层 -->
         <mxCell id="ailayer" value="AI 层" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;verticalAlign=top;fontStyle=1" vertex="1" parent="1">
-          <mxGeometry x="680" y="40" width="240" height="220" as="geometry"/>
+          <mxGeometry x="760" y="40" width="380" height="300" as="geometry"/>
         </mxCell>
-        <mxCell id="chatsvc" value="ChatService" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6" vertex="1" parent="1">
-          <mxGeometry x="720" y="80" width="160" height="40" as="geometry"/>
+        <mxCell id="chatsvc" value="ai.ChatService（LOD + RAG + 工具循环）" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6" vertex="1" parent="1">
+          <mxGeometry x="780" y="75" width="340" height="35" as="geometry"/>
         </mxCell>
-        <mxCell id="llm" value="LLMClient ⚠待实现" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450" vertex="1" parent="1">
-          <mxGeometry x="700" y="140" width="120" height="40" as="geometry"/>
+        <mxCell id="intent" value="intent.Analyzer 意图 + 提及判断" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6" vertex="1" parent="1">
+          <mxGeometry x="780" y="120" width="165" height="35" as="geometry"/>
         </mxCell>
-        <mxCell id="emb" value="Embedder ⚠待实现" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450" vertex="1" parent="1">
-          <mxGeometry x="700" y="200" width="120" height="40" as="geometry"/>
+        <mxCell id="comp" value="ai.Compressor LOD 压缩" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6" vertex="1" parent="1">
+          <mxGeometry x="955" y="120" width="165" height="35" as="geometry"/>
         </mxCell>
-        <mxCell id="memstore" value="MilvusMemoryStore" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6" vertex="1" parent="1">
-          <mxGeometry x="840" y="140" width="160" height="40" as="geometry"/>
+        <mxCell id="llm" value="llm.LLMClient（Eino）" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6" vertex="1" parent="1">
+          <mxGeometry x="780" y="165" width="165" height="35" as="geometry"/>
+        </mxCell>
+        <mxCell id="emb" value="embedding.Embedder" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6" vertex="1" parent="1">
+          <mxGeometry x="955" y="165" width="165" height="35" as="geometry"/>
+        </mxCell>
+        <mxCell id="toolreg" value="tool.Registry" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6" vertex="1" parent="1">
+          <mxGeometry x="780" y="210" width="165" height="35" as="geometry"/>
+        </mxCell>
+        <mxCell id="kbsvc" value="kb.Service 知识库（多路召回）" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6" vertex="1" parent="1">
+          <mxGeometry x="955" y="210" width="165" height="35" as="geometry"/>
+        </mxCell>
+        <mxCell id="prompt" value="prompt / skill 系统提示词管理" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6" vertex="1" parent="1">
+          <mxGeometry x="780" y="255" width="340" height="35" as="geometry"/>
+        </mxCell>
+
+        <!-- 插件系统 -->
+        <mxCell id="pluginlayer" value="插件系统" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;verticalAlign=top;fontStyle=1" vertex="1" parent="1">
+          <mxGeometry x="300" y="380" width="420" height="160" as="geometry"/>
+        </mxCell>
+        <mxCell id="biz" value="bizplugin 内置插件" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656" vertex="1" parent="1">
+          <mxGeometry x="320" y="415" width="180" height="35" as="geometry"/>
+        </mxCell>
+        <mxCell id="wasm" value="WasmManager + Extism 运行时" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656" vertex="1" parent="1">
+          <mxGeometry x="520" y="415" width="180" height="35" as="geometry"/>
+        </mxCell>
+        <mxCell id="reg" value="plugin.Registry 生命周期" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656" vertex="1" parent="1">
+          <mxGeometry x="320" y="460" width="180" height="35" as="geometry"/>
+        </mxCell>
+        <mxCell id="authz" value="Casbin 授权（角色 + 动作）" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656" vertex="1" parent="1">
+          <mxGeometry x="520" y="460" width="180" height="35" as="geometry"/>
         </mxCell>
 
         <!-- 存储层 -->
         <mxCell id="store" value="存储层" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;verticalAlign=top;fontStyle=1" vertex="1" parent="1">
-          <mxGeometry x="680" y="320" width="400" height="80" as="geometry"/>
+          <mxGeometry x="760" y="380" width="380" height="160" as="geometry"/>
         </mxCell>
-        <mxCell id="pg" value="PostgreSQL" style="shape=cylinder3;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf" vertex="1" parent="1">
-          <mxGeometry x="720" y="350" width="120" height="60" as="geometry"/>
+        <mxCell id="pg" value="PostgreSQL 18（pgvector + pg_trgm）" style="shape=cylinder3;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf" vertex="1" parent="1">
+          <mxGeometry x="780" y="420" width="160" height="80" as="geometry"/>
         </mxCell>
-        <mxCell id="mv" value="Milvus" style="shape=cylinder3;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf" vertex="1" parent="1">
-          <mxGeometry x="900" y="350" width="120" height="60" as="geometry"/>
+        <mxCell id="redis" value="Redis 7" style="shape=cylinder3;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf" vertex="1" parent="1">
+          <mxGeometry x="955" y="420" width="80" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="rustfs" value="RustFS" style="shape=cylinder3;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf" vertex="1" parent="1">
+          <mxGeometry x="1050" y="420" width="70" height="80" as="geometry"/>
         </mxCell>
 
         <!-- 连线 -->
-        <mxCell id="e1" style="endArrow=block;html=1" edge="1" source="qq" target="llonebot" parent="1"/>
-        <mxCell id="e2" style="endArrow=block;html=1" source="llonebot" target="bot" parent="1"/>
-        <mxCell id="e3" style="endArrow=block;html=1" source="bot" target="cmdsys" parent="1"/>
-        <mxCell id="e4" style="endArrow=block;html=1" source="bot" target="rp" parent="1"/>
-        <mxCell id="e5" style="endArrow=block;html=1" source="rp" target="chatsvc" parent="1"/>
-        <mxCell id="e6" style="endArrow=block;html=1" source="chatsvc" target="llm" parent="1"/>
-        <mxCell id="e7" style="endArrow=block;html=1" source="chatsvc" target="emb" parent="1"/>
-        <mxCell id="e8" style="endArrow=block;html=1" source="chatsvc" target="memstore" parent="1"/>
-        <mxCell id="e9" style="endArrow=block;html=1" source="memstore" target="mv" parent="1"/>
-        <mxCell id="e10" style="endArrow=block;html=1" source="rp" target="pg" parent="1"/>
-        <mxCell id="e11" style="endArrow=block;html=1" source="cmdsys" target="signin" parent="1"/>
-        <mxCell id="e12" style="endArrow=block;html=1;dashed=1" source="chatsvc" target="pg" parent="1"/>
+        <mxCell id="e1" style="endArrow=block;html=1" edge="1" source="im" target="onebots" parent="1"/>
+        <mxCell id="e2" style="endArrow=block;html=1" edge="1" source="im" target="napcat" parent="1"/>
+        <mxCell id="e3" value="反向 WS" style="endArrow=block;html=1" edge="1" source="onebots" target="gw" parent="1"/>
+        <mxCell id="e4" value="反向 WS" style="endArrow=block;html=1" edge="1" source="napcat" target="gw" parent="1"/>
+        <mxCell id="e5" style="endArrow=block;html=1" edge="1" source="main" target="gw" parent="1"/>
+        <mxCell id="e6" value="NormalizedMessage" style="endArrow=block;html=1" edge="1" source="gw" target="bot" parent="1"/>
+        <mxCell id="e7" style="endArrow=block;html=1" edge="1" source="bot" target="engine" parent="1"/>
+        <mxCell id="e8" style="endArrow=block;html=1" edge="1" source="engine" target="cmdsys" parent="1"/>
+        <mxCell id="e9" style="endArrow=block;html=1" edge="1" source="engine" target="topic" parent="1"/>
+        <mxCell id="e10" style="endArrow=block;html=1" edge="1" source="engine" target="chatsvc" parent="1"/>
+        <mxCell id="e11" style="endArrow=block;html=1" edge="1" source="engine" target="reg" parent="1"/>
+        <mxCell id="e12" style="endArrow=block;html=1" edge="1" source="chatsvc" target="intent" parent="1"/>
+        <mxCell id="e13" style="endArrow=block;html=1" edge="1" source="chatsvc" target="comp" parent="1"/>
+        <mxCell id="e14" style="endArrow=block;html=1" edge="1" source="chatsvc" target="toolreg" parent="1"/>
+        <mxCell id="e15" style="endArrow=block;html=1" edge="1" source="chatsvc" target="kbsvc" parent="1"/>
+        <mxCell id="e16" style="endArrow=block;html=1" edge="1" source="chatsvc" target="llm" parent="1"/>
+        <mxCell id="e17" style="endArrow=block;html=1" edge="1" source="chatsvc" target="emb" parent="1"/>
+        <mxCell id="e18" style="endArrow=block;html=1" edge="1" source="chatsvc" target="prompt" parent="1"/>
+        <mxCell id="e19" style="endArrow=block;html=1" edge="1" source="comp" target="llm" parent="1"/>
+        <mxCell id="e20" style="endArrow=block;html=1" edge="1" source="comp" target="emb" parent="1"/>
+        <mxCell id="e21" style="endArrow=block;html=1" edge="1" source="reg" target="biz" parent="1"/>
+        <mxCell id="e22" style="endArrow=block;html=1" edge="1" source="reg" target="wasm" parent="1"/>
+        <mxCell id="e23" style="endArrow=block;html=1" edge="1" source="wasm" target="authz" parent="1"/>
+        <mxCell id="e24" value="StateStore" style="endArrow=block;html=1" edge="1" source="engine" target="redis" parent="1"/>
+        <mxCell id="e25" value="状态持久化" style="endArrow=block;html=1" edge="1" source="topic" target="redis" parent="1"/>
+        <mxCell id="e26" value="state_* Host Function" style="endArrow=block;html=1" edge="1" source="wasm" target="redis" parent="1"/>
+        <mxCell id="e27" value="L0/L1/L2 + RAG" style="endArrow=block;html=1" edge="1" source="chatsvc" target="pg" parent="1"/>
+        <mxCell id="e28" value="话题归档" style="endArrow=block;html=1" edge="1" source="topic" target="pg" parent="1"/>
+        <mxCell id="e29" value="向量/模糊召回" style="endArrow=block;html=1" edge="1" source="kbsvc" target="pg" parent="1"/>
+        <mxCell id="e30" value="媒体缓存" style="endArrow=block;html=1" edge="1" source="bot" target="rustfs" parent="1"/>
+        <mxCell id="e31" style="endArrow=block;html=1" edge="1" source="manager" target="pg" parent="1"/>
+        <mxCell id="e32" style="endArrow=block;html=1" edge="1" source="manager" target="bot" parent="1"/>
       </root>
     </mxGraphModel>
   </diagram>

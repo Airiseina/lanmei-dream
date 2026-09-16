@@ -12,12 +12,8 @@ import (
 	"go.uber.org/zap"
 )
 
-// ensureDocs 返回文档缓存，必要时从飞书重新拉取。
-//
-// 缓存逻辑：
-//   - 缓存有效期内直接返回；
-//   - 拉取失败但已有缓存时降级使用旧数据（记录告警），保证召回不被单次网络故障击穿；
-//   - 拉取失败且无缓存时返回错误，由上层按空结果处理。
+// ensureDocs 确保文档缓存有效，必要时从飞书重新拉取：拉取失败但已有缓存时降级用旧数据
+// （保证召回不被单次网络故障击穿）；无缓存则返回错误，由上层按空结果处理。
 func (p *Provider) ensureDocs(ctx context.Context) error {
 	p.mu.Lock()
 	fresh := p.loaded && time.Since(p.fetchedAt) < p.cacheTTL
@@ -76,14 +72,13 @@ func (p *Provider) fetchDocs(ctx context.Context) ([]*cachedDoc, error) {
 		spaceID = sid
 	}
 
-	// 1. 遍历节点树（深度优先，受 maxNodes 限制）
 	nodes := make([]*larkwiki.Node, 0, 64)
 	seen := make(map[string]struct{})
 	if err := p.collectNodes(ctx, spaceID, p.nodeToken, &nodes, seen); err != nil {
 		return nil, err
 	}
 
-	// 2. 仅保留新版文档（docx）节点，截断到 maxNodes
+	// 仅 docx 节点可通过 RawContent 拉取纯文本，其余类型跳过。
 	var targets []*larkwiki.Node
 	for _, n := range nodes {
 		if n == nil || n.ObjToken == nil || n.ObjType == nil {
@@ -102,7 +97,6 @@ func (p *Provider) fetchDocs(ctx context.Context) ([]*cachedDoc, error) {
 		return nil, nil
 	}
 
-	// 3. 并发拉取文档纯文本（worker 池，尊重 ctx 取消）
 	docs := make([]*cachedDoc, len(targets))
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, p.workers)
@@ -121,7 +115,6 @@ func (p *Provider) fetchDocs(ctx context.Context) ([]*cachedDoc, error) {
 	}
 	wg.Wait()
 
-	// 4. 过滤未拉取成功的条目（ctx 取消或接口失败）
 	out := make([]*cachedDoc, 0, len(docs))
 	for _, d := range docs {
 		if d != nil {
@@ -165,7 +158,6 @@ func (p *Provider) collectNodes(ctx context.Context, spaceID, parentToken string
 		if len(*out) >= p.maxNodes {
 			return nil
 		}
-		// 有子节点则递归
 		if n.HasChild != nil && *n.HasChild {
 			if err := p.collectNodes(ctx, spaceID, token, out, seen); err != nil {
 				return err

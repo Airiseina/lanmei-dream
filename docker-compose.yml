@@ -1,8 +1,13 @@
+# 蓝妹全栈编排：postgres/redis/rustfs 为基础设施，lanmei 为应用本体，
+# manager-web 提供管理面板入口，onebots/napcat 负责接入 IM 平台。
+# 所有 ${VAR:-默认值} 均可用同目录 .env 覆盖（见 .env.example）。
+
 services:
-  # ── PostgreSQL 18（含 pgvector 扩展）──
+  # PostgreSQL 18（pgvector 官方镜像）：业务数据与知识库向量检索，数据存 pgdata 卷。
   postgres:
     image: pgvector/pgvector:pg18
     restart: unless-stopped
+    # 默认用户/密码/库名均为 lanmei，可用 .env 的 POSTGRES_* 覆盖
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-lanmei}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-lanmei}
@@ -18,10 +23,11 @@ services:
       timeout: 3s
       retries: 5
 
-  # ── Redis（Conduit 状态存储）──
+  # Redis 7（Alpine）：Conduit 状态存储（会话、话题、冷却等运行时状态）。
   redis:
     image: redis:7-alpine
     restart: unless-stopped
+    # 状态数据可丢：限制 64MB 内存并按 LRU 淘汰，避免挤占宿主机
     command: redis-server --maxmemory 64mb --maxmemory-policy allkeys-lru
     ports:
       - "${REDIS_PORT:-6379}:6379"
@@ -31,10 +37,11 @@ services:
       timeout: 3s
       retries: 5
 
-  # ── RustFS（S3 兼容对象存储，多媒体缓存）──
+  # RustFS（S3 兼容对象存储）：缓存多媒体文件与随机美图图池，数据存 rustfsdata 卷。
   rustfs:
     image: rustfs/rustfs:1.0.0-beta.12
     restart: unless-stopped
+    # 凭据默认 lanmei/lanmei-secret，可用 .env 的 RUSTFS_* 覆盖
     environment:
       RUSTFS_ADDRESS: :9000
       RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:-lanmei}
@@ -45,7 +52,7 @@ services:
     volumes:
       - rustfsdata:/data
 
-  # ── 网易云音乐 API（点歌插件依赖，提供 /search 等接口）──
+  # 网易云音乐 API（点歌插件依赖，提供 /search 等接口）。
   # 原版 binaryify 镜像稳定且无需 xeapi 加密公钥；增强版 moefurina/ncm-api
   # 依赖动态获取 xeapi 公钥（"xeapi public key is missing"），实测 /search 不可用。
   ncm-api:
@@ -54,26 +61,30 @@ services:
     ports:
       - "${NCM_API_PORT:-3000}:3000"
 
-  # ── 蓝妹 Bot ──
+  # 蓝妹 Bot 本体（由仓库根目录 Dockerfile 构建）：先加载 .env，再用 environment 覆盖容器内地址。
   lanmei:
     build: .
     restart: unless-stopped
     env_file:
       - .env
     environment:
+      # 容器内数据库/Redis 地址按服务名拼装（.env 中的 localhost 仅用于本地开发）
       LANMEI_DATABASE_URL: postgres://${POSTGRES_USER:-lanmei}:${POSTGRES_PASSWORD:-lanmei}@postgres:5432/${POSTGRES_DB:-lanmei}?sslmode=disable
       LANMEI_REDIS_ADDR: redis:6379
+      # 网关监听地址（容器内必须为 0.0.0.0，宿主机端口由 LANMEI_PORT 映射）
       LANMEI_BOT_GATEWAY_LISTEN_ADDR: "0.0.0.0:8080"
+      # 网关鉴权 token，默认空 = 不鉴权；须与 Onebots / NapCat 配置中的 token 一致
       LANMEI_BOT_GATEWAY_ACCESS_TOKEN: ${LANMEI_BOT_GATEWAY_ACCESS_TOKEN:-}
       # 网易云点歌 API（ncm-api 服务，覆盖 config.toml 的 plugin.ncm_url）
       LANMEI_PLUGIN_NCM_URL: http://ncm-api:3000
       # 点歌结果发送方式：auto = 发语音（record 段，点击即听，无需签名服务）；
       # 取不到音频时自动降级文字链接。card 需工具支持音乐签名，link 为纯文字。
       LANMEI_PLUGIN_MUSIC_SEND_MODE: auto
-      # RustFS 多媒体对象存储
+      # RustFS 多媒体对象存储（凭据与上面 rustfs 服务保持一致）
       LANMEI_MEDIA_ENDPOINT: http://rustfs:9000
       LANMEI_MEDIA_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:-lanmei}
       LANMEI_MEDIA_SECRET_KEY: ${RUSTFS_SECRET_KEY:-lanmei-secret}
+      # 对象存储桶名，默认 lanmei-media；桶不存在时首次写入自动创建
       LANMEI_MEDIA_BUCKET: ${LANMEI_MEDIA_BUCKET:-lanmei-media}
       # 管理面板：经 nginx（manager-web）托管前端并反代 /api，故启用内嵌 Fiber 服务
       LANMEI_MANAGER_ENABLED: "true"
@@ -105,7 +116,7 @@ services:
       ncm-api:
         condition: service_started
 
-  # ── 管理面板前端（nginx 托管静态资源，/api 反向代理到 lanmei:8090）──
+  # 管理面板前端（nginx 托管静态资源，/api 反向代理到 lanmei:8090）。
   # 访问入口：http://<host>:${MANAGER_WEB_PORT:-80}（前端与 /api 同源，CSRF 校验通过）
   manager-web:
     build:
@@ -122,7 +133,8 @@ services:
       timeout: 3s
       retries: 5
 
-  # ── Onebots 网关（统一 IM 平台适配，通过反向 WS 转发事件到蓝妹）──
+  # Onebots 网关（统一 IM 平台适配层）：按 config/onebots/config.yaml 以反向 WS 连接
+  # 蓝妹的 /onebot/v11、/onebot/v12 端点（地址见 LANMEI_BOT_GATEWAY_LISTEN_ADDR）。
   onebots:
     image: ghcr.io/lc-cn/onebots:master
     container_name: onebots
@@ -134,7 +146,8 @@ services:
       lanmei:
         condition: service_started
 
-  # ── NapCat（NTQQ 平台 Provider，OneBot 11 方言，通过反向 WS 连接蓝妹）──
+  # NapCat（NTQQ 平台 Provider，OneBot 11 方言）：以反向 WS 连接蓝妹网关；
+  # 地址与 token 在 config/napcat/onebot11.json 中配置，须与 LANMEI_BOT_GATEWAY_* 对应。
   napcat:
     image: mlikiowa/napcat-docker:v4.18.19
     container_name: napcat
@@ -144,6 +157,7 @@ services:
       NAPCAT_UID: ${NAPCAT_QQ_NUMBER:-}
     volumes:
       - napcat:/app/napcat/config
+      # 三个配置只读挂载（:ro）：NapCat 运行期不会改写，修改请直接编辑宿主机文件
       - ./config/napcat/onebot11.json:/app/napcat/config/onebot11.json:ro
       - ./config/napcat/napcat.json:/app/napcat/config/napcat.json:ro
       - ./config/napcat/napcat_protocol.json:/app/napcat/config/napcat_protocol.json:ro
@@ -151,6 +165,7 @@ services:
       lanmei:
         condition: service_started
 
+# 命名卷：数据持久化（docker compose down 不会删除，需 down -v 才清理）
 volumes:
   pgdata:
   rustfsdata:

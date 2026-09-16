@@ -25,7 +25,6 @@ type UserCache interface {
 	Set(ctx context.Context, key string, value string, ttl time.Duration) error
 }
 
-// userCacheKey 生成用户映射缓存键。
 func userCacheKey(platform, platformUserID string) string {
 	return "user:" + platform + ":" + platformUserID
 }
@@ -54,13 +53,12 @@ func parseUserCacheValue(raw string) (int64, bool, bool) {
 	return id, banned, true
 }
 
-// GetOrCreateUser 按 (platform, platform_user_id) 查找或创建用户（使用 GORM clause.OnConflict 实现幂等 upsert）。
+// GetOrCreateUser 按 (platform, platform_user_id) 查找或创建用户，用 clause.OnConflict 做幂等 upsert。
 //
-// 缓存策略：命中 userCache 直接返回（免查 users 表）；未命中走 DB upsert 后回填缓存。
-// 缓存 miss 且 DB 故障时返回错误；缓存命中时返回的 User 仅保证 ID 与封禁标记准确，
-// Nickname 取入参（缓存不存昵称，避免与 DB 主数据不一致）。
+// 缓存命中直接返回（免查 users 表），未命中走 DB upsert 后回填；缓存只存 ID 与封禁标记，
+// 因此命中时返回的 User.Nickname 取入参（缓存不存昵称，避免与 DB 主数据不一致）。
 func (db *DB) GetOrCreateUser(ctx context.Context, platform, platformUserID, nickname string) (*model.User, error) {
-	// ── 缓存读：命中直接返回，避免高频消息场景反复 upsert users 表 ──
+	// 缓存读：命中直接返回，避免高频消息场景反复 upsert users 表。
 	if db.userCache != nil {
 		if raw, ok, err := db.userCache.Get(ctx, userCacheKey(platform, platformUserID)); err == nil && ok {
 			if id, banned, ok := parseUserCacheValue(raw); ok {
@@ -88,7 +86,7 @@ func (db *DB) GetOrCreateUser(ctx context.Context, platform, platformUserID, nic
 		return nil, fmt.Errorf("get_or_create_user: %w", result.Error)
 	}
 
-	// ── 缓存写：回填映射（只存 ID + 封禁标记，TTL 过期后自然刷新）──
+	// 缓存写：只回填 ID 与封禁标记，其余字段靠 TTL 过期后自然刷新。
 	if db.userCache != nil {
 		_ = db.userCache.Set(ctx, userCacheKey(platform, platformUserID), userCacheValue(u.ID, u.BannedAt != nil), userCacheTTL)
 	}

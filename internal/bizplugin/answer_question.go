@@ -21,29 +21,14 @@ import (
 	"go.uber.org/zap"
 )
 
-// ============================================================
-// AnswerQuestionPlugin 编程答题插件
-// ============================================================
-
-// AnswerQuestionPlugin 实现新手编程答题游戏：
-//   - /答题：从全部支持语言中开始五题混合答题
-//   - /答题 java：选择一种语言，可用空格同时选择多种语言
-//   - A / B / C / D：在当前题目中抢答
-//
+// AnswerQuestionPlugin 实现新手编程答题游戏：/答题 [语言...] [难度] 开局（可用空格同时
+// 选择多种语言，不写语言为全部语言混合），裸 A～D 在当前题目中抢答。
 // 每轮固定五道四选一题，每题限时一分钟；第一个答对的人积一分并进入下一题，
 // 答错会 @ 玩家，同一玩家在同一道题中最多作答两次。任意题超时会立即结束整轮，
 // 完成五题后公布本轮排行榜。轮次状态按群聊或私聊隔离，结算后直接删除，积分不跨轮。
 //
-// 行为树：
-//
-//	subtree.answer_question → Selector(
-//	  Sequence(isQuizCommand,             Action("pipeline.plugin.answer_question.main")),
-//	  Sequence(pass.isActiveQuizAnswer, Action("pipeline.plugin.answer_question.main")),
-//	)
-//
-// 管线：
-//
-//	pipeline.plugin.answer_question.main → [quizPass]
+// 插件 ID answer_question；命令 /答题，无工具；依赖受限 KV（ctx.KV，未注入时提示功能不可用）
+// 与本地题库目录 quizDir（加载失败以空题库降级，/答题 提示题库为空）。
 type AnswerQuestionPlugin struct {
 	kv      *database.PluginKVStore
 	quizDir string
@@ -161,14 +146,6 @@ func (p *AnswerQuestionPlugin) reloadBank() {
 	}
 }
 
-// ============================================================
-// 题库（数据模型）
-// ============================================================
-//
-// 题目不再硬编码于 Go 源码，而是存放在 quizdata/ 目录下，按「语言目录 →
-// *.json」组织（见下方 loadQuizBank）。本节定义数据模型、难度枚举与语言元数据
-// 单点表，供加载器、选题逻辑与格式化共用。
-
 // quizLanguage 是题库使用的编程语言标识，即 quizdata/ 下的语言目录名。
 type quizLanguage string
 
@@ -184,9 +161,9 @@ const (
 
 // quizLanguageMeta 描述一门语言的展示名、别名与展示顺序。
 type quizLanguageMeta struct {
-	Name    string   // 展示名
-	Aliases []string // 玩家可输入的别名词（如 golang / py / c++）
-	Order   int      // 展示顺序，小的在前
+	Name    string
+	Aliases []string
+	Order   int
 }
 
 // quizLanguageMetadata 是内置语言的单点元数据来源：展示名、别名解析、
@@ -320,10 +297,6 @@ func validQuizQuestion(question quizQuestion) bool {
 	return question.Difficulty.valid()
 }
 
-// ============================================================
-// 题库加载与扩展
-// ============================================================
-//
 // 题库采用「目录即语言」的组织方式，扫描过程中自动发现语言与题目，新增语言
 // 无需修改任何 Go 代码：
 //
@@ -438,10 +411,6 @@ func quizLanguageLess(a, b quizLanguage) bool {
 	return quizLanguageName(a) < quizLanguageName(b)
 }
 
-// ============================================================
-// 输入解析（语言 + 难度）
-// ============================================================
-
 func normalizeAlias(raw string) string {
 	return strings.ToLower(strings.TrimSpace(raw))
 }
@@ -539,10 +508,6 @@ func (bank *quizBank) supportHint() string {
 		"；例如：/答题 go python。不写语言时为全部混合，可追加 简单/中等/困难 按难度筛选。"
 }
 
-// ============================================================
-// 题目抽取
-// ============================================================
-
 // errNoDifficultyQuestions 表示所选语言在指定难度下没有任何题目，
 // 供调用方转换为友好的用户提示。
 var errNoDifficultyQuestions = errors.New("该难度没有题目")
@@ -633,10 +598,6 @@ func shuffleQuizQuestions(values []quizQuestion) {
 	}
 }
 
-// ============================================================
-// 热更新监听
-// ============================================================
-
 // quizBankWatcher 监听题库目录的文件变化，防抖后触发重载回调。
 type quizBankWatcher struct {
 	watcher  *fsnotify.Watcher
@@ -724,10 +685,6 @@ func (qw *quizBankWatcher) close() {
 	})
 }
 
-// ============================================================
-// 条件判断与输入解析
-// ============================================================
-
 // isQuizCommand 判断消息是否为答题开局命令。
 func isQuizCommand(ctx *conduit.MessageContext) bool {
 	msg := strings.TrimSpace(ctx.RawMsg)
@@ -757,10 +714,6 @@ func parseQuizChoice(raw string) (int, bool) {
 		return 0, false
 	}
 }
-
-// ============================================================
-// 轮次状态
-// ============================================================
 
 const (
 	// quizPluginID 受限 KV 存储命名空间。
@@ -812,10 +765,6 @@ func quizKey(groupID, userID string) string {
 	}
 	return "state:dm:" + userID
 }
-
-// ============================================================
-// 题目展示
-// ============================================================
 
 func quizChoiceLetter(index int) string {
 	if index < 0 || index > 3 {
@@ -904,10 +853,6 @@ func formatQuizLeaderboard(game *quizGame) string {
 	return builder.String()
 }
 
-// ============================================================
-// Pass 实现
-// ============================================================
-
 // quizPass 按命令处理开局与抢答，并串行保护轮次状态和计时器。
 type quizPass struct {
 	kv               quizKVStore
@@ -929,6 +874,13 @@ func newQuizPass(kv quizKVStore, bank *atomic.Pointer[quizBank]) *quizPass {
 	}
 }
 
+// Execute 编程答题主 Pass：按消息内容分发——/答题 开新轮（可带语言与难度参数），
+// 裸 A～D 在当前轮次中抢答。
+// 由 plugin.answer_question.pipeline.main 在 isQuizCommand 命中或 isActiveQuizAnswer
+// 判定存在活跃轮次（或 KV 中残留待清理轮次）时调用。
+// 开局消息经上下文键 bot.stream.ch 的异步通道流式投递并返回 conduit.ErrPassYielded 挂起管线；
+// 抢答代次由 isActiveQuizAnswer 写入上下文键 quiz.observed_generation，用于丢弃排队中的旧题答案（防竞态）；
+// 受限 KV 未注入时直接回复功能不可用，其余失败分支均由 Pass 内部转换为用户提示。
 func (pass *quizPass) Execute(ctx *conduit.MessageContext) error {
 	if pass.kv == nil {
 		pass.reply(ctx, "编程答题功能暂时不可用，请稍后再试~")
@@ -965,7 +917,7 @@ func (pass *quizPass) reply(ctx *conduit.MessageContext, content string) {
 func (pass *quizPass) replyUser(ctx *conduit.MessageContext, content string) {
 	platform, _ := ctx.Extra["platform"].(string)
 	if !ctx.IsGroup || ctx.UserID == "" || (platform != "qq" && platform != "napcat") {
-		pass.reply(ctx, "@"+quizPlayerName(ctx)+content)
+		pass.reply(ctx, "@"+quizPlayerName(ctx)+" "+content)
 		return
 	}
 	conduit.Set(ctx, sendSegmentsKey, []map[string]any{
@@ -1205,10 +1157,6 @@ func (pass *quizPass) answerForGeneration(ctx *conduit.MessageContext, choice in
 	))
 	return nil
 }
-
-// ============================================================
-// 持久化与主动超时
-// ============================================================
 
 // load 读取当前轮次，并返回当前题是否已到截止时间。
 // 历史猜数字状态或损坏状态会被识别并清理。

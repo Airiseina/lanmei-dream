@@ -16,19 +16,18 @@ import (
 
 // maxReasoningChars 流式生成中推理思考的长度上限（字符）。
 // 正文为空而思考超过该值 → 判定模型陷入"只思考不输出"，中止并关思考重试。
-// 事故记录：2026-09-04 群聊事故中模型思考 17528 字符仍无正文，被兜底逻辑整段发出。
 const maxReasoningChars = 500
 
-// ChatStream 以流式方式执行对话，将段落增量写入 segmentCh。
+// ChatStream 以流式方式执行对话，将分段结果增量写入 segmentCh。
+// 支持流式的客户端走工具调用循环，其余降级为 Chat + StreamSegmenter 分段。
+// 返回的 ChatResponse.Content 为完整回复文本（供存储）；segmentCh 由调用方创建并关闭。
 //
-// 流程：
-//  1. 与 Chat 相同的 LOD/RAG/Prompt 组装（assembleContext）
-//  2. 若客户端为 EinoClient：启动流式工具调用循环（chatStreamWithToolLoop），
-//     边接收 LLM token 边检测段落边界（\n\n），每完整一段就写入 segmentCh
-//  3. 若客户端不支持流式：降级为 Chat + StreamSegmenter 分段，逐段写入 segmentCh
+// 参数：
+//   - ctx：流式生成上下文，取消会中止分段投递
+//   - req：对话请求；Messages 至少一条
+//   - segmentCh：段落通道，函数内按段落边界增量写入
 //
-// 返回的 ChatResponse.Content 为完整回复文本（供存储）。
-// segmentCh 由调用方创建，本方法不关闭它（由调用方在流结束后关闭）。
+// 返回：完整回复（Content 与 toolArgs 供存储/上层消费）；出错时可能已投递部分段落。
 func (s *ChatService) ChatStream(ctx context.Context, req *llm.ChatRequest, segmentCh chan<- string) (*llm.ChatResponse, error) {
 	if len(req.Messages) == 0 {
 		return nil, fmt.Errorf("chat stream: empty messages")
@@ -48,18 +47,11 @@ func (s *ChatService) ChatStream(ctx context.Context, req *llm.ChatRequest, segm
 	return s.chatStreamFallback(ctx, req, segmentCh, queryVec, lastMsgContent)
 }
 
-// chatStreamWithToolLoop 执行带工具调用循环的流式对话。
+// chatStreamWithToolLoop 执行带工具调用循环的流式对话，边接收 token 边分段写入 segmentCh。
+// 每轮读取首个 chunk 判定轮次类型：带 ToolCalls 即工具轮，带 Content 即文本轮。
 //
-// 算法：
-//  1. 绑定工具（若可用）获取 chatModel
-//  2. 每轮用 chatModel.Stream 打开流
-//  3. 读取首个 chunk 判定轮次类型：
-//     - ToolCalls 非空 → 工具轮次：缓冲全部 chunk，执行工具，进入下一轮
-//     - Content 非空 → 文本轮次：边接收边通过 StreamSegmenter 检测边界，产出段落
-//  4. 文本轮次结束后 flush 段落缓冲，返回完整文本
-//
-// 这基于 OpenAI 兼容 API 的行为：工具调用响应的首个 chunk 携带 tool_calls delta
-// 且 content 为空；纯文本响应的首个 chunk 携带 content delta 且无 tool_calls。
+// 这基于 OpenAI 兼容 API 的行为：工具调用响应的首个 chunk 携带 tool_calls delta 且
+// content 为空；纯文本响应的首个 chunk 携带 content delta 且无 tool_calls。
 func (s *ChatService) chatStreamWithToolLoop(
 	ctx context.Context,
 	req *llm.ChatRequest,
@@ -70,7 +62,6 @@ func (s *ChatService) chatStreamWithToolLoop(
 ) (*llm.ChatResponse, error) {
 	// 注入调用者平台身份，工具 handler 通过 tool.CallerFrom 读取
 	ctx = s.withCaller(ctx, req)
-	// 获取 chatModel（绑定工具或使用 base model）
 	chatModel, err := s.getStreamChatModel(einoClient)
 	if err != nil {
 		return nil, err
@@ -84,9 +75,8 @@ func (s *ChatService) chatStreamWithToolLoop(
 	var lastToolResult string // 最近一次工具结果（LLM 工具轮后无文本时兜底输出）
 	// toolArgs 实际执行的工具调用参数（工具名 → 参数 JSON），同名覆盖保留最后一次
 	toolArgs := make(map[string]string)
-	// disableThinking 本轮流式生成是否关闭推理思考。
-	// 推理模型可能把输出预算全部花在 reasoning 上导致正文为空，
-	// 触发思考超限后置位，下一轮以 thinking=disabled 重试。
+	// disableThinking 本轮流式生成是否关闭推理思考：推理模型可能把输出预算全花在
+	// reasoning 上导致正文为空，触发思考超限后置位，下一轮以 thinking=disabled 重试。
 	disableThinking := false
 
 roundLoop:
@@ -100,7 +90,6 @@ roundLoop:
 			return nil, fmt.Errorf("chat stream: open stream: %w", streamErr)
 		}
 
-		// 读取首个 chunk 判定轮次类型
 		firstChunk, recvErr := reader.Recv()
 		if errors.Is(recvErr, io.EOF) {
 			reader.Close()
@@ -121,8 +110,8 @@ roundLoop:
 			zap.Int("reasoning_len", len(firstChunk.ReasoningContent)))
 
 		// 工具轮执行闭包：拼接 assistant 消息 + 执行工具 + 回传结果。
-		// 推理模型（如 deepseek-v4）先流 reasoning，工具调用可能出现在后续 chunk，
-		// 因此"首 chunk 初判"与"文本轮中途检测"到的工具调用都走这里。
+		// 推理模型先流 reasoning，工具调用可能出现在后续 chunk，故"首 chunk 初判"与
+		// "文本轮中途检测"到的工具调用都走这里。
 		runToolRound := func(chunks []*schema.Message) (bool, error) {
 			accumulated, concatErr := schema.ConcatMessages(chunks)
 			if concatErr != nil {
@@ -133,8 +122,7 @@ roundLoop:
 				totalOutput += accumulated.ResponseMeta.Usage.CompletionTokens
 			}
 			// DeepSeek 等实现要求 assistant 消息必须携带 content 字段，而 go-openai 序列化
-			// 时空 content 会被 omitempty 省略；工具调用类 assistant 消息 content 常为空，
-			// 补一个空格占位，避免下一轮请求被 400 拒绝。
+			// 时空 content 会被 omitempty 省略；工具调用类消息补空格占位避免请求被 400 拒绝。
 			if accumulated.Content == "" && len(accumulated.ToolCalls) > 0 {
 				accumulated.Content = " "
 			}
@@ -142,7 +130,7 @@ roundLoop:
 			for _, tc := range accumulated.ToolCalls {
 				s.logger.Info("chat stream: 工具轮触发",
 					zap.String("tool", tc.Function.Name), zap.String("args", tc.Function.Arguments))
-				// 记录工具调用参数（同名覆盖，保留最后一次），供上层读取
+				// 记录工具调用参数（同名覆盖，保留最后一次），供上层读取。
 				toolArgs[tc.Function.Name] = tc.Function.Arguments
 				result, callErr := s.toolReg.Call(ctx, tc.Function.Name, tc.Function.Arguments)
 				if callErr != nil {
@@ -182,14 +170,12 @@ roundLoop:
 			continue // 下一轮
 		}
 
-		// ── 文本轮次：流式产出段落 ──
-		// reasoning 型模型（如 deepseek-v4）可能只返回 reasoning_content 而无 content，
+		// reasoning 型模型可能只返回 reasoning_content 而无 content，
 		// 收集 reasoning 作为空响应兜底。
 		var reasoningBuf strings.Builder
 		if firstChunk.ReasoningContent != "" {
 			reasoningBuf.WriteString(firstChunk.ReasoningContent)
 		}
-		// 处理首 chunk
 		if firstChunk.Content != "" {
 			for _, seg := range segmenter.Feed(firstChunk.Content) {
 				if sendErr := sendSegment(ctx, segmentCh, seg); sendErr != nil {
@@ -203,7 +189,7 @@ roundLoop:
 			totalOutput += firstChunk.ResponseMeta.Usage.CompletionTokens
 		}
 
-		// 处理剩余 chunk；推理模型可能在 reasoning 后才发出工具调用（tool_calls 出现在后续 chunk），
+		// 剩余 chunk：推理模型可能在 reasoning 后才发出工具调用（tool_calls 出现在后续 chunk），
 		// 一旦检测到即切换为工具轮，避免把工具调用当纯文本轮处理导致"只想不做"。
 		switchedToTool := false
 	chunkLoop:
@@ -218,10 +204,9 @@ roundLoop:
 			}
 			if chunk.ReasoningContent != "" {
 				reasoningBuf.WriteString(chunk.ReasoningContent)
-				// 思考超限实时防护：思考远超阈值且正文仍为空，说明模型把输出预算
-				// 全部耗在 reasoning 上（会话表现为"只思考不输出"），继续等待只会
-				// 拖垮超时预算。立即中止本轮流，下一轮关闭思考重试。
-				// 仅未关思考的首轮生效（重试轮不再中止，避免循环）。
+				// 思考超限实时防护：思考远超阈值且正文仍为空，说明输出预算全耗在
+				// reasoning 上（表现为"只思考不输出"），继续等待只会拖垮超时预算，
+				// 故立即中止本轮流并在下一轮关闭思考重试；仅未关思考的首轮生效，避免重试轮再次中止。
 				if reasoningBuf.Len() > maxReasoningChars && segmenter.FullText() == "" && !disableThinking {
 					reader.Close()
 					s.logger.Warn("chat stream: 思考超限，中止本轮并关思考重试",
@@ -272,15 +257,14 @@ roundLoop:
 			continue // 本轮已切换为工具轮，进入下一轮生成
 		}
 
-		// flush 剩余缓冲为末段
 		if last := segmenter.Flush(); last != "" {
 			if sendErr := sendSegment(ctx, segmentCh, last); sendErr != nil {
 				return nil, sendErr
 			}
 		}
 
-		// 工具已执行但 LLM 未产出最终文本（部分模型认为工具结果即答案，工具轮后不再生成内容）：
-		// 将最近一次工具结果作为回复输出，避免"调了工具却无响应"。
+		// 工具已执行但 LLM 未产出最终文本（部分模型认为工具结果即答案）：
+		// 用最近一次工具结果兜底输出，避免"调了工具却无响应"。
 		if segmenter.FullText() == "" && lastToolResult != "" {
 			for _, seg := range segmenter.Feed(lastToolResult) {
 				if sendErr := sendSegment(ctx, segmentCh, seg); sendErr != nil {
@@ -293,14 +277,13 @@ roundLoop:
 				}
 			}
 		}
-		// 注意：reasoning（思考内容）绝不能作为回复输出给用户——
-		// 它包含提示词线索、检索内容与模型内部推理，泄露即事故。
-		// 空响应统一由上层（roleplay）以关思考重试 / 提示语兜底。
+		// reasoning（思考内容）绝不能作为回复输出给用户——它含提示词线索、检索内容与
+		// 模型内部推理，泄露即事故；空响应统一由上层（roleplay）关思考重试 / 提示语兜底。
 
-		// 异步存记忆 + 触发压缩
+		// 异步存记忆 + 触发压缩。
 		s.asyncStoreAndCompress(ctx, req.UserID, req.GroupID, lastMsgContent, queryVec)
 
-		// 流式路径绕过 client.Chat 直连 chatModel，需手动上报用量
+		// 流式路径绕过 client.Chat 直连 chatModel，需手动上报用量。
 		s.reportUsage(req, totalInput, totalOutput)
 
 		return &llm.ChatResponse{
@@ -316,7 +299,7 @@ roundLoop:
 	// 达到最大工具调用轮次，返回已有内容
 	s.asyncStoreAndCompress(ctx, req.UserID, req.GroupID, lastMsgContent, queryVec)
 
-	// 同上：工具已执行但未产出文本时，用最近一次工具结果兜底
+	// 同上：工具已执行但未产出文本时，用最近一次工具结果兜底。
 	if segmenter.FullText() == "" && lastToolResult != "" {
 		for _, seg := range segmenter.Feed(lastToolResult) {
 			if sendErr := sendSegment(ctx, segmentCh, seg); sendErr != nil {
@@ -325,7 +308,7 @@ roundLoop:
 		}
 	}
 
-	// 流式路径绕过 client.Chat 直连 chatModel，需手动上报用量
+	// 流式路径绕过 client.Chat 直连 chatModel，需手动上报用量。
 	s.reportUsage(req, totalInput, totalOutput)
 
 	return &llm.ChatResponse{
@@ -366,7 +349,6 @@ func (s *ChatService) chatStreamFallback(
 		return nil, fmt.Errorf("chat stream fallback: llm call: %w", err)
 	}
 
-	// 用 StreamSegmenter 拆分完整响应（等价于 splitResponse 的效果）
 	segmenter := NewStreamSegmenter()
 	for _, seg := range segmenter.Feed(resp.Content) {
 		if sendErr := sendSegment(ctx, segmentCh, seg); sendErr != nil {

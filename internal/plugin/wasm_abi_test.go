@@ -6,8 +6,6 @@ import (
 	"time"
 )
 
-// ── PluginInfoResponse.Validate ──
-
 func TestPluginInfoResponseValidate_OK(t *testing.T) {
 	r := &PluginInfoResponse{
 		ABIVersion:  ABIVersion,
@@ -79,8 +77,6 @@ func TestPluginInfoResponseValidate_BadCommandName(t *testing.T) {
 	}
 }
 
-// ── HandleResponse.Validate ──
-
 func TestHandleResponseValidate_HandledFalseNoOutputs(t *testing.T) {
 	r := &HandleResponse{Handled: false}
 	if err := r.Validate(&DefaultLimits); err != nil {
@@ -122,8 +118,6 @@ func TestHandleResponseValidate_TextTooLong(t *testing.T) {
 		t.Fatal("expected error: text too long")
 	}
 }
-
-// ── StateKey/Value/TTL 校验 ──
 
 func TestValidateStateKey_Empty(t *testing.T) {
 	if err := ValidateStateKey("", &DefaultLimits); err == nil {
@@ -178,8 +172,6 @@ func TestValidateTTL_Zero(t *testing.T) {
 	}
 }
 
-// ── Principal 生成 ──
-
 func TestPluginPrincipal(t *testing.T) {
 	got := PluginPrincipal("signin", "abc123")
 	want := "plugin::signin::abc123"
@@ -199,8 +191,6 @@ func TestSystemPrincipal(t *testing.T) {
 		t.Errorf("SystemPrincipal = %q", got)
 	}
 }
-
-// ── JSON 编解码 ──
 
 func TestUnmarshalGuestInput_LimitExceeded(t *testing.T) {
 	data := make([]byte, DefaultLimits.MaxGuestInputJSON+1)

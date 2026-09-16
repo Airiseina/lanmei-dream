@@ -22,26 +22,19 @@ import (
 	"github.com/DaWesen/lanmei-dream/internal/model"
 )
 
-// httpClient 媒体下载客户端：10s 超时 + 10MB 响应体上限兜底
+// httpClient 媒体下载客户端：10s 超时。
 var httpClient = &http.Client{Timeout: 10 * time.Second}
 
-// isImageSeg 判断消息段是否为图片段。
 func isImageSeg(seg gateway.NormalizedSegment) bool {
 	return seg.Type == "image"
 }
 
-// ── MediaPass：多媒体下载 / 缓存 / 理解 ──
-
-// MediaPass 处理消息中的多媒体段：
-//  1. 图片：下载 → RustFS 内容寻址缓存（幂等去重）→ 视觉理解 → 生成文字描述
-//  2. 其它媒体段（audio/video/file）：仅记录，本轮不解析内容
+// MediaPass 处理消息中的多媒体段：图片走"下载 → RustFS 内容寻址缓存（幂等去重）→
+// 视觉理解 → 文字描述"，其它媒体段（audio/video/file）本轮仅记录、不解析内容。
+// 结果写入黑板（KeyImageDesc / KeyMediaHandled）；纯图片消息（无文字）时将描述并入
+// ctx.RawMsg，供意图分析/对话消费。
 //
-// 处理结果写入黑板（data）：
-//   - KeyImageDesc：图片理解描述（"[图片：...]"）
-//   - KeyMediaHandled：媒体已处理标记
-//   - 纯图片消息（无文字）时，将描述并入 ctx.RawMsg，供意图分析/对话消费
-//
-// 全部降级链：RustFS 不可用 → 跳过缓存仍做理解；视觉模型未配置 → 仅缓存不描述；
+// 降级链：RustFS 不可用 → 跳过缓存仍做理解；视觉模型未配置 → 仅缓存不描述；
 // 下载失败 → 跳过该段，不阻塞整条消息处理。
 type MediaPass struct {
 	Store  *media.ObjectStore
@@ -51,7 +44,15 @@ type MediaPass struct {
 	Logger *zap.Logger
 }
 
-// Execute 处理所有媒体段。
+// Execute 处理消息中的图片段（下载 → RustFS 缓存 → 视觉理解），把结果写入黑板；
+// 非图片媒体段仅记录日志，单张图片失败跳过该段、不阻塞整条消息。
+//
+// 位置：pipeline.media 的首个 Pass（行为树 IsMedia 条件命中后进入），后接 MediaRouterPass 路由。
+//
+// 依赖上下文键：读取 KeySegments（Extra）；写入 KeyImageDesc/KeyMediaHandled（ctx.data）。
+// 纯图片消息（RawMsg 为空）时把描述并入 ctx.RawMsg，使其进入正常对话流。
+//
+// 返回：始终返回 nil；缓存失败/视觉未配置/下载失败等降级链均在内部消化并记日志。
 func (p *MediaPass) Execute(ctx *conduit.MessageContext) error {
 	segs := SegmentsFromCtx(ctx)
 	if len(segs) == 0 {
@@ -99,7 +100,6 @@ func (p *MediaPass) processImage(ctx *conduit.MessageContext, seg gateway.Normal
 		return "", nil
 	}
 
-	// 下载并校验大小上限
 	data, mime, err := p.download(ctx.Ctx, url)
 	if err != nil {
 		return "", err
@@ -136,7 +136,7 @@ func (p *MediaPass) processImage(ctx *conduit.MessageContext, seg gateway.Normal
 
 // download 下载媒体内容，限制大小（MaxDownloadBytes，默认 10MB）。
 func (p *MediaPass) download(ctx context.Context, url string) ([]byte, string, error) {
-	maxBytes := int64(10 << 20) // 默认 10MB
+	maxBytes := int64(10 << 20)
 	if p.Cfg != nil && p.Cfg.MaxDownloadBytes > 0 {
 		maxBytes = p.Cfg.MaxDownloadBytes
 	}
@@ -194,11 +194,8 @@ func (p *MediaPass) cacheToStore(ctx *conduit.MessageContext, data []byte, mime 
 	return key, nil
 }
 
-// ── MediaRouterPass：媒体处理后的路由 ──
-
-// MediaRouterPass 在 MediaPass 执行后决定媒体消息的去向：
-//   - 含文字或图片已理解 → pipeline.intent_analysis（进入正常对话流）
-//   - 图片理解失败且无文字 → pipeline.intent_ignore（静默保存）
+// MediaRouterPass 在 MediaPass 执行后决定媒体消息的去向：含文字或图片已理解 →
+// pipeline.intent_analysis（进入正常对话流）；图片理解失败且无文字 → pipeline.intent_ignore（静默保存）。
 type MediaRouterPass struct{}
 
 // Execute 无业务逻辑，路由依据在 Route 中读取。

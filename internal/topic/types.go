@@ -1,17 +1,8 @@
-// Package topic 实现群聊智能对话的 Topic（话题）系统。
+// Package topic 实现群聊智能对话的 Topic（话题）系统，设计详见 docs/group-topic-design.md。
 //
-// 核心思想（详见 docs/group-topic-design.md）：
-// "是否要回复"是一个语言学判定问题 —— at（平台 ID）为免费精确的强信号，
-// 其余提及（呼格/主语/祈使/条件/情感/指代等）由意图分析 LLM 调用
-// （internal/ai/intent）的提及判断返回，按置信度划分为强/弱提及。
-//
-// 模块划分：
-//   - mention.go：提及分类（MentionMode / MentionResult）
-//   - linguistic.go：提及判断数据类型（LinguisticJudge / MentionRole）
-//   - types.go：话题数据模型与状态机
-//   - manager.go：TopicManager（群消息决策 + 状态管理 + 持久化）
-//   - semantic.go：语义相关性判定（embedding）
-//   - archive.go：冷却话题异步归档到记忆层
+// 核心思想："是否要回复"是一个语言学判定问题——at（平台 ID）为免费精确的强信号，
+// 其余提及（呼格/主语/祈使/条件/情感/指代等）由意图分析 LLM 调用（internal/ai/intent）
+// 的提及判断返回，按置信度划分为强/弱提及。
 package topic
 
 import (
@@ -22,9 +13,9 @@ import (
 type TopicState int
 
 const (
-	// TopicActive 活跃：最近窗口内有提及或 Bot 回复，且成员非空
+	// TopicActive 活跃：最近窗口内有提及或 Bot 回复，且成员非空。
 	TopicActive TopicState = iota
-	// TopicCooling 冷却：窗口内无提及/回复，或成员已清空，等待超时归档
+	// TopicCooling 冷却：窗口内无提及/回复，或成员已清空，等待超时归档。
 	TopicCooling
 )
 
@@ -60,12 +51,8 @@ type TopicMsg struct {
 }
 
 // Topic 一个群内的话题（对话线程）。
-//
-// 状态机：
-//
-//	[不存在] --强提及/语义命中--> [Active] --窗口内无提及且成员空/窗口到期--> [Cooling]
-//	[Active/Cooling] --窗口内提及--> 刷新 LastMentionAt 保持/恢复 Active
-//	[Cooling] --冷却超时--> 归档（Archived，从内存与 Redis 移除）
+// 状态机：[不存在] --强提及/语义命中--> [Active] --窗口内无提及且成员空或窗口到期--> [Cooling]。
+// 窗口内再次提及会刷新 LastMentionAt 保持或恢复 Active；[Cooling] 冷却超时后归档（从内存与 Redis 移除）。
 type Topic struct {
 	ID              string             `json:"id"`       // topic:<platform>:<groupID>:<seq>
 	Platform        string             `json:"platform"` // 来源平台（qq/wechat/telegram...）
@@ -108,7 +95,6 @@ func (t *Topic) pushMsg(msg TopicMsg, maxWindow ...int) {
 	}
 	t.MsgWindow = append(t.MsgWindow, msg)
 	if len(t.MsgWindow) > limit {
-		// 保留最近 limit 条
 		t.MsgWindow = t.MsgWindow[len(t.MsgWindow)-limit:]
 	}
 }
@@ -187,28 +173,33 @@ func (t *Topic) hasCredit(userID string) bool {
 	return false
 }
 
-// botWindowDefault 消息窗口默认上限（topic_window_msgs 未配置时使用）。
+// topicWindowDefault 消息窗口默认上限（topic_window_msgs 未配置时使用）。
 const topicWindowDefault = 20
 
 // IncomingMsg 群消息输入（由 TopicGatePass 构造）。
 type IncomingMsg struct {
-	Platform  string
-	SelfID    string // 机器人自身 ID（at 目标匹配）
-	GroupID   string
-	UserID    string
-	UserName  string // 发送者昵称（上下文注入/归档用）
+	// Platform 来源平台（qq/wechat/telegram...），参与群键（platform:groupID）与持久化键。
+	Platform string
+	SelfID   string // 机器人自身 ID（at 目标匹配）
+	// GroupID 群 ID；为空的输入会被 HandleGroupMessage 直接拒绝（返回空决策）。
+	GroupID string
+	// UserID 发送者平台用户 ID（配额、成员与身份锚点的键）。
+	UserID   string
+	UserName string // 发送者昵称（上下文注入/归档用）
+	// Content 消息文本；为空（如纯媒体）时不参与语义相关判定。
 	Content   string
 	AtTargets []string // 网关标准化的 at 目标列表
-	SentAt    time.Time
+	// SentAt 消息发送时间；为零值时 Manager 取当前时间。
+	SentAt time.Time
 }
 
 // Decision 群消息决策结果（HandleGroupMessage 返回值）。
 type Decision struct {
-	// Reply 是否应回复（REPLY）
+	// Reply 是否应回复（REPLY）。
 	Reply bool
-	// Topic 命中/创建的话题（nil = 未命中任何话题）
+	// Topic 命中/创建的话题（nil = 未命中任何话题）。
 	Topic *Topic
-	// Mention 提及模式（MentionNone 表示未提及）
+	// Mention 提及模式（MentionNone 表示未提及）。
 	Mention MentionMode
 }
 
