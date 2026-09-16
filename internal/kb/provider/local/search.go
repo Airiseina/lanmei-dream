@@ -79,27 +79,35 @@ func (p *Provider) searchVector(ctx context.Context, req *kbpkg.RecallRequest) (
 // 无法形成 trigram、相似度恒为 0），也强制召回并置顶，弥补 pg_trgm 对短词的盲区。
 func (p *Provider) searchFuzzy(ctx context.Context, req *kbpkg.RecallRequest) ([]kbpkg.ScoredChunk, error) {
 	where, whereArgs := p.filterSQL(req.Filter)
+	// LIKE 通配符转义：用户查询中的 % _ 是字面量而非通配符，否则查询 "%" 会命中全部行
+	likeQ := escapeLike(req.Query)
 
 	rows := []*modelRow{}
 	err := p.orm.WithContext(ctx).Raw(
 		`SELECT k.*,
-		    CASE WHEN k.title LIKE '%'||?||'%' OR k.content LIKE '%'||?||'%'
+		    CASE WHEN k.title LIKE '%'||?||'%' ESCAPE '\' OR k.content LIKE '%'||?||'%' ESCAPE '\'
 		         THEN 1.0 ELSE similarity(k.content, ?) END AS score
 		 FROM knowledge_chunks k
 		 WHERE k.knowledge_base_id = ?
 		   AND (similarity(k.content, ?) >= ?
-		        OR k.title LIKE '%'||?||'%'
-		        OR k.content LIKE '%'||?||'%')`+where+`
+		        OR k.title LIKE '%'||?||'%' ESCAPE '\'
+		        OR k.content LIKE '%'||?||'%' ESCAPE '\')`+where+`
 		 ORDER BY score DESC
 		 LIMIT ?`,
-		append([]any{req.Query, req.Query, req.Query, p.kb.ID,
-			req.Query, p.fuzzyThreshold, req.Query, req.Query},
+		append([]any{likeQ, likeQ, req.Query, p.kb.ID,
+			req.Query, p.fuzzyThreshold, likeQ, likeQ},
 			append(whereArgs, req.Limit)...)...,
 	).Scan(&rows).Error
 	if err != nil {
 		return nil, fmt.Errorf("kb local: 模糊召回: %w", err)
 	}
 	return p.rankRows(rows, req.Limit), nil
+}
+
+// escapeLike 转义 LIKE 模式中的通配符（% _ \），配合 ESCAPE '\' 使用。
+func escapeLike(s string) string {
+	r := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
+	return r.Replace(s)
 }
 
 // searchTime 时间召回：按最近更新时间倒序取 top-N。

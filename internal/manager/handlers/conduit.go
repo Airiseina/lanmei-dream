@@ -134,9 +134,11 @@ func (h *Handler) ListTraces(c fiber.Ctx) error {
 		GroupID:  c.Query("group_id"),
 	}
 	if s := c.Query("since"); s != "" {
-		if t, err := timeParse(s); err == nil {
-			filter.Since = t
+		t, err := timeParse(s)
+		if err != nil {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "since 时间格式非法"})
 		}
+		filter.Since = t
 	}
 	items, total, err := h.store.ListTraces(c.Context(), filter, offset, limit)
 	if err != nil {

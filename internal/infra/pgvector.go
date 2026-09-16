@@ -127,11 +127,13 @@ func (s *PGVectorStore) RetrieveByTime(ctx context.Context, userID int64, groupI
 // & (AND) 连接各词项。
 // 必须先收集全部词项再连接，不能逐项追加 "&" 后缀——否则末词会变成 "词&"，
 // PostgreSQL 因缺操作数报 "no operand in tsquery"。
+// 词项用单引号包裹并转义内部单引号：用户输入含 & | ! ( ) : ' 等 tsquery 操作符时
+// 会导致语法错误（如 "C & C++" → "C & & C++"），包裹后按普通词项解析。
 func toSimpleTSQuery(query string) string {
 	var parts []string
 	for _, w := range splitWhitespace(query) {
 		if w != "" {
-			parts = append(parts, w)
+			parts = append(parts, "'"+strings.ReplaceAll(w, "'", "''")+"'")
 		}
 	}
 	if len(parts) == 0 {

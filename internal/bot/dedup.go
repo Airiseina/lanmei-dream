@@ -49,7 +49,11 @@ func (d *Deduper) Accept(msg *gateway.NormalizedMessage) bool {
 	if d == nil || d.store == nil || msg == nil || msg.MessageID == "" {
 		return true
 	}
-	ok, err := d.store.SetIfNotExists(context.Background(),
+	// 带超时：存储挂起时不无限阻塞网关消息分发（fail-open 仅在返回 error 时生效，
+	// 无超时的 Background 会在网络挂起时永久阻塞）。
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	ok, err := d.store.SetIfNotExists(ctx,
 		conduit.MakeStoreKey("dedup", "msg", msg.ConnID, msg.MessageID), "1", d.ttl)
 	if err != nil {
 		// 存储故障时放行，不阻塞业务

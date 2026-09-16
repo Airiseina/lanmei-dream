@@ -171,6 +171,19 @@ func (s *Store) GetSessionByRefreshHash(ctx context.Context, hash string) (*mode
 	return &sess, nil
 }
 
+// GetSessionByID 按会话 ID 查询会话。
+func (s *Store) GetSessionByID(ctx context.Context, id uint) (*model.AuthSession, error) {
+	var sess model.AuthSession
+	err := s.db.Orm.WithContext(ctx).Where("id = ?", id).First(&sess).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &sess, nil
+}
+
 // ListSessionsByAdmin 列出某管理员未吊销会话。
 func (s *Store) ListSessionsByAdmin(ctx context.Context, adminID uint) ([]model.AuthSession, error) {
 	var list []model.AuthSession

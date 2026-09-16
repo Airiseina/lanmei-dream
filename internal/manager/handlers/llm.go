@@ -55,7 +55,11 @@ func (h *Handler) ListProviders(c fiber.Ctx) error {
 	for _, p := range list {
 		views = append(views, toProviderView(&p))
 	}
-	return c.JSON(fiber.Map{"items": views, "active": h.llmMgr.ProviderName()})
+	active := ""
+	if h.llmMgr != nil {
+		active = h.llmMgr.ProviderName()
+	}
+	return c.JSON(fiber.Map{"items": views, "active": active})
 }
 
 // CreateProvider 创建 Provider（仅 super + step-up）。
@@ -70,6 +74,9 @@ func (h *Handler) CreateProvider(c fiber.Ctx) error {
 	}
 	if req.Name == "" || req.BaseURL == "" || req.Model == "" {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "名称/base_url/model 不能为空"})
+	}
+	if req.APIKey == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "API Key 不能为空"})
 	}
 	enc, err := h.authSvc.Box().Encrypt([]byte(req.APIKey))
 	if err != nil {
@@ -236,6 +243,10 @@ func (h *Handler) ActivateProvider(c fiber.Ctx) error {
 // ReloadProviders 将 DB 的 Provider 全量加载进运行时（ProviderManager + 计费价格表），
 // 并恢复 DB 标记的活跃项。供 handlers 内部与 manager.LoadProviders 调用。
 func (h *Handler) ReloadProviders(ctx context.Context) error {
+	if h.llmMgr == nil {
+		// 未启用运行时 Provider 管理（未配置 LLM API Key）：不加载运行时，仅同步价格表
+		return nil
+	}
 	list, err := h.store.ListLLMProviders(ctx)
 	if err != nil {
 		return err

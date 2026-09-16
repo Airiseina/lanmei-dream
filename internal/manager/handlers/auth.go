@@ -258,9 +258,7 @@ func (h *Handler) ListSessions(c fiber.Ctx) error {
 }
 
 // RevokeSession 按会话 ID 吊销会话，需登录（protected 分组，无 step-up）。
-//
-// 注意：当前未校验会话归属，任何已登录管理员传入他人会话 ID 均可吊销；
-// ListSessions 对 admin_id 参数仅超管可用，两者口径不一致，接入权限收紧时需一并处理。
+// 归属校验：仅本人可吊销自己的会话；超管可吊销任意会话。
 func (h *Handler) RevokeSession(c fiber.Ctx) error {
 	admin := currentAdmin(c)
 	if admin == nil {
@@ -269,6 +267,17 @@ func (h *Handler) RevokeSession(c fiber.Ctx) error {
 	id, err := strconv.ParseUint(c.Params("id"), 10, 64)
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "无效的会话 ID"})
+	}
+	sess, err := h.authSvc.GetSession(c.Context(), uint(id))
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "吊销失败"})
+	}
+	if sess == nil {
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "会话不存在"})
+	}
+	// 非超管只能吊销自己的会话，防止水平越权
+	if admin.Role != model.AdminRoleSuper && sess.AdminID != admin.ID {
+		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "无权吊销该会话"})
 	}
 	if err := h.authSvc.RevokeSession(c.Context(), uint(id)); err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "吊销失败"})
@@ -417,6 +426,8 @@ func (h *Handler) WebAuthnRegisterFinish(c fiber.Ctx) error {
 }
 
 // RemovePasskey 删除指定 passkey（step-up 已由路由层校验）。
+// 归属校验：仅本人可删除自己的凭据；超管可删除任意凭据。
+// TOTP 凭据有专属解绑通道（RemoveTOTP），此处拒绝处理以防绕过归属校验。
 func (h *Handler) RemovePasskey(c fiber.Ctx) error {
 	admin := currentAdmin(c)
 	if admin == nil {
@@ -425,6 +436,21 @@ func (h *Handler) RemovePasskey(c fiber.Ctx) error {
 	credentialID := c.Params("credential_id")
 	if credentialID == "" {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "缺少凭据 ID"})
+	}
+	cred, err := h.authSvc.GetCredential(c.Context(), credentialID)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "删除失败"})
+	}
+	if cred == nil {
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "凭据不存在"})
+	}
+	// TOTP 凭据走 RemoveTOTP 专属通道
+	if cred.Kind == model.CredentialTOTP {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "TOTP 请使用专属解绑入口"})
+	}
+	// 非超管只能删除自己的凭据，防止水平越权
+	if admin.Role != model.AdminRoleSuper && cred.AdminID != admin.ID {
+		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "无权删除该凭据"})
 	}
 	if err := h.authSvc.RemovePasskey(c.Context(), credentialID); err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "删除失败"})

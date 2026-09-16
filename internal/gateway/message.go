@@ -292,7 +292,10 @@ func NormalizeV11(connID string, evt *EventV11, platform Platform) *NormalizedMe
 			senderName = evt.Sender.Card
 		}
 		msg.SenderName = senderName
-		msg.MessageID = strconv.FormatInt(evt.MessageID, 10)
+		// message_id 缺失/为 0 时置空串：Deduper 对空串放行，避免所有消息共享键 "0" 被误判重复丢弃
+		if evt.MessageID != 0 {
+			msg.MessageID = strconv.FormatInt(evt.MessageID, 10)
+		}
 
 	case "notice":
 		// 通知事件：仅接收白名单内的事件类型（见 notice.go），白名单外返回 nil。

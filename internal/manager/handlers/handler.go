@@ -126,6 +126,10 @@ func pageQuery(c fiber.Ctx) (offset, limit int) {
 	if page < 1 {
 		page = 1
 	}
+	// page 上限防深分页与 offset 溢出（(page-1)*size 为负会生成非法 SQL）
+	if page > 10000 {
+		page = 10000
+	}
 	if size < 1 || size > 100 {
 		size = 20
 	}

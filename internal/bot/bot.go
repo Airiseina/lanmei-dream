@@ -590,7 +590,9 @@ func (b *Bot) OnMessage(msg *gateway.NormalizedMessage) {
 
 	// 用户封禁拦截：被封禁用户的全部消息静默丢弃（不进入行为树）
 	if b.db != nil {
-		banned, err := b.db.IsUserBanned(context.Background(), string(msg.Platform), msg.UserID)
+		banCtx, banCancel := context.WithTimeout(context.Background(), 2*time.Second)
+		banned, err := b.db.IsUserBanned(banCtx, string(msg.Platform), msg.UserID)
+		banCancel()
 		if err != nil {
 			b.logger.Warn("bot: 查询封禁状态失败，放行消息",
 				zap.String("user", msg.UserID), zap.Error(err))
@@ -786,7 +788,14 @@ func (b *Bot) streamSegments(ctx *conduit.MessageContext, msg *gateway.Normalize
 		// 明确指向性 at；后续段落直接发送，不重复引用/at。
 		done := make(chan struct{})
 		child.ResponseCallback = func(childCtx *conduit.MessageContext, childErr error) {
-			defer close(done)
+			// 回调在 conduit worker goroutine 执行且无 recover：sendReply 等任何
+			// panic 都会击穿 worker 导致进程崩溃，同时 done 永不关闭、主循环死锁。
+			defer func() {
+				if r := recover(); r != nil {
+					b.logger.Error("bot: segment callback panic", zap.Any("panic", r))
+				}
+				close(done)
+			}()
 			if childErr != nil {
 				b.logger.Error("bot: segment delivery failed", zap.Error(childErr))
 				return
