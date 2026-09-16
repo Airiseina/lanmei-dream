@@ -4,10 +4,9 @@ import "time"
 
 // StickerLibrary 自定义表情库表（sticker_library）。
 //
-// 存储 bot 收藏的自定义表情（梗图/动图），供 LLM 按语义匹配后发送：
-//   - 表情文件本身存 RustFS（对象存储），本表只存对象键与元数据；
-//   - Tags 为语义标签（JSON 数组字符串），检索按标签模糊匹配；
-//   - 无使用计数字段，避免 LLM 对"使用次数"做无意义的判断干扰。
+// 存储 bot 收藏的自定义表情（梗图/动图），供 LLM 按语义匹配后发送：文件本身存 RustFS，
+// 本表只存对象键与元数据；Tags 为语义标签（JSON 数组字符串），检索按标签模糊匹配。
+// 刻意不设使用计数字段，避免 LLM 对"使用次数"做无意义判断。
 type StickerLibrary struct {
 	ID        uint      `json:"id"        gorm:"primaryKey;autoIncrement;comment:表情ID"`
 	ObjectKey string    `json:"object_key"  gorm:"not null;size:128;uniqueIndex;comment:RustFS对象键（内容寻址）"`
@@ -17,5 +16,5 @@ type StickerLibrary struct {
 	CreatedAt time.Time `json:"created_at"  gorm:"autoCreateTime;comment:创建时间"`
 }
 
-// TableName 指定表名。
+// TableName 指定 GORM 表名为 sticker_library。
 func (StickerLibrary) TableName() string { return "sticker_library" }

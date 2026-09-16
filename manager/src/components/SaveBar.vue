@@ -61,7 +61,6 @@ function doSave() {
   box-shadow: var(--mgr-shadow-lg);
 }
 
-/* 底部悬浮条入场动画 */
 .savebar-enter-active,
 .savebar-leave-active {
   transition: transform 0.25s ease, opacity 0.25s ease;

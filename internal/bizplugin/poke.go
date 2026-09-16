@@ -9,27 +9,11 @@ import (
 	"go.uber.org/zap"
 )
 
-// ============================================================
-// PokePlugin 戳一戳回复插件
-// ============================================================
-
-// PokePlugin 实现戳一戳响应：有人戳蓝妹时 @ 对方并回复一条随机文案。
+// PokePlugin 实现戳一戳响应：仅响应戳蓝妹本人（target_id == self_id）的事件，
+// 回复 [@戳人者 + 随机文案] 一条消息；群内他人互戳不打扰，所有群生效且不做防刷限流。
+// 事件键由 bot 层写入黑板 Extra，插件不导 bot/gateway 包。
 //
-// 功能：
-//   - 仅响应戳蓝妹本人的事件（target_id == 蓝妹 self_id），群内他人互戳不打扰
-//   - 回复 [@戳人者 + 随机文案] 一条消息（经出站段通道发送）
-//   - 所有群生效，不做防刷限流
-//
-// 行为树：
-//
-//	subtree.poke → Sequence(IsPokeOnSelfEvent, Action("pipeline.plugin.poke.main"))
-//
-// 管线（动态模式，支持运行时热替换）：
-//
-//	pipeline.plugin.poke.main → [pokePass]
-//
-// 事件信息读取：插件不依赖 bot/gateway 包，直接从黑板 Extra 读取事件键
-// （"bot.event.type" / "bot.event.data" / "self_id"，由 bot 层 OnMessage 写入）。
+// 插件 ID poke；无命令、无工具；不依赖对象存储、LLM、视觉服务、StateStore 或受限 KV。
 type PokePlugin struct {
 	logger *zap.Logger
 }
@@ -52,7 +36,6 @@ func (p *PokePlugin) Info() pluginpkg.PluginInfo {
 
 // OnInit 初始化戳一戳回复插件，注册 Pass、Pipeline 和 Subtree。
 func (p *PokePlugin) OnInit(ctx *pluginpkg.PluginContext) error {
-	// 注册 Pass（依赖直接注入 Pass 结构体）
 	passID := pluginpkg.PassID("poke", "poke")
 	pass := &pokePass{logger: p.logger}
 
@@ -60,20 +43,16 @@ func (p *PokePlugin) OnInit(ctx *pluginpkg.PluginContext) error {
 		return fmt.Errorf("register poke pass: %w", err)
 	}
 
-	// 跟踪 Pass，卸载时自动清理
 	ctx.Registry.TrackPass("poke", passID)
 
-	// 注册动态管线（通过 Pass ID 引用，支持运行时热替换）
 	pipelineID := pluginpkg.PipelineID("poke", "main")
 	pl := conduit.NewPipelineFromIDs(pipelineID, passID)
 	if err := ctx.Engine.RegisterPipeline(pl); err != nil {
 		return fmt.Errorf("register pipeline: %w", err)
 	}
 
-	// 跟踪 Pipeline，卸载时自动清理
 	ctx.Registry.TrackPipeline("poke", pipelineID)
 
-	// 注册行为树子树：戳蓝妹事件路由
 	subtree := conduit.NewSequence(
 		conduit.NewCondition(isPokeOnSelfEvent),
 		conduit.NewAction(pipelineID),
@@ -91,13 +70,9 @@ func (p *PokePlugin) OnStart(_ *pluginpkg.PluginContext) error { return nil }
 // OnStop 戳一戳回复插件无需清理资源。
 func (p *PokePlugin) OnStop(_ *pluginpkg.PluginContext) error { return nil }
 
-// ============================================================
-// 条件判断
-// ============================================================
-
 // 黑板事件键（由 bot 层 OnMessage 写入，键定义见 internal/bot/passes.go）。
 // 插件按"不导包"约定直接使用字符串字面量。
-const eventKeySelfID = "self_id" // string 机器人自身 ID
+const eventKeySelfID = "self_id"
 
 // pokeEventType 规范化戳一戳事件类型（对应 gateway 包的 EventTypePoke）。
 const pokeEventType = "poke"
@@ -115,10 +90,6 @@ func isPokeOnSelfEvent(ctx *conduit.MessageContext) bool {
 	selfID, _ := ctx.Extra[eventKeySelfID].(string)
 	return targetID != "" && targetID == selfID
 }
-
-// ============================================================
-// Pass 实现
-// ============================================================
 
 // pokeMessages 内置戳一戳回复文案（随机挑选）
 var pokeMessages = []string{
@@ -138,6 +109,11 @@ type pokePass struct {
 	logger *zap.Logger
 }
 
+// Execute 回复戳一戳：记录被戳日志后随机取一条文案，经出站段键 bot.send.segments
+// 组装为 [@戳人者 + 文案] 一条消息发送（at 段永远按 OneBot 12 语义用 user_id，
+// 协议差异由 hub.SendSegments 收敛）。
+// 由 plugin.poke.pipeline.main 在 isPokeOnSelfEvent 命中"戳蓝妹本人"事件后调用；
+// 事件缺 user_id（异常事件）时降级为不 @ 任何人的纯文本文案。
 func (pass *pokePass) Execute(ctx *conduit.MessageContext) error {
 	eventData, _ := ctx.Extra[eventKeyData].(map[string]any)
 	pass.logger.Info("poke: 被戳一戳",
@@ -158,8 +134,8 @@ func (pass *pokePass) Execute(ctx *conduit.MessageContext) error {
 		return nil
 	}
 
-	// 出站段：[@戳人者 + 随机文案]，永远按 OneBot 12 语义组装（at 段用 user_id），
-	// 协议差异（v11 的 at→qq、动作选择）由 bot 回调经 hub.SendSegments 收敛
+	// 出站段：[@戳人者 + 随机文案]，永远按 OneBot 12 语义组装（at 段用 user_id）；
+	// at 与正文间的空格由 hub.SendSegments 统一补齐，协议差异也在该层收敛
 	conduit.Set(ctx, sendSegmentsKey, []map[string]any{
 		{"type": "at", "data": map[string]any{"user_id": pokerID}},
 		{"type": "text", "data": map[string]any{"text": content}},

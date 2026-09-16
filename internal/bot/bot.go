@@ -34,10 +34,10 @@ type Bot struct {
 	engine        *conduit.Engine
 	plugins       *pluginpkg.Registry
 	gw            *gateway.Server
-	analyzer      *intent.Analyzer               // 意图分析器引用，供插件加载后刷新命令/工具列表
-	cmdSys        *command.System                // 命令系统引用
-	toolReg       *tool.Registry                 // 工具注册表引用
-	dedup         *Deduper                       // 消息去重（message_id SETNX）
+	analyzer      *intent.Analyzer // 供插件加载后刷新命令/工具列表
+	cmdSys        *command.System
+	toolReg       *tool.Registry
+	dedup         *Deduper
 	typingSpeedMS int                            // 打字速度（毫秒/字），0 禁用间隔
 	minIntervalMS int                            // 最小发送间隔（毫秒）
 	maxIntervalMS int                            // 最大发送间隔（毫秒），0 不限
@@ -50,7 +50,6 @@ type Bot struct {
 	objectStore   *media.ObjectStore             // RustFS 对象存储（nil 时内网图片转 base64 发送不可用）
 	logger        *zap.Logger
 
-	// ── 管理面板控制平面 ──
 	btMu           sync.RWMutex                     // 保护 btRoot 引用
 	btRoot         conduit.BTNode                   // 行为树根节点引用（供面板快照/可视化）
 	traceSink      TraceSink                        // 执行链路 Trace 落库回调（面板注入；nil 不采集）
@@ -193,13 +192,14 @@ type MediaDeps struct {
 // gwServer 为网关服务端（反向 WS，由 gateway 包提供）
 // mediaDeps 为多媒体处理依赖（nil 时媒体管线降级，仅记录）
 // topicMgr 为群聊话题管理器（nil 时 topic 系统未启用，群聊退化为全量意图分析）
+//
+// 返回：完成核心管线注册、行为树构建与动态管理员加载的 Bot 实例。
 func New(cfg *config.BotConfig, cmdSys *command.System, chatSvc *ai.ChatService, db *database.DB, store conduit.StateStore, llmClient llm.LLMClient, pluginReg *pluginpkg.Registry, gwServer *gateway.Server, toolReg *tool.Registry, logger *zap.Logger, mediaDeps *MediaDeps, topicMgr *topic.Manager) *Bot {
 	nick := cfg.NickName
 	if nick == "" {
 		nick = "蓝妹"
 	}
 
-	// ── Conduit 引擎 ──
 	// 超时 20s：意图分析/命令等慢路径（如 LLM 慢响应）在超时前完成，
 	// 避免"慢 LLM 调用超时被丢弃"导致群聊消息静默。
 	// WithTracing(true)：启用执行链路追踪，供管理面板 Trace 审计采集。
@@ -210,7 +210,7 @@ func New(cfg *config.BotConfig, cmdSys *command.System, chatSvc *ai.ChatService,
 		conduit.WithTracing(true),
 	)
 
-	// ── 构建意图分析器（LLM 不可用时自动降级为 IntentChat）──
+	// 意图分析器（LLM 不可用时自动降级为 IntentChat）。
 	// intentTimeout：意图分析独立短超时（默认 8s），LLM 故障时快速降级，
 	// 避免吃满整条消息的 20s 预算触发"迷糊"兜底回复。
 	intentTimeout := time.Duration(cfg.IntentTimeoutSeconds) * time.Second
@@ -218,7 +218,6 @@ func New(cfg *config.BotConfig, cmdSys *command.System, chatSvc *ai.ChatService,
 	toolDefs := BuildIntentTools(toolReg)
 	analyzer := intent.NewAnalyzer(llmClient, cmdDefs, toolDefs, intentTimeout)
 
-	// ── 注册 Pass 与管线 ──
 	// 核心管线全部以"动态管线"（PassID 引用）注册：
 	// 面板可可视化编辑管线 Pass 顺序（只替换 PassID 列表，Pass 实例复用），
 	// Pass 替换时引擎自动失效对应管线解析缓存（热更新）。
@@ -269,13 +268,11 @@ func New(cfg *config.BotConfig, cmdSys *command.System, chatSvc *ai.ChatService,
 		"pass.intent.command_exec",
 	))
 
-	// ── 互动事件预留节点（具体逻辑由插件子树实现）──
 	engine.MustRegisterPass("pass.notice.gate", &NoticeGatePass{Logger: logger})
 	engine.MustRegisterPipeline(conduit.NewPipelineFromIDs("pipeline.notice",
 		"pass.notice.gate",
 	))
 
-	// ── 多媒体处理管线（下载/缓存/理解 → RouterPass 路由）──
 	var mediaStore *media.ObjectStore
 	var visionSvc *ai.VisionService
 	if mediaDeps != nil {
@@ -293,7 +290,6 @@ func New(cfg *config.BotConfig, cmdSys *command.System, chatSvc *ai.ChatService,
 		"pass.fallback",
 	))
 
-	// ── 群聊话题管线（选择性放行；topicMgr 为 nil 时 TopicGatePass 全放行）──
 	engine.MustRegisterPass("pass.topic.gate", &TopicGatePass{Manager: topicMgr, Analyzer: analyzer, Logger: logger})
 	engine.MustRegisterPipeline(conduit.NewPipelineFromIDs("pipeline.topic_gate",
 		"pass.topic.gate",
@@ -303,7 +299,6 @@ func New(cfg *config.BotConfig, cmdSys *command.System, chatSvc *ai.ChatService,
 		"pass.topic.ignore",
 	))
 
-	// ── 创建 Bot 实例 ──
 	// 先于行为树构建：条件注册表（condByName/condByInstance）由 newCondition 填充，
 	// 供管理面板快照还原条件语义、编辑行为树时按名引用。
 	b := &Bot{
@@ -327,7 +322,6 @@ func New(cfg *config.BotConfig, cmdSys *command.System, chatSvc *ai.ChatService,
 		condByInstance: make(map[*conduit.Condition]string),
 	}
 
-	// ── 行为树核心分支 ──
 	// 段落分支优先级最高：流式段落重入消息直接走交付管线，不经过意图分析。
 	// 条件节点统一使用命名条件（b.newCondition）：实例与名称双向登记，快照可还原。
 	coreSegment := conduit.NewSequence(
@@ -361,7 +355,6 @@ func New(cfg *config.BotConfig, cmdSys *command.System, chatSvc *ai.ChatService,
 	// 不再需要 Condition 节点（避免 BT Tick 时分析结果尚未写入的时序问题）。
 	coreIntent := conduit.NewAction("pipeline.topic_gate")
 
-	// ── 插件系统 ──
 	if pluginReg != nil {
 		pluginReg.SetEngine(engine)
 		pluginReg.SetRebuildBT(func() {
@@ -391,6 +384,12 @@ func (b *Bot) isSuperUser(platform, userID string) bool {
 
 // AddSuperUser 向内存超管集合添加一个成员（并发安全）。
 // 调用方需先完成持久化，保证内存与存储一致。
+//
+// 参数：
+//   - platform：平台标识（qq/napcat/wechat/telegram）；为空时忽略
+//   - userID：平台用户 ID；为空时忽略
+//
+// 注意：仅更新内存集合，不写 bot_admin 表。
 func (b *Bot) AddSuperUser(platform, userID string) {
 	if platform == "" || userID == "" {
 		return
@@ -421,8 +420,6 @@ func (b *Bot) loadDynamicAdmins() {
 		b.logger.Info("bot: 动态管理员已加载", zap.Int("count", len(admins)))
 	}
 }
-
-// ── 管理员管理命令 ──
 
 // registerAdminCommands 注册管理员管理命令（/admin 帮助入口 + /添加管理员）。
 func (b *Bot) registerAdminCommands() {
@@ -566,15 +563,16 @@ func (b *Bot) Run() {
 }
 
 // OnMessage 实现 gateway.EventHandler 接口，将网关消息转为 Conduit 输入。
-// 使用异步 Submit + ResponseCallback，避免阻塞网关事件处理。
+// 异步 Submit + ResponseCallback，避免阻塞网关事件处理：入口完成空文本过滤、
+// message_id 去重（Deduper）与完整事件上下文注入（Extra，含多模态段/notice 信息）。
 //
-// 入口职责：
-//  1. 空文本消息过滤（但含媒体段或为事件的消息放行）
-//  2. message_id 去重（Deduper）
-//  3. 将完整事件上下文（含多模态段 / notice 信息）注入 InputMessage.Extra
+// 通知事件（notice/request）无文本内容，与普通消息分流：事件信息经 Extra 写入黑板
+// 供插件消费；事件不产生回复，出错也保持静默。
 //
-// 通知事件（notice/request）无文本内容，与普通消息分流：
-// 事件信息经 Extra 写入黑板供插件消费；事件不产生回复，出错也保持静默。
+// 参数：
+//   - msg：网关标准化消息；nil、普通消息且无文本与媒体段时直接丢弃
+//
+// 注意：被封禁用户的消息在提交引擎前静默丢弃；Submit 失败时仅普通消息回复兜底话术。
 func (b *Bot) OnMessage(msg *gateway.NormalizedMessage) {
 	if msg == nil {
 		return
@@ -583,14 +581,14 @@ func (b *Bot) OnMessage(msg *gateway.NormalizedMessage) {
 	if msg.MessageType == gateway.MessageTypeMessage && msg.Content == "" && len(msg.Segments) == 0 {
 		return
 	}
-	// ── 消息去重：重复 message_id 直接丢弃（存储故障时放行）──
+	// 消息去重：重复 message_id 直接丢弃（存储故障时放行）
 	if b.dedup != nil && !b.dedup.Accept(msg) {
 		b.logger.Debug("bot: 重复消息已丢弃",
 			zap.String("conn", msg.ConnID), zap.String("message_id", msg.MessageID))
 		return
 	}
 
-	// ── 用户封禁拦截：被封禁用户的全部消息静默丢弃（不进入行为树）──
+	// 用户封禁拦截：被封禁用户的全部消息静默丢弃（不进入行为树）
 	if b.db != nil {
 		banned, err := b.db.IsUserBanned(context.Background(), string(msg.Platform), msg.UserID)
 		if err != nil {
@@ -623,14 +621,13 @@ func (b *Bot) OnMessage(msg *gateway.NormalizedMessage) {
 			KeySelfID:         msg.SelfID,
 			KeyIsSuperUser:    isSuperUser,
 			KeyImageURLs:      msg.ImageURLs,
-			// ── 事件输入（只读 Extra）──
-			KeyMessageType:  msg.MessageType,
-			KeySegments:     msg.Segments,
-			KeyMimeTypes:    msg.MimeTypes,
-			KeyAtTargets:    msg.AtTargets,
-			KeyEventType:    msg.EventType,
-			KeyEventSubType: msg.EventSubType,
-			KeyEventData:    msg.EventData,
+			KeyMessageType:    msg.MessageType,
+			KeySegments:       msg.Segments,
+			KeyMimeTypes:      msg.MimeTypes,
+			KeyAtTargets:      msg.AtTargets,
+			KeyEventType:      msg.EventType,
+			KeyEventSubType:   msg.EventSubType,
+			KeyEventData:      msg.EventData,
 		},
 	}
 	// 事件消息（notice/request）：出错也绝不向群里发消息（事件落空发"迷糊话术"是 bug）
@@ -687,18 +684,16 @@ func (b *Bot) makeResponseCallback(msg *gateway.NormalizedMessage) func(*conduit
 			return
 		}
 		b.emitTrace(ctx, nil, msg)
-		// 正常回复：发送所有输出消息
 		b.flushOutput(ctx, msg)
 	}
 }
 
 // flushOutput 发送管线产生的输出：出站段优先、纯文本兜底。
 //
-//   - 插件经 conduit.Set 写入出站段键（KeySendSegments）→ 按段列表发送（at/text/image 组合）
-//   - 否则遍历 ctx.Output 逐条纯文本回复（历史行为，老插件零影响）
-//
-// 纯文本回复在群聊中若为明确指向性回复（命令/工具/at/话题提及），
-// 会自动 at 请求者，防止"这回复给谁的"歧义（签到等插件回复即受益于此）。
+// 插件经 conduit.Set 写入出站段键（KeySendSegments）时按段列表发送（at/text/image 组合），
+// 否则遍历 ctx.Output 逐条纯文本回复（历史行为，老插件零影响）。
+// 纯文本回复在群聊中若为明确指向性回复（命令/工具/at/话题提及），会自动 at 请求者，
+// 防止"这回复给谁的"歧义（签到等插件回复即受益于此）。
 func (b *Bot) flushOutput(ctx *conduit.MessageContext, msg *gateway.NormalizedMessage) {
 	if b.trySendSegments(ctx, msg) {
 		return
@@ -748,19 +743,12 @@ func (b *Bot) trySendSegments(ctx *conduit.MessageContext, msg *gateway.Normaliz
 	return true
 }
 
-// streamSegments 消费段落通道，逐条创建子消息重入引擎。
+// streamSegments 消费段落通道，逐段派生子消息（NewChildInput + KeyIsSegment）重入引擎，
+// 顺序投递：前一段发送完成（<-done）后才提交下一段；段落间隔由 calcSegmentInterval
+// 按字数动态计算以模拟真人打字节奏，避免 QQ 等平台快速连发导致乱序。
 //
-// 每个段落通过 NewChildInput 派生子消息，标记 KeyIsSegment 后 Submit 到引擎。
-// 段落顺序投递：前一段的回调完成后才提交下一段（<-done），保证天然时序。
-// 段落间发送间隔由 calcSegmentInterval 按下一段字数动态计算，模拟真人打字节奏，
-// 避免 QQ 等平台短时间内快速发送消息导致乱序。
-// 流式 goroutine 关闭通道后，range 循环自然退出。
-//
-// 打字时间算法（v2）：间隔约束的是「距离上一次实际发送的时间」，而非
-// "入队后必须等待这么长时间"。LLM 流式生成期间已经消耗了大量时间（用户感知为
-// "正在打字"），因此后续段落到达时若距上次发送已超过打字间隔，则立即发送、
-// 不再额外等待；仅当剩余等待为正时才 Sleep。首段在 LLM 生成期间已"打完字"，
-// 直接发送（lastSentAt 以首段为基准启动计时）。
+// 间隔约束的是「距上次实际发送的时间」而非「入队等待时间」：LLM 流式生成耗时已计入打字时间，
+// 因此后续段落到达时若距上次发送已超过间隔则直接发送，仅剩余等待为正时才 Sleep。
 func (b *Bot) streamSegments(ctx *conduit.MessageContext, msg *gateway.NormalizedMessage) {
 	segCh, ok := conduit.Get[chan string](ctx, KeyStreamChannel)
 	if !ok {
@@ -770,15 +758,14 @@ func (b *Bot) streamSegments(ctx *conduit.MessageContext, msg *gateway.Normalize
 	}
 
 	first := true
-	// 明确指向性回复（at/话题提及/命令等）在群聊中首段 at 请求者（任务4）；
+	// 明确指向性回复（at/话题提及/命令等）在群聊中仅首段 at 请求者；
 	// 计算一次复用，后续段落不再 at。
 	directed := b.isDirected(ctx, msg)
-	// lastSentAt 记录上一次段落实际发送完成的时间（在 <-done 后读取，线程安全）；
-	// 首段发送后初始化，后续段落按 "lastSentAt + 打字间隔" 计算最早可发送时间。
+	// lastSentAt 记录上一次段落实际发送完成的时间（<-done 后更新，无并发读写）；
+	// 后续段落按 "lastSentAt + 打字间隔" 计算最早可发送时间。
 	var lastSentAt time.Time
 	for segment := range segCh {
-		// 首段无延迟（LLM 生成期间已"打字"完毕）；后续段落等待「距上次发送」的
-		// 打字间隔：若 LLM 生成耗时已超过打字间隔则直接发送，仅剩余时间为正才 Sleep。
+		// 首段无延迟（生成期间已"打字"完毕），后续段落按「距上次发送」的剩余时间等待。
 		if !first && !lastSentAt.IsZero() {
 			if d := b.calcSegmentInterval(segment); d > 0 {
 				target := lastSentAt.Add(d)
@@ -829,12 +816,9 @@ func (b *Bot) streamSegments(ctx *conduit.MessageContext, msg *gateway.Normalize
 
 // calcSegmentInterval 根据段落文本长度计算发送间隔。
 //
-// 算法：基础间隔 = 字数 × typingSpeedMS，
-// 先叠加 ±jitterPct 的随机抖动（模拟真人打字的不均匀节奏），
-// 再 clamp 到 [minIntervalMS, maxIntervalMS]，
-// 保证抖动后仍不超过上限（长消息不会被无限拖慢）。
-//
-// 返回 0 表示不延迟（typingSpeedMS 为 0 时禁用整个间隔机制）。
+// 基础间隔 = 字数 × typingSpeedMS，叠加 ±jitterPct 随机抖动（模拟真人打字的不均匀节奏），
+// 再 clamp 到 [minIntervalMS, maxIntervalMS]（长消息不被无限拖慢）。
+// 返回 0 表示不延迟（typingSpeedMS 为 0 时整个间隔机制禁用）。
 func (b *Bot) calcSegmentInterval(text string) time.Duration {
 	if b.typingSpeedMS <= 0 {
 		return 0
@@ -843,7 +827,7 @@ func (b *Bot) calcSegmentInterval(text string) time.Duration {
 	charCount := utf8.RuneCountInString(text)
 	baseMS := charCount * b.typingSpeedMS
 
-	// 叠加抖动：实际间隔 = base × (1 + uniform[-jitter, +jitter])
+	// 叠加抖动：实际间隔在 base 上下浮动 ±jitterPct
 	if b.jitterPct > 0 {
 		jitter := (rand.Float64()*2 - 1) * b.jitterPct // [-jitterPct, +jitterPct]
 		baseMS = int(float64(baseMS) * (1 + jitter))
@@ -946,11 +930,9 @@ func (b *Bot) replyQuoteSegment(msg *gateway.NormalizedMessage) gateway.Normaliz
 	return gateway.NormalizedSegment{Type: "reply", Data: data}
 }
 
-// ── 会话最近消息追踪（供"回复前会话已有新消息 → 引用并 at"判定）──
-
 // sessionInfo 记录某会话最近一条入站消息，用于判定回复时是否已出现新消息。
 type sessionInfo struct {
-	LastMsgID string // 最近一条消息的 ID
+	LastMsgID string
 	LastMsgAt time.Time
 	IsGroup   bool
 }

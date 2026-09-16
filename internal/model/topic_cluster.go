@@ -3,7 +3,7 @@ package model
 import "time"
 
 // TopicCluster 对应 topic_clusters 表（L2 层）
-// 多条 episode_summaries 聚合为一个主题，向量化后存入 Milvus
+// 多条 episode_summaries 聚合为一个主题。
 type TopicCluster struct {
 	ID           int64     `json:"id"              gorm:"primaryKey;autoIncrement;comment:主题ID"`
 	UserID       int64     `json:"user_id"         gorm:"index:idx_topic_user;not null;comment:用户ID"`

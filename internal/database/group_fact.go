@@ -15,13 +15,10 @@ import (
 // 导致同 key 事实的 confirm/矛盾更新互相覆盖（lost update）。
 var groupFactMu sync.Map // groupID -> *sync.Mutex
 
-// MergeGroupFacts 将新抽取的群事实并入该群画像（三态合并）。
+// MergeGroupFacts 将新抽取的群事实并入该群画像（三态合并，按 (group_id, key) upsert）。
 //
-// 复用 model.MergeFacts：相同 (key, value) 重复确认提升置信度（封顶 0.98）；
-// 同 key 不同 value 视为矛盾降置信（保底 0.2）并保留旧值到 Conflict；
-// 新 key 追加。group_id 与 key 组成唯一约束，按行 upsert。
-//
-// 并发安全：按 groupID 加锁串行化读-改-写，避免并发归档丢更新。
+// 复用 model.MergeFacts：同值重复确认提升置信度；同 key 异值视为矛盾、降置信并保留旧值到
+// Conflict；新 key 追加。按 groupID 加锁串行化"读-改-写"，避免并发归档丢更新（lost update）。
 func (db *DB) MergeGroupFacts(ctx context.Context, groupID string, incoming []model.FactItem) error {
 	if groupID == "" || len(incoming) == 0 {
 		return nil

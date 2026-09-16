@@ -2,19 +2,23 @@ package gateway
 
 import "strconv"
 
-// ── 规范化事件类型 ──
-//
-// 通知事件经 NormalizeV12/V11 归一化后的统一类型名（写入 NormalizedMessage.EventType）。
-// 覆盖全部常见 notice 事件（进群/退群/好友/戳一戳/撤回/禁言/解禁）；
-// 后续新增事件类型时在此补充常量与映射即可。
+// 规范化事件类型：通知事件经 NormalizeV12/V11 归一化后的统一类型名（写入 NormalizedMessage.EventType）。
+// 覆盖全部常见 notice 事件（进群/退群/好友/戳一戳/撤回/禁言/解禁）；新增事件类型时在此补充常量与映射。
 const (
-	EventTypeGroupIncrease  = "group_increase"  // 新人入群
-	EventTypeGroupDecrease  = "group_decrease"  // 退群/被踢
+	// EventTypeGroupIncrease 新人入群（机器人自己被拉入群时该事件被丢弃）。
+	EventTypeGroupIncrease = "group_increase" // 新人入群
+	// EventTypeGroupDecrease 成员退群或被踢。
+	EventTypeGroupDecrease = "group_decrease" // 退群/被踢
+	// EventTypeFriendIncrease 好友添加。
 	EventTypeFriendIncrease = "friend_increase" // 好友添加
-	EventTypePoke           = "poke"            // 戳一戳
-	EventTypeGroupRecall    = "group_recall"    // 消息撤回
-	EventTypeGroupBan       = "group_ban"       // 禁言
-	EventTypeGroupUnban     = "group_unban"     // 解除禁言
+	// EventTypePoke 戳一戳（OneBot 11 为 notify + sub_type=poke）。
+	EventTypePoke = "poke" // 戳一戳
+	// EventTypeGroupRecall 消息撤回（OneBot 12 兼容 detail_type group_recall / group_message_delete）。
+	EventTypeGroupRecall = "group_recall" // 消息撤回
+	// EventTypeGroupBan 成员被禁言。
+	EventTypeGroupBan = "group_ban" // 禁言
+	// EventTypeGroupUnban 解除禁言（OneBot 12 子类型 lift_ban / unban，OneBot 11 为 lift_ban）。
+	EventTypeGroupUnban = "group_unban" // 解除禁言
 )
 
 // mapNoticeV12 将 OneBot 12 通知事件的 detail_type 映射为规范化事件类型。
@@ -29,10 +33,10 @@ func mapNoticeV12(evt *EventV12) (string, bool) {
 		return EventTypeFriendIncrease, true
 	case "group_recall", "group_message_delete":
 		// 兼容两套 OneBot 12 实现：规范 detail_type 为 group_message_delete，
-		// 部分实现仍沿用早期 draft 的 group_recall
+		// 部分实现仍沿用早期 draft 的 group_recall。
 		return EventTypeGroupRecall, true
 	case "group_ban":
-		// 子类型兼容 lift_ban（规范/OneBot 11 沿用）与 unban（部分实现扩展）
+		// 子类型兼容 lift_ban（规范/OneBot 11 沿用）与 unban（部分实现扩展）。
 		if evt.SubType == "lift_ban" || evt.SubType == "unban" {
 			return EventTypeGroupUnban, true
 		}
@@ -68,29 +72,28 @@ func mapNoticeV11(evt *EventV11) (string, bool) {
 	return "", false
 }
 
-// normalizeNoticeV12 将 OneBot 12 通知事件标准化为事件三元组。
-// 由 NormalizeV12 在 Type == "notice" 时调用；仅接收白名单内的事件（见 mapNoticeV12）。
-// 返回 (事件类型, 事件子类型, 事件数据, 是否支持)。
+// normalizeNoticeV12 将 OneBot 12 通知事件标准化为事件三元组（类型、子类型、数据）。
+// 白名单外的事件返回 ok=false（见 mapNoticeV12），机器人自入群亦被丢弃。
 func normalizeNoticeV12(evt *EventV12) (eventType, subType string, data map[string]any, ok bool) {
 	eventType, ok = mapNoticeV12(evt)
 	if !ok {
 		return "", "", nil, false
 	}
-	// 机器人自入群（被拉进自己的群），丢弃
+	// 机器人自入群（被拉进自己的群），丢弃。
 	if eventType == EventTypeGroupIncrease && evt.UserID == evt.ResolveSelfID() {
 		return "", "", nil, false
 	}
 	return eventType, evt.SubType, noticeEventDataV12(evt), true
 }
 
-// normalizeNoticeV11 将 OneBot 11 通知事件标准化为事件三元组。
-// 由 NormalizeV11 在 PostType == "notice" 时调用；仅接收白名单内的事件（见 mapNoticeV11）。
+// normalizeNoticeV11 将 OneBot 11 通知事件标准化为事件三元组（类型、子类型、数据）。
+// 白名单外的事件返回 ok=false（见 mapNoticeV11），机器人自入群亦被丢弃。
 func normalizeNoticeV11(evt *EventV11) (eventType, subType string, data map[string]any, ok bool) {
 	eventType, ok = mapNoticeV11(evt)
 	if !ok {
 		return "", "", nil, false
 	}
-	// 机器人自入群（被拉进自己的群），丢弃
+	// 机器人自入群（被拉进自己的群），丢弃。
 	if eventType == EventTypeGroupIncrease && evt.UserID == evt.SelfID {
 		return "", "", nil, false
 	}

@@ -19,7 +19,9 @@ const tokenIssuer = "lanmei-manager"
 type TokenType string
 
 const (
-	TokenTypeAccess TokenType = "access"  // 常规访问
+	// TokenTypeAccess 常规访问令牌：登录后签发，用于 API 请求鉴权。
+	TokenTypeAccess TokenType = "access" // 常规访问
+	// TokenTypeStepUp 高危操作二次认证令牌（有效期 stepUpTTL），仅用于单次敏感操作授权。
 	TokenTypeStepUp TokenType = "step_up" // 高危操作二次认证（短效）
 )
 

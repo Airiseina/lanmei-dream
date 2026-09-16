@@ -11,14 +11,12 @@ import type { PrimaryTableCol } from 'tdesign-vue-next'
 
 const auth = useAuthStore()
 
-// Passkey 列表列
 const passkeyColumns: PrimaryTableCol[] = [
   { colKey: 'name', title: '名称' },
   { colKey: 'last_used_at', title: '最后使用' },
   { colKey: 'ops', title: '操作', width: 80 },
 ]
 
-// 会话列表列
 const sessionColumns: PrimaryTableCol[] = [
   { colKey: 'device', title: '设备' },
   { colKey: 'ip', title: 'IP' },
@@ -28,7 +26,6 @@ const sessionColumns: PrimaryTableCol[] = [
   { colKey: 'ops', title: '操作', width: 90, align: 'center' },
 ]
 
-// ── 修改密码 ──
 const pwdForm = ref({ oldPassword: '', newPassword: '', confirm: '' })
 const pwdLoading = ref(false)
 
@@ -46,7 +43,6 @@ async function changePassword() {
   }
 }
 
-// ── TOTP ──
 const totpSetup = ref<{ secret: string; otpauthUrl: string } | null>(null)
 const totpCode = ref('')
 
@@ -76,7 +72,6 @@ async function removeTOTP() {
   }
 }
 
-// ── Passkey ──
 async function registerPasskey() {
   if (!window.isSecureContext || !window.PublicKeyCredential) {
     MessagePlugin.warning('当前环境不支持 Passkey（需要 HTTPS 域名）')
@@ -105,7 +100,6 @@ async function removePasskey(credentialId: string) {
   }
 }
 
-// ── 会话管理 ──
 const sessions = ref<AuthSession[]>([])
 const sessionLoading = ref(false)
 
@@ -127,7 +121,6 @@ async function revokeSession(id: number) {
   await loadSessions()
 }
 
-// ── step-up 联动 ──
 const stepUpVisible = ref(false)
 const pendingAction = ref<((token: string) => Promise<void>) | null>(null)
 
@@ -162,7 +155,6 @@ onMounted(async () => {
     </div>
 
     <t-row :gutter="[16, 16]">
-      <!-- 账号信息 -->
       <t-col :xs="24" :lg="12">
         <t-card title="账号信息" class="h-full">
           <t-descriptions :column="1">
@@ -187,7 +179,6 @@ onMounted(async () => {
         </t-card>
       </t-col>
 
-      <!-- 修改密码 -->
       <t-col :xs="24" :lg="12">
         <t-card title="修改密码" class="h-full">
           <t-form label-align="top">
@@ -207,7 +198,6 @@ onMounted(async () => {
     </t-row>
 
     <t-row :gutter="[16, 16]" class="mt-16">
-      <!-- TOTP -->
       <t-col :xs="24" :lg="12">
         <t-card title="两步验证（TOTP）" class="h-full">
           <template v-if="totpSetup">
@@ -241,7 +231,6 @@ onMounted(async () => {
         </t-card>
       </t-col>
 
-      <!-- Passkey -->
       <t-col :xs="24" :lg="12">
         <t-card title="Passkey（WebAuthn）" class="h-full">
           <p class="desc">
@@ -262,7 +251,6 @@ onMounted(async () => {
       </t-col>
     </t-row>
 
-    <!-- 会话管理 -->
     <t-card title="活跃会话" class="mt-16">
       <t-table :data="sessions" :loading="sessionLoading" row-key="id" size="medium" :columns="sessionColumns">
         <template #device="{ row }">

@@ -128,7 +128,6 @@ func (s *Service) handleKBAdd(ctx context.Context, argsJSON string) (string, err
 		return "请提供要录入的 content 参数", nil
 	}
 
-	// 定位目标本地知识库
 	target := s.findLocalBase(args.KnowledgeBaseID)
 	if target == nil {
 		return "当前未配置本地知识库，无法录入", nil

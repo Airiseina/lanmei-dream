@@ -5,7 +5,6 @@
 //  - 会话复用 / 刷新失败时触发登出回调
 import type { ApiErrorBody } from '@/types/api'
 
-// localStorage 键名
 export const LS_ACCESS = 'lanmei_access_token'
 export const LS_REFRESH = 'lanmei_refresh_token'
 export const LS_CSRF = 'lanmei_csrf_token'
@@ -118,7 +117,6 @@ export async function request<T>(path: string, opts: RequestOptions = {}): Promi
 
   let res = await doFetch()
 
-  // 401 → 尝试刷新并重放一次
   if (res.status === 401 && !noRefresh) {
     if (await refreshAccessToken()) {
       const t = getAccessToken()

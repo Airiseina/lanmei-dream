@@ -5,11 +5,10 @@ import (
 	"github.com/gofiber/fiber/v3/middleware/sse"
 )
 
-// TraceStream 实时推送执行链路 Trace（SSE）。
-// 使用 Fiber 官方 SSE middleware：自动设置流式响应头、逐条 Flush、
-// 心跳保活（默认 15s 注释行）与断连检测。
-// 该路由位于受保护分组（Bearer + CSRF），前端需用 fetch + ReadableStream
-// 携带 Authorization / X-CSRF-Token 头读取，断开即取消订阅。
+// TraceStream 以 SSE 推送执行链路 Trace：Fiber 官方 SSE middleware 负责
+// 流式响应头、逐条 Flush、心跳保活（默认 15s 注释行）与断连检测。
+// 路由位于受保护分组（Bearer + CSRF），前端需用 fetch + ReadableStream
+// 携带 Authorization / X-CSRF-Token 读取，断开即取消订阅。
 func (h *Handler) TraceStream(c fiber.Ctx) error {
 	ch := h.traceCol.Subscribe()
 	defer h.traceCol.Unsubscribe(ch)

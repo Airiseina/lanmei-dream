@@ -7,12 +7,9 @@ import (
 	"github.com/zrurf/conduit"
 )
 
-// buildNode 将快照节点（编辑 DSL）校验并转换为行为树节点。
-// 校验规则：
-//   - selector/sequence 的子节点递归构建，任一失败整体失败；
-//   - condition 必须引用已注册的命名条件（杜绝注入任意函数）；
-//   - action 引用的管线必须已注册；
-//   - subtree 引用的子树必须已注册（防止悬空引用导致静默失败）。
+// buildNode 将快照节点（编辑 DSL）校验并转换为行为树节点：子节点递归构建，任一失败即整体失败；
+// condition 只能引用已注册的命名条件（杜绝注入任意函数）；action/subtree 引用的管线与子树必须已注册，
+// 避免悬空引用导致静默失败。
 func (c *Controller) buildNode(node *Node) (conduit.BTNode, error) {
 	if node == nil {
 		return nil, errors.New("control: 节点不能为空")
@@ -65,11 +62,8 @@ func (c *Controller) buildNode(node *Node) (conduit.BTNode, error) {
 	}
 }
 
-// buildPipeline 将管线编辑 DSL 校验并转换为动态管线。
-// 校验规则：
-//   - 仅允许替换已存在的管线（禁止面板创建任意新管线）；
-//   - 静态管线（含不可序列化 Pass 实例）只读，禁止编辑；
-//   - Pass 列表不能为空，且每个 Pass ID 必须已注册。
+// buildPipeline 将管线编辑 DSL 校验并转换为动态管线：仅允许替换已存在的管线（禁止面板新建任意管线）；
+// 静态管线（含不可序列化 Pass 实例）只读，禁止编辑；Pass 列表非空且每个 Pass ID 必须已注册。
 func (c *Controller) buildPipeline(view *PipelineView) (*conduit.Pipeline, error) {
 	if view == nil || view.ID == "" {
 		return nil, errors.New("control: 管线 ID 不能为空")

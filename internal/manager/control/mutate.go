@@ -16,9 +16,8 @@ const (
 	RevisionSubtrees     = "subtrees"      // 子树列表 DSL 快照
 )
 
-// ApplyBehaviorTree 应用行为树编辑：
-// 先完整校验，再保存"变更前"快照为可回滚修订，最后原子替换主树。
-// 返回应用后的最新快照（含校验后的实际树结构）。
+// ApplyBehaviorTree 应用行为树编辑：先完整校验，再将「变更前」快照保存为可回滚修订，
+// 最后原子替换主树；返回应用后的最新快照（含校验后的实际树结构）。
 func (c *Controller) ApplyBehaviorTree(ctx context.Context, node *Node, comment string, authorID *uint, authorName string) (*Snapshot, error) {
 	root, err := c.buildNode(node)
 	if err != nil {
@@ -38,8 +37,7 @@ func (c *Controller) ApplyBehaviorTree(ctx context.Context, node *Node, comment 
 	return c.Snapshot(), nil
 }
 
-// ApplyPipelines 应用管线编辑（批量）：
-// 全部管线先通过校验（任一非法即整体拒绝），再统一替换，保证原子性。
+// ApplyPipelines 应用管线编辑（批量）：先全部校验，任一非法即整体拒绝；再统一替换，保证原子性。
 func (c *Controller) ApplyPipelines(ctx context.Context, views []PipelineView, comment string, authorID *uint, authorName string) (*Snapshot, error) {
 	if len(views) == 0 {
 		return nil, fmt.Errorf("control: 管线列表不能为空")
@@ -68,8 +66,7 @@ func (c *Controller) ApplyPipelines(ctx context.Context, views []PipelineView, c
 	return c.Snapshot(), nil
 }
 
-// ApplySubtrees 应用子树编辑（批量）：
-// 全部子树先完成校验（任一非法即整体拒绝），再统一替换引擎子树注册表，保证原子性。
+// ApplySubtrees 应用子树编辑（批量）：先全部校验，任一非法即整体拒绝；再统一替换引擎子树注册表。
 func (c *Controller) ApplySubtrees(ctx context.Context, views []SubtreeView, comment string, authorID *uint, authorName string) (*Snapshot, error) {
 	if len(views) == 0 {
 		return nil, fmt.Errorf("control: 子树列表不能为空")
@@ -105,8 +102,8 @@ func (c *Controller) ApplySubtrees(ctx context.Context, views []SubtreeView, com
 	return c.Snapshot(), nil
 }
 
-// Rollback 按修订 ID 回滚行为树或管线到历史版本。
-// 回滚本身也会保存一条修订（审计留痕），由调用方在审计日志中记录。
+// Rollback 按修订 ID 将行为树、管线或子树回滚到历史版本。
+// 回滚经 Apply* 重新应用，因此本身也会保存一条新修订（审计留痕），由调用方在审计日志中记录。
 func (c *Controller) Rollback(ctx context.Context, revisionID uint, comment string, authorID *uint, authorName string) (*Snapshot, error) {
 	rev, err := c.store.GetConfigRevision(ctx, revisionID)
 	if err != nil {

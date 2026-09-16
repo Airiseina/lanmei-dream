@@ -16,38 +16,21 @@ import (
 	"go.uber.org/zap"
 )
 
-// ============================================================
-// MusicPlugin 网易云点歌插件
-// ============================================================
-
-// MusicPlugin 实现网易云音乐搜索与点歌功能。
+// MusicPlugin 实现网易云音乐搜索与点歌：/music 歌曲名 搜索并展示前 3 首，用户回复序号 1/2/3 播放。
 //
-// 功能：
-//   - /music 歌曲名 → 搜索网易云音乐，展示前 3 首结果
-//   - 用户回复序号（1/2/3，可 @机器人 或直接发）→ 播放所选歌曲（仅当事人可触发）
-//   - 会话 20 秒后自动过期
-//   - 会话按群+用户隔离
+// 选择会话按群+用户隔离、20 秒过期，且只有发起搜索的当事人能触发，避免仅数字的对话被误判。
 //
-// 行为树：
-//
-//	subtree.music → Selector [
-//	  Sequence(isMusicCommand, Action(pipeline.music.search))
-//	  Sequence(isMusicSelect, Action(pipeline.music.select))
-//	]
-//
-// 管线：
-//
-//	pipeline.music.search  → [musicSearchPass]
-//	pipeline.music.select  → [musicSelectPass]
+// 插件 ID music；命令 /music <歌曲名>，工具 music_search；
+// 依赖外部 ncm-api（ncmURL 为空时搜索与取音频均提示「音乐服务未配置」）与 StateStore
+// （ctx.Store，未注入时会话读写失败，序号选择无法命中）；musicSendMode 控制发送方式（空值按 auto）。
 type MusicPlugin struct {
-	ncmURL        string // 网易云音乐 API 基础 URL
+	ncmURL        string
 	musicSendMode string // 点歌发送方式：auto/card/link
 	store         conduit.StateStore
 	logger        *zap.Logger
 }
 
-// NewMusicPlugin 创建网易云点歌插件。
-// ncmURL 为网易云音乐 API 基础 URL（如 http://ncm-api:3000），为空时插件仍可初始化但使用时报错。
+// NewMusicPlugin 创建网易云点歌插件。ncmURL 为空时插件仍可初始化，但使用时会报错；
 // musicSendMode 为点歌结果发送方式（auto/card/link），用于适配不同反向代理工具。
 func NewMusicPlugin(ncmURL, musicSendMode string, logger *zap.Logger) *MusicPlugin {
 	return &MusicPlugin{ncmURL: ncmURL, musicSendMode: musicSendMode, logger: logger}
@@ -78,8 +61,6 @@ func (p *MusicPlugin) Info() pluginpkg.PluginInfo {
 func (p *MusicPlugin) OnInit(ctx *pluginpkg.PluginContext) error {
 	p.store = ctx.Store
 
-	// ── 注册 Pass ──
-
 	searchPassID := pluginpkg.PassID("music", "search")
 	searchPass := &musicSearchPass{ncmURL: p.ncmURL, store: p.store, logger: p.logger}
 
@@ -96,8 +77,6 @@ func (p *MusicPlugin) OnInit(ctx *pluginpkg.PluginContext) error {
 	}
 	ctx.Registry.TrackPass("music", selectPassID)
 
-	// ── 注册管线 ──
-
 	searchPipelineID := pluginpkg.PipelineID("music", "search")
 	searchPl := conduit.NewPipelineFromIDs(searchPipelineID, searchPassID)
 	if err := ctx.Engine.RegisterPipeline(searchPl); err != nil {
@@ -112,8 +91,7 @@ func (p *MusicPlugin) OnInit(ctx *pluginpkg.PluginContext) error {
 	}
 	ctx.Registry.TrackPipeline("music", selectPipelineID)
 
-	// ── 注册行为树子树 ──
-	// 搜索命令优先匹配；若不匹配则检查是否为序号选择（需有活跃会话）
+	// 搜索命令优先匹配，不匹配时才检查序号选择（需要活跃会话）
 	subtree := conduit.NewSelector(
 		conduit.NewSequence(
 			conduit.NewCondition(isMusicCommand),
@@ -137,24 +115,15 @@ func (p *MusicPlugin) OnStart(_ *pluginpkg.PluginContext) error { return nil }
 // OnStop 网易云点歌插件无需清理资源。
 func (p *MusicPlugin) OnStop(_ *pluginpkg.PluginContext) error { return nil }
 
-// ============================================================
-// 条件判断
-// ============================================================
-
 // isMusicCommand 判断消息是否为 /music 命令。
 func isMusicCommand(ctx *conduit.MessageContext) bool {
 	msg := strings.TrimSpace(ctx.RawMsg)
 	return strings.HasPrefix(msg, "/music ") && len(strings.TrimSpace(strings.TrimPrefix(msg, "/music"))) > 0
 }
 
-// isMusicSelect 返回一个条件函数，判断消息是否为点歌序号选择（1/2/3）且存在活跃会话。
-// 使用闭包捕获 StateStore 以检查会话。
-//
-// 触发规则：
-//   - 群聊与私聊均可直接发序号（1/2/3）触发，无需 @ 机器人；
-//   - 会话按群+用户隔离（musicSessionKey），仅发起点歌的当事人能触发，
-//     非当事人因无活跃会话而不会误触发；
-//   - 会话 20s 内有效（musicSessionTTL）。
+// isMusicSelect 返回判断序号选择（1/2/3）的条件函数，闭包捕获 StateStore 用于检查活跃会话。
+// 序号无需 @ 机器人即可触发；会话按群+用户隔离（musicSessionKey）且 20s 过期（musicSessionTTL），
+// 因此只有发起点歌的当事人能命中，非当事人不会误触发。
 func isMusicSelect(store conduit.StateStore) func(*conduit.MessageContext) bool {
 	return func(ctx *conduit.MessageContext) bool {
 		raw := strings.TrimSpace(ctx.RawMsg)
@@ -172,9 +141,9 @@ func isMusicSelect(store conduit.StateStore) func(*conduit.MessageContext) bool 
 	}
 }
 
-// extractSelection 从消息中提取独立出现的序号（1/2/3）。
-// 容忍 @机器人 等前缀（如 "@2055194291 1" → "1"）；按空白切词后仅接受单个
-// 1/2/3 的完整 token，忽略 @QQ号 等长数字串（否则提取到 "20551942911" 导致选择失效）。
+// extractSelection 从消息中提取独立出现的序号（1/2/3），容忍 @机器人 等前缀。
+// 按空白切词后仅接受独立的 1/2/3 token，忽略 @QQ号 等长数字串，
+// 否则会提取到 "20551942911" 这类粘连值导致选择失效。
 func extractSelection(msg string) string {
 	for _, f := range strings.Fields(msg) {
 		f = strings.Trim(f, "，。,.、!！?？")
@@ -184,10 +153,6 @@ func extractSelection(msg string) string {
 	}
 	return ""
 }
-
-// ============================================================
-// 会话数据结构
-// ============================================================
 
 // musicSession 点歌会话数据，存储在 StateStore 中。
 type musicSession struct {
@@ -211,10 +176,6 @@ const musicSessionTTL = 20 * time.Second
 func musicSessionKey(groupID, userID string) string {
 	return pluginpkg.StoreKey("music", "session:"+groupID+":"+userID)
 }
-
-// ============================================================
-// 网易云音乐 API 响应结构
-// ============================================================
 
 // ncmSearchResponse 网易云音乐搜索 API 响应。
 type ncmSearchResponse struct {
@@ -245,12 +206,8 @@ type ncmAlbum struct {
 	Name string `json:"name"`
 }
 
-// ============================================================
-// NCM API 搜索
-// ============================================================
-
 // searchNCM 调用网易云音乐搜索 API，返回前 limit 首结果。
-// keyword 必须 URL 编码（中文关键词直接拼接会导致服务端返回 400）。
+// keyword 必须 URL 编码，中文关键词直接拼接会导致服务端返回 400。
 func searchNCM(ctx context.Context, ncmURL, keyword string, limit int) ([]ncmSong, error) {
 	url := fmt.Sprintf("%s/search?keywords=%s&limit=%d", ncmURL, url.QueryEscape(keyword), limit)
 
@@ -321,10 +278,6 @@ func getSongURL(ctx context.Context, ncmURL string, songID int64) (string, error
 	return "", fmt.Errorf("no audio url")
 }
 
-// ============================================================
-// 辅助函数
-// ============================================================
-
 // formatDuration 将毫秒时长格式化为 m:ss。
 func formatDuration(ms int64) string {
 	totalSec := ms / 1000
@@ -350,10 +303,6 @@ func ncmSongToMusicSong(s ncmSong) musicSong {
 	}
 }
 
-// ============================================================
-// Pass 实现：搜索
-// ============================================================
-
 // musicSearchPass 搜索网易云音乐，存储结果并输出列表。
 type musicSearchPass struct {
 	ncmURL string
@@ -361,8 +310,11 @@ type musicSearchPass struct {
 	logger *zap.Logger
 }
 
+// Execute 搜索网易云音乐：解析 /music 后的关键词，调用 ncm-api 取前 3 首，
+// 将结果序列化为点歌会话写入 StateStore（键按群+用户隔离、20 秒过期）后输出带序号的候选列表。
+// 由 plugin.music.pipeline.search 在 isMusicCommand 命中 /music <关键词> 后调用；
+// 关键词为空、ncmURL 未配置、搜索失败、无结果或会话序列化失败时只回复对应提示（不写会话）。
 func (pass *musicSearchPass) Execute(ctx *conduit.MessageContext) error {
-	// 解析歌曲名
 	keyword := strings.TrimSpace(strings.TrimPrefix(ctx.RawMsg, "/music"))
 	keyword = strings.TrimSpace(keyword)
 	if keyword == "" {
@@ -373,7 +325,6 @@ func (pass *musicSearchPass) Execute(ctx *conduit.MessageContext) error {
 		return nil
 	}
 
-	// 检查 API 是否配置
 	if pass.ncmURL == "" {
 		conduit.AppendOutput(ctx, &conduit.Message{
 			UserID: ctx.UserID, GroupID: ctx.GroupID, IsGroup: ctx.IsGroup,
@@ -382,7 +333,6 @@ func (pass *musicSearchPass) Execute(ctx *conduit.MessageContext) error {
 		return nil
 	}
 
-	// 调用搜索 API
 	songs, err := searchNCM(ctx.Ctx, pass.ncmURL, keyword, 3)
 	if err != nil {
 		pass.logger.Error("music: search failed", zap.String("keyword", keyword), zap.Error(err))
@@ -401,7 +351,6 @@ func (pass *musicSearchPass) Execute(ctx *conduit.MessageContext) error {
 		return nil
 	}
 
-	// 转换为会话格式并存储
 	musicSongs := make([]musicSong, 0, len(songs))
 	for _, s := range songs {
 		musicSongs = append(musicSongs, ncmSongToMusicSong(s))
@@ -423,7 +372,6 @@ func (pass *musicSearchPass) Execute(ctx *conduit.MessageContext) error {
 		pass.logger.Error("music: save session failed", zap.Error(err))
 	}
 
-	// 格式化输出列表
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("找到 %d 首歌曲，请回复序号选择：\n", len(musicSongs)))
 	for i, s := range musicSongs {
@@ -438,18 +386,19 @@ func (pass *musicSearchPass) Execute(ctx *conduit.MessageContext) error {
 	return nil
 }
 
-// ============================================================
-// Pass 实现：选择
-// ============================================================
-
 // musicSelectPass 根据用户输入的序号选择歌曲并输出详情。
 type musicSelectPass struct {
 	store    conduit.StateStore
-	ncmURL   string // 网易云音乐 API 基础 URL（语音方案取音频用）
-	sendMode string // auto/card/link，点歌结果发送方式
+	ncmURL   string // 语音方案取音频 URL 用
+	sendMode string // auto/card/link
 	logger   *zap.Logger
 }
 
+// Execute 处理序号选择：从 StateStore 读取点歌会话（按群+用户隔离、20 秒过期），
+// 按序号取出歌曲后按 musicSendMode 组装发送内容——auto（默认）发语音段（record，取不到音频时降级文字链接）、
+// card 发音乐段（music）、link 发纯文字链接；发送后删除会话，保证一次搜索只能点一首。
+// 由 plugin.music.pipeline.select 在 isMusicSelect 命中独立序号 1/2/3（且存在活跃会话）后调用；
+// 序号非法、会话过期或数据异常、序号越界时只回复对应提示。
 func (pass *musicSelectPass) Execute(ctx *conduit.MessageContext) error {
 	// 解析序号（容忍 @机器人 前缀，与 isMusicSelect 的匹配逻辑一致）
 	selection, err := strconv.Atoi(extractSelection(ctx.RawMsg))
@@ -461,7 +410,6 @@ func (pass *musicSelectPass) Execute(ctx *conduit.MessageContext) error {
 		return nil
 	}
 
-	// 读取会话
 	sessionKey := musicSessionKey(ctx.GroupID, ctx.UserID)
 	data, err := pass.store.Get(ctx.Ctx, sessionKey)
 	if err != nil || data == "" {
@@ -501,7 +449,6 @@ func (pass *musicSelectPass) Execute(ctx *conduit.MessageContext) error {
 		mode = "auto"
 	}
 	if mode != "link" {
-		// card：音乐卡片段；auto：语音段（均无需混发）
 		if mode == "card" {
 			// 音乐段必须单独发送（llonebot 校验"音乐消息不能与其他类型混发"），
 			// 经出站段键（bot.send.segments）发送；gateway 对未知段类型原样透传。
@@ -532,7 +479,6 @@ func (pass *musicSelectPass) Execute(ctx *conduit.MessageContext) error {
 			}
 		}
 	} else {
-		// link：纯文字链接
 		content := fmt.Sprintf("🎵 %s - %s 《%s》\n网易云音乐: https://music.163.com/#/song?id=%d",
 			song.Name, song.Artists, song.Album, song.ID)
 		conduit.AppendOutput(ctx, &conduit.Message{
@@ -541,17 +487,12 @@ func (pass *musicSelectPass) Execute(ctx *conduit.MessageContext) error {
 		})
 	}
 
-	// 选择后删除会话
 	_ = pass.store.Delete(ctx.Ctx, sessionKey)
 
 	return nil
 }
 
-// ============================================================
-// AI 工具处理器
-// ============================================================
-
-// toolMusicSearch 是 AI 工具处理器，搜索网易云音乐。
+// toolMusicSearch 搜索网易云音乐，返回带序号的歌曲列表。
 func (p *MusicPlugin) toolMusicSearch(ctx context.Context, argsJSON string) (string, error) {
 	var args struct {
 		Keyword string `json:"keyword"`

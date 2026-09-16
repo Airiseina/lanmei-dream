@@ -1,10 +1,8 @@
 // Package local 实现基于 PostgreSQL + pgvector + pg_trgm 的本地知识库 Provider。
 //
-// 能力：
-//   - vector：向量召回（pgvector HNSW 索引，余弦相似度）
-//   - fuzzy：模糊召回（pg_trgm GIN 倒排索引，中英文子串/模糊匹配）
-//   - time：时间召回（按 updated_at 倒序）
-//   - 内容摄入：docs_dir 目录 Markdown 文件同步（幂等）+ kb_add 工具写入
+// 能力：vector（pgvector HNSW 索引，余弦相似度）、fuzzy（pg_trgm GIN 倒排索引，
+// 中英文子串/模糊匹配）、time（按 updated_at 倒序），以及内容摄入
+// （docs_dir 下 Markdown/CSV 文件同步与 kb_add 工具写入）。
 package local
 
 import (
@@ -59,7 +57,7 @@ func New(_ context.Context, kbb *kbpkg.KnowledgeBase, cfg map[string]any, deps k
 	}, nil
 }
 
-// Name 实现 kb.Provider
+// Name 实现 kb.Provider。
 func (p *Provider) Name() string { return providerName }
 
 // Capabilities 实现 kb.Provider：支持向量/模糊/时间三种召回模式。

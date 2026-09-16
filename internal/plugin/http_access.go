@@ -11,15 +11,9 @@ import (
 	"go.uber.org/zap"
 )
 
-// HTTPAccess 为插件提供受限的 HTTP 客户端能力。
-//
-// 设计思路借鉴了浏览器 Fetch API 的安全模型：
-//   - 插件可以发起 HTTP 请求，但必须事先声明允许访问的目标域名（allow_hosts）
-//   - GET 和 POST 分别对应独立的权限（PermHTTPGet / PermHTTPPost），
-//     实现最小权限原则——只读插件不需要 POST 权限
-//   - 每次请求前进行 Scope 检查和审计日志记录
-//   - 响应体大小限制为 1 MiB，防止恶意服务器返回超大响应耗尽内存
-//   - HTTP 客户端设置 10 秒超时，防止插件发起长时间阻塞的请求
+// HTTPAccess 为插件提供受限的 HTTP 客户端能力（借鉴浏览器 Fetch API 安全模型）：
+// 目标域名必须在 allow_hosts 白名单内，GET/POST 分属独立权限以贯彻最小权限；
+// 每次请求前做 Scope 检查并记审计，响应体限制 1 MiB、客户端超时 10 秒。
 type HTTPAccess struct {
 	scopeChecker   *ScopeChecker
 	audit          *AuditLogger
@@ -31,6 +25,15 @@ type HTTPAccess struct {
 
 // NewHTTPAccess 创建 HTTP 访问设施。
 // 内部创建一个带 10 秒超时的 http.Client，防止插件发起的请求无限等待。
+//
+// 参数：
+//   - scopeChecker：Scope 检查器，按 http:get/http:post 校验目标 host
+//   - audit：审计日志器，每次检查（放行与拒绝）都记录
+//   - pluginID：插件 ID，用于审计主体标识
+//   - installationID：安装实例 ID，用于审计主体标识
+//   - logger：日志器
+//
+// 返回：HTTP 访问设施实例。
 func NewHTTPAccess(scopeChecker *ScopeChecker, audit *AuditLogger, pluginID, installationID string, logger *zap.Logger) *HTTPAccess {
 	return &HTTPAccess{
 		scopeChecker:   scopeChecker,
@@ -44,29 +47,20 @@ func NewHTTPAccess(scopeChecker *ScopeChecker, audit *AuditLogger, pluginID, ins
 	}
 }
 
-// Get 发起 GET 请求（受 allow_hosts Scope 约束）。
-//
-// 安全流程：
-//  1. 从 URL 中提取 host
-//  2. 通过 ScopeChecker 检查 host 是否在 allow_hosts 白名单中
-//  3. 不在白名单 → 记录 deny 审计日志并拒绝
-//  4. 在白名单 → 记录 allow 审计日志，发起请求
-//  5. 响应体限制为 1 MiB（LimitReader），防止内存溢出
+// Get 发起 GET 请求（受 allow_hosts Scope 约束）：先提取 URL 的 host 并做
+// Scope 检查与审计，不在白名单则记 deny 并拒绝；响应体以 LimitReader
+// 限制为 1 MiB，返回状态码与响应内容。
 //
 // 参数：
-//   - ctx: 上下文，支持请求取消和超时
-//   - url: 请求的完整 URL
-//   - headers: 自定义请求头
+//   - ctx：请求上下文
+//   - url：完整 URL，其 host 须在 http:get 的 allow_hosts 白名单内
+//   - headers：附加请求头，可为 nil
 //
-// 返回：
-//   - int: HTTP 状态码
-//   - []byte: 响应体（最大 1 MiB）
-//   - error: 权限拒绝、请求失败、读取失败等错误
+// 返回：HTTP 状态码、响应体（最多 1 MiB）与错误；host 被拒绝或请求发起失败时状态码为 0。
 func (h *HTTPAccess) Get(ctx context.Context, url string, headers map[string]string) (int, []byte, error) {
 	host := extractHost(url)
 	principal := fmt.Sprintf("plugin:%s:%s", h.pluginID, h.installationID)
 
-	// Scope 检查：验证目标 host 是否在白名单中
 	if !h.scopeChecker.CheckHTTPHost(PermHTTPGet, host) {
 		h.audit.Log(&AuditEntry{
 			Principal:      principal,
@@ -80,7 +74,6 @@ func (h *HTTPAccess) Get(ctx context.Context, url string, headers map[string]str
 		return 0, nil, fmt.Errorf("http: host %q not allowed", host)
 	}
 
-	// 审计日志：记录允许访问的决策
 	h.audit.Log(&AuditEntry{
 		Principal:      principal,
 		Permission:     string(PermHTTPGet),
@@ -94,7 +87,6 @@ func (h *HTTPAccess) Get(ctx context.Context, url string, headers map[string]str
 	if err != nil {
 		return 0, nil, fmt.Errorf("http: new request: %w", err)
 	}
-	// 设置插件自定义请求头
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}
@@ -113,27 +105,20 @@ func (h *HTTPAccess) Get(ctx context.Context, url string, headers map[string]str
 	return resp.StatusCode, body, nil
 }
 
-// Post 发起 POST 请求（受 allow_hosts Scope 约束）。
-//
-// 安全流程与 Get 一致，区别在于：
-//   - 使用 PermHTTPPost 权限（与 GET 分离，实现最小权限原则）
-//   - 允许携带请求体
+// Post 发起 POST 请求：流程与 Get 一致，但使用独立的 PermHTTPPost 权限
+// （与 GET 分离以贯彻最小权限原则）并允许携带请求体。
 //
 // 参数：
-//   - ctx: 上下文
-//   - url: 请求的完整 URL
-//   - headers: 自定义请求头
-//   - body: 请求体内容
+//   - ctx：请求上下文
+//   - url：完整 URL，其 host 须在 http:post 的 allow_hosts 白名单内
+//   - headers：附加请求头，可为 nil
+//   - body：请求体，可为 nil
 //
-// 返回：
-//   - int: HTTP 状态码
-//   - []byte: 响应体（最大 1 MiB）
-//   - error: 权限拒绝、请求失败、读取失败等错误
+// 返回：HTTP 状态码、响应体（最多 1 MiB）与错误；host 被拒绝或请求发起失败时状态码为 0。
 func (h *HTTPAccess) Post(ctx context.Context, url string, headers map[string]string, body []byte) (int, []byte, error) {
 	host := extractHost(url)
 	principal := fmt.Sprintf("plugin:%s:%s", h.pluginID, h.installationID)
 
-	// Scope 检查：验证目标 host 是否在白名单中
 	if !h.scopeChecker.CheckHTTPHost(PermHTTPPost, host) {
 		h.audit.Log(&AuditEntry{
 			Principal:      principal,
@@ -147,7 +132,6 @@ func (h *HTTPAccess) Post(ctx context.Context, url string, headers map[string]st
 		return 0, nil, fmt.Errorf("http: host %q not allowed", host)
 	}
 
-	// 审计日志：记录允许访问的决策
 	h.audit.Log(&AuditEntry{
 		Principal:      principal,
 		Permission:     string(PermHTTPPost),
@@ -179,17 +163,9 @@ func (h *HTTPAccess) Post(ctx context.Context, url string, headers map[string]st
 	return resp.StatusCode, respBody, nil
 }
 
-// extractHost 从 URL 中提取主机名（去除 scheme、path 和端口）。
-//
-// 这是一个轻量级的 URL 解析函数，避免引入 net/url 的开销。
-// 处理逻辑：
-//  1. 去掉 scheme（如 "https://"）
-//  2. 去掉 path 部分（第一个 "/" 之后的内容）
-//  3. 去掉端口号（最后一个 ":" 之后的内容）
-//
-// 示例：
-//   - "https://api.example.com:8080/v1/data" → "api.example.com"
-//   - "http://localhost:3000/test" → "localhost"
+// extractHost 从 URL 提取主机名（去掉 scheme、path 与端口），
+// 轻量实现以避免引入 net/url 的开销，例如
+// "https://api.example.com:8080/v1/data" → "api.example.com"。
 func extractHost(rawURL string) string {
 	s := rawURL
 	if idx := strings.Index(s, "://"); idx != -1 {

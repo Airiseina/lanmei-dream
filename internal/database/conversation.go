@@ -37,7 +37,6 @@ func (db *DB) GetRecentConversations(ctx context.Context, userID int64, groupID 
 		return nil, fmt.Errorf("get_recent_conversations: %w", err)
 	}
 
-	// 反转为时间正序
 	for i, j := 0, len(convs)-1; i < j; i, j = i+1, j-1 {
 		convs[i], convs[j] = convs[j], convs[i]
 	}

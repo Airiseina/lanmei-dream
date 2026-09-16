@@ -104,7 +104,6 @@ onMounted(load)
       </template>
     </t-table>
 
-    <!-- 查看/编辑 -->
     <t-dialog
       v-model:visible="detailVisible"
       :header="current ? `${current.id}（${current.file}）` : ''"
@@ -143,7 +142,6 @@ onMounted(load)
   font-size: 13px;
   margin-bottom: 8px;
 }
-/* Prompt 编辑器统一使用 Cascadia Code 等宽字体（含行号栏） */
 .detail-wrap :deep(.cm-scroller),
 .detail-wrap :deep(.cm-content),
 .detail-wrap :deep(.cm-gutters) {

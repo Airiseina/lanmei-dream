@@ -27,16 +27,11 @@ const streamTimeout = 60 * time.Second
 // 但段落仍按序逐条投递（由 streamSegments 的 <-done 同步点保证）。
 const segmentChannelBufferSize = 32
 
-// RoleplayStreamPass 流式角色扮演 Pass。
+// RoleplayStreamPass 流式角色扮演 Pass：启动 LLM 流式生成，将段落通道存入上下文后
+// 挂起管线（yield），由 Bot.streamSegments 消费通道并逐条创建子消息重入引擎走交付管线。
 //
-// 启动 LLM 流式生成，将段落通道存入上下文后挂起管线（yield）。
-// 引擎回调检测到 yield 后，由 Bot.streamSegments 消费段落通道，
-// 逐条创建子消息重入引擎，走 pipeline.roleplay_segment 交付管线。
-//
-// 流式 goroutine 使用独立 context（不复用 ctx.Ctx），
-// 因为 yield 后引擎会调用 ctx.Cancel() 取消消息上下文。
-//
-// TopicMgr 非 nil 时，群聊话题命中（黑板块 KeyTopicContext）的回复完成后
+// 流式 goroutine 使用独立 context（不复用 ctx.Ctx），因为 yield 后引擎会调用 ctx.Cancel()
+// 取消消息上下文。TopicMgr 非 nil 时，话题命中（黑板 KeyTopicContext）的回复完成后
 // 会调用 TopicManager.RecordBotReply 记录 Bot 回复（追加窗口、授回复配额）。
 type RoleplayStreamPass struct {
 	Chat     *ai.ChatService
@@ -45,7 +40,19 @@ type RoleplayStreamPass struct {
 	TopicMgr *topic.Manager // 可 nil：topic 系统未启用
 }
 
-// Execute 启动流式生成并挂起管线。
+// Execute 启动流式生成并挂起管线（返回 conduit.ErrPassYielded）。
+//
+// 位置：pipeline.roleplay 唯一 Pass（意图为 chat/tool / 话题命中回复时进入）。
+//
+// 依赖上下文键：ctx.RawMsg（为空直接返回 nil，不产出）；ctx.Ctx 仅用于查询/创建用户；
+// Extra 的 KeyPlatform/KeyPlatformUserID/KeyNickname/KeySelfID；话题命中时读取
+// KeyTopicContext（data）。写入 KeyStreamChannel（data）。
+//
+// 说明：
+//   - 流式 goroutine 使用独立 context（streamTimeout 超时后取消），因为 yield 后引擎会取消 ctx.Ctx；
+//   - Chat 为 nil 时返回错误（走引擎错误路径），由 Bot 回调回复兜底话术；
+//   - 段落通道由 Bot.streamSegments 在 ResponseCallback 中消费，runStream 结束时 close(segCh)；
+//   - 流结束后按需调用 TopicManager.RecordBotReply 记录 Bot 回复（追加窗口、授回复配额）。
 func (p *RoleplayStreamPass) Execute(ctx *conduit.MessageContext) error {
 	userMsg := ctx.RawMsg
 	if userMsg == "" {
@@ -61,7 +68,6 @@ func (p *RoleplayStreamPass) Execute(ctx *conduit.MessageContext) error {
 	platformUserID := platformUserIDFromCtx(ctx)
 	nickname := nicknameFromCtx(ctx)
 
-	// 确保用户存在
 	user, err := p.DB.GetOrCreateUser(ctx.Ctx, platform, platformUserID, nickname)
 	if err != nil {
 		return fmt.Errorf("roleplay: get_or_create_user: %w", err)
@@ -84,23 +90,17 @@ func (p *RoleplayStreamPass) Execute(ctx *conduit.MessageContext) error {
 	// 独立 context：yield 后 ctx.Ctx 会被取消，流式必须使用独立上下文
 	streamCtx, streamCancel := context.WithTimeout(context.Background(), streamTimeout)
 
-	// 启动流式生成 goroutine
 	go p.runStream(streamCtx, streamCancel, segCh, userMsg, user.ID, nickname, ctx.GroupID, ctx.UserID, platform, topicID, selfID, topicCtx)
 
-	// 将段落通道存入上下文，供回调消费
 	conduit.Set(ctx, KeyStreamChannel, segCh)
 
 	// 挂起管线，引擎将调用 ResponseCallback
 	return conduit.ErrPassYielded
 }
 
-// runStream 在独立 goroutine 中执行流式对话。
-// 职责：
-//  1. 调用 ChatService.ChatStream，将段落增量写入 segCh
-//  2. 流结束后保存对话记录（L0 原始记录）
-//  3. 群聊话题命中时记录 Bot 回复到话题（RecordBotReply）
-//  4. 发生错误时发送错误提示段
-//  5. defer close(segCh) 确保消费方能正常退出
+// runStream 在独立 goroutine 中执行流式对话：ChatStream 的段落增量写入 segCh，
+// 流结束后保存对话记录（L0 原始记录）并在话题命中时调用 RecordBotReply；
+// 出错时发送错误提示段；defer close(segCh) 保证消费方正常退出。
 func (p *RoleplayStreamPass) runStream(
 	streamCtx context.Context,
 	streamCancel context.CancelFunc,
@@ -275,15 +275,14 @@ func parseStickerEmotion(argsJSON string) string {
 	return strings.TrimSpace(args.QingXu)
 }
 
-// ── RoleplaySegmentPass：流式段落交付 ──
-
-// RoleplaySegmentPass 将流式段落追加到输出，由引擎回调发送。
-//
-// 每个段落作为子消息重入引擎，走此管线。
-// 段落原文存储在 ctx.RawMsg 中（由 NewChildInput 设置）。
+// RoleplaySegmentPass 将流式段落追加到输出，由引擎回调发送
+// （每个段落作为子消息重入引擎，段落原文由 NewChildInput 写入 ctx.RawMsg。）
 type RoleplaySegmentPass struct{}
 
-// Execute 将段落追加到输出队列。
+// Execute 把段落原文（ctx.RawMsg，由 NewChildInput 写入）追加为输出消息，由引擎回调发送。
+//
+// 位置：pipeline.roleplay_segment 唯一 Pass（流式段落子消息重入时经 IsSegment 条件进入）。
+// 无其他依赖上下文键，不返回错误。
 func (p *RoleplaySegmentPass) Execute(ctx *conduit.MessageContext) error {
 	conduit.AppendOutput(ctx, &conduit.Message{
 		UserID:  ctx.UserID,

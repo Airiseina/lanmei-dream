@@ -26,7 +26,6 @@ func TestCompressorLockUserSerializes(t *testing.T) {
 			defer wg.Done()
 			unlock := c.lockUser(12345)
 			n := cur.Add(1)
-			// 更新观测到的最大并发
 			for {
 				m := maxConcurrent.Load()
 				if n <= m || maxConcurrent.CompareAndSwap(m, n) {

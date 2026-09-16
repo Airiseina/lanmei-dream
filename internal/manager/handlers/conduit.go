@@ -11,11 +11,8 @@ import (
 	"github.com/DaWesen/lanmei-dream/internal/model"
 )
 
-// ─────────────────────────────────────────────
-// Conduit 控制平面（快照 / 编辑 / 回滚 / Trace / 流量）
-// ─────────────────────────────────────────────
-
 // ConduitSnapshot 返回行为树 + 管线 + Pass + 子树全量快照。
+// 权限：登录即可，不要求超管。
 func (h *Handler) ConduitSnapshot(c fiber.Ctx) error {
 	return c.JSON(h.control.Snapshot())
 }
@@ -99,6 +96,7 @@ func (h *Handler) ApplyPipelines(c fiber.Ctx) error {
 }
 
 // ListConduitRevisions 列出 conduit 配置修订（回滚底稿）。
+// 权限：登录即可，不要求超管；分页返回 items + total。
 func (h *Handler) ListConduitRevisions(c fiber.Ctx) error {
 	offset, limit := pageQuery(c)
 	items, total, err := h.store.ListConfigRevisions(c.Context(), model.ConfigScopeConduit, "", offset, limit)
@@ -127,6 +125,7 @@ func (h *Handler) RollbackConduit(c fiber.Ctx) error {
 }
 
 // ListTraces 分页查询执行链路 Trace（审计可视化）。
+// 权限：登录即可，不要求超管；分页返回 items + total。
 func (h *Handler) ListTraces(c fiber.Ctx) error {
 	offset, limit := pageQuery(c)
 	filter := store.TraceFilter{
@@ -147,6 +146,7 @@ func (h *Handler) ListTraces(c fiber.Ctx) error {
 }
 
 // QueryTraffic 查询节点流量（pipeline/node 维度 + 时间范围）。
+// 权限：登录即可，不要求超管。
 func (h *Handler) QueryTraffic(c fiber.Ctx) error {
 	sinceSec, untilSec, err := timeRange(c)
 	if err != nil {

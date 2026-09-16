@@ -30,7 +30,6 @@ const pageSize = 20
 const stepUpVisible = ref(false)
 const pendingAction = ref<((token: string) => Promise<void>) | null>(null)
 
-// 配置编辑抽屉
 const drawerVisible = ref(false)
 const editing = ref<GroupView | null>(null)
 const form = reactive({
@@ -199,7 +198,6 @@ onMounted(load)
       </t-table>
     </t-card>
 
-    <!-- 群配置抽屉 -->
     <t-drawer v-model:visible="drawerVisible" :header="`群配置：${editing?.group_id ?? ''}`" size="420px" :footer="false">
       <t-form label-align="top">
         <t-form-item label="Bot 开关">
@@ -261,7 +259,6 @@ onMounted(load)
 .text-muted {
   color: var(--mgr-text-muted);
 }
-/* 群配置抽屉：按钮组与上方表单之间留出间隔 */
 .drawer-actions {
   margin-top: 24px;
 }

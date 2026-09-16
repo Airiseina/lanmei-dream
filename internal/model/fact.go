@@ -8,24 +8,18 @@ import (
 
 // FactItem 一条结构化事实，带置信度与证据来源。
 //
-// 设计（借鉴蒸馏管线"结论须可核实、置信度随重复确认演化、矛盾降置信保留双结论"）：
-//   - Key：命题主题（细粒度，如"猫的毛色"而非"宠物"），同一 Key 应只有一种取值；
-//     用于矛盾检测（同 Key 不同 Value = 冲突，降置信而非武断丢弃）；
-//   - Confidence：该事实的置信度 0~1。压缩时由 LLM 自评；
-//     跨摘要合并时重复确认 +0.05 封顶 0.98；矛盾 −0.15 保底 0.2；
-//   - Evidence：证据来源标识（如对话批次 "conv:first-last"），供可审计；
-//   - Conflict：矛盾时被替换的旧值（保留双结论，供审阅）；非矛盾为空；
-//   - At：最近证据来源条目的创建时间（消费端判断"证据较早"用）。
+// Key 是命题主题（细粒度，同一 Key 只应有一种取值），同 Key 不同 Value 视为冲突，
+// 降置信而非武断丢弃；Confidence 由 LLM 压缩时自评，跨摘要合并时重复确认提升、矛盾下降；
+// Conflict 保留被替换的旧值（双结论供审阅），At 为最近一条证据来源的时间。
 //
-// 存储形式：EpisodeSummary.Facts / TopicCluster.Facts 为 jsonb，内容是 []FactItem；
-// 兼容旧数据（jsonb 为 []string 时按 0.5 置信度转换）。
+// 以 jsonb 存于 EpisodeSummary.Facts / TopicCluster.Facts，兼容旧版 []string（按 0.5 置信度转换）。
 type FactItem struct {
-	Key        string    `json:"key,omitempty"`      // 命题主题（LLM 编，细粒度）
-	Value      string    `json:"value"`              // 事实内容
-	Confidence float64   `json:"confidence"`         // 置信度 0~1
-	Evidence   []string  `json:"evidence,omitempty"` // 证据来源
-	Conflict   string    `json:"conflict,omitempty"` // 矛盾时被替换的旧值
-	At         time.Time `json:"at,omitempty"`       // 最近证据来源时间
+	Key        string    `json:"key,omitempty"`
+	Value      string    `json:"value"`
+	Confidence float64   `json:"confidence"`
+	Evidence   []string  `json:"evidence,omitempty"` // 证据来源标识（对话批次，如 "conv:12-20"）
+	Conflict   string    `json:"conflict,omitempty"`
+	At         time.Time `json:"at,omitempty"`
 }
 
 // maxFactConfidence 重复确认的置信度封顶：任何路径都到不了 1.0。
@@ -46,9 +40,8 @@ const maxFactEvidence = 50
 // factDefaultConfidence 无置信度信息（旧数据/LLM 未给出）时的兜底值。
 const factDefaultConfidence = 0.5
 
-// 消费端门槛（借鉴蒸馏管线"越靠近 agent 门槛越高"）：
-//   - FactMinConfidence：低于此值的事实不进对话上下文（给 agent 的必须站得住）；
-//   - FactThinConfidence：0.5~0.65 的事实进上下文但标注"⚠︎证据较少"。
+// 消费端门槛（越靠近 agent 门槛越高）：低于 FactMinConfidence 的事实不进对话上下文；
+// FactMinConfidence~FactThinConfidence（0.5~0.65）之间的事实进上下文但标注"证据较少"。
 const (
 	FactMinConfidence  = 0.5
 	FactThinConfidence = 0.65
@@ -106,15 +99,9 @@ func MarshalFacts(facts []FactItem) []byte {
 	return data
 }
 
-// MergeFacts 跨摘要合并事实集合（三态 + 矛盾降置信，以 value 精确匹配为稳定 key）：
-//   - insert：新 value → 追加，保留原置信度；
-//   - confirm：相同 value 重复确认 → 置信度 min(0.98, max(旧,新) + 0.05)，证据合并；
-//   - conflict：同 Key 但 value 不同（同一命题的相反/不同取值）→
-//     置信度 max(0.2, min(旧,新) − 0.15)，保留新 value，旧 value 记入 Conflict（不武断丢弃）；
-//   - 无 Key 或不同 Key 的不同 value → 各自保留（insert）。
-//
-// 语义：重复确认不等于绝对真理（封顶 0.98）；矛盾暴露不确定性（降置信而非删除），
-// 与"保留双结论供人判断"一致。
+// MergeFacts 跨摘要合并事实集合，按 value 精确匹配区分三态：新 value 追加；同 value 重复
+// 确认则提升置信度并合并证据；同 Key 但 value 不同视为矛盾，降置信、保留新 value 并把旧值
+// 记入 Conflict。无 Key 或 Key 不同的取值各自保留——矛盾暴露不确定性，降置信而非删除。
 func MergeFacts(existing, incoming []FactItem) []FactItem {
 	out := make([]FactItem, 0, len(existing)+len(incoming))
 	valueIdx := make(map[string]int, len(existing)+len(incoming)) // value -> out 索引
@@ -143,7 +130,7 @@ func MergeFacts(existing, incoming []FactItem) []FactItem {
 		}
 		f.Confidence = normalizeFactConfidence(f.Confidence)
 
-		// 1) 确认：同一 value 重复出现
+		// 确认：同一 value 重复出现
 		if i, ok := valueIdx[f.Value]; ok {
 			out[i].Confidence = min(max(out[i].Confidence, f.Confidence)+factBumpStep, maxFactConfidence)
 			out[i].Evidence = mergeFactEvidence(out[i].Evidence, f.Evidence)
@@ -156,7 +143,7 @@ func MergeFacts(existing, incoming []FactItem) []FactItem {
 			continue
 		}
 
-		// 2) 矛盾：同 Key 但 value 不同（同一命题出现相反/不同取值）
+		// 矛盾：同 Key 但 value 不同（同一命题出现相反/不同取值）
 		if f.Key != "" {
 			if j, ok := keyIdx[f.Key]; ok && out[j].Value != f.Value {
 				old := out[j]
@@ -178,7 +165,7 @@ func MergeFacts(existing, incoming []FactItem) []FactItem {
 			}
 		}
 
-		// 3) 插入：新事实
+		// 插入：新事实
 		valueIdx[f.Value] = len(out)
 		if f.Key != "" {
 			keyIdx[f.Key] = len(out)

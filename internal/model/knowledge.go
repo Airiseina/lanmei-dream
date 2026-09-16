@@ -9,11 +9,9 @@ import (
 
 // KnowledgeChunk 对应 knowledge_chunks 表，存储本地知识库的分块数据。
 //
-// 设计说明：
-//   - 知识库元信息以配置文件为唯一事实来源（不做 IM 管理命令），因此不建 knowledge_bases 表；
-//   - 本表仅存储 local provider 的分块（向量 + 倒排索引），飞书等远程 provider 通过各自 API 召回，
-//     不落库；
-//   - (knowledge_base_id, source_id) 构成唯一键，保证 docs_dir 文件同步与 kb_add 工具写入的幂等性。
+// 知识库元信息以配置文件为唯一事实来源，故不建 knowledge_bases 表；本表只存 local
+// provider 的分块，飞书等远程 provider 走各自 API 召回、不落库。
+// (knowledge_base_id, source_id) 唯一键保证 docs_dir 同步与 kb_add 工具写入的幂等。
 type KnowledgeChunk struct {
 	ID              int64           `json:"id"                gorm:"primaryKey;autoIncrement;comment:分块ID"`
 	KnowledgeBaseID string          `json:"knowledge_base_id" gorm:"size:64;not null;uniqueIndex:uq_kb_source;comment:知识库ID(对应配置bases[].id)"`

@@ -28,7 +28,6 @@ import type {
   UserView,
 } from '@/types/api'
 
-// ── 认证 ──
 export interface LoginResult {
   pending_totp?: PendingTOTP
   admin_id?: number
@@ -94,7 +93,6 @@ export const authApi = {
     request<{ ok: boolean }>(`/api/auth/passkeys/${encodeURIComponent(credentialId)}`, { method: 'DELETE', stepUpToken }),
 }
 
-// ── 管理员 ──
 export interface AdminForm {
   username: string
   password?: string
@@ -118,7 +116,6 @@ export const adminApi = {
     request<{ ok: boolean }>(`/api/admins/${id}/password`, { method: 'PUT', body: { password }, stepUpToken }),
 }
 
-// ── LLM Provider 与用量 ──
 export interface ProviderForm {
   name: string
   base_url: string
@@ -151,7 +148,6 @@ export const llmApi = {
     request<{ items: UsagePoint[] }>(`/api/llm/usage/series?step=${step}${queryRange(since, until)}`),
 }
 
-// ── Conduit 控制平面 ──
 export const conduitApi = {
   snapshot: () => request<ConduitSnapshot>('/api/conduit/snapshot'),
   applyBehaviorTree: (node: unknown, comment: string, stepUpToken: string) =>
@@ -200,7 +196,6 @@ export const conduitApi = {
     }, onError),
 }
 
-// ── 审计 ──
 export const auditApi = {
   list: (params: { action?: string; username?: string; result?: string; since?: string; page?: number; pageSize?: number }) => {
     const q = new URLSearchParams()
@@ -217,14 +212,11 @@ export const auditApi = {
 import type { AuditLog } from '@/types/api'
 type AuditLogPageItem = AuditLog
 
-// ── 仪表盘 ──
 export const dashboardApi = {
   stats: () => request<DashboardStats>('/api/dashboard/stats'),
 }
 
-// ── 内容管理（M3） ──
 export const contentApi = {
-  // 群组
   groups: (keyword = '', page = 1, pageSize = 20) => {
     const q = new URLSearchParams({ page: String(page), page_size: String(pageSize) })
     if (keyword) q.set('keyword', keyword)
@@ -238,7 +230,6 @@ export const contentApi = {
       body: form,
       stepUpToken,
     }),
-  // 用户
   users: (keyword = '', page = 1, pageSize = 20) => {
     const q = new URLSearchParams({ page: String(page), page_size: String(pageSize) })
     if (keyword) q.set('keyword', keyword)
@@ -246,7 +237,6 @@ export const contentApi = {
   },
   setUserBan: (id: number, banned: boolean, reason: string, stepUpToken: string) =>
     request<{ ok: boolean }>(`/api/users/${id}/ban`, { method: 'POST', body: { banned, reason }, stepUpToken }),
-  // 知识库
   knowledgeBases: () => request<Page<KnowledgeBaseView>>('/api/knowledge/bases'),
   knowledgeChunks: (params: { base?: string; keyword?: string; page?: number; pageSize?: number }) => {
     const q = new URLSearchParams()
@@ -263,7 +253,6 @@ export const contentApi = {
       method: 'POST',
       stepUpToken,
     }),
-  // 记忆
   memories: (params: { userId?: string; groupId?: string; keyword?: string; page?: number; pageSize?: number }) => {
     const q = new URLSearchParams()
     if (params.userId) q.set('user_id', params.userId)
@@ -275,7 +264,6 @@ export const contentApi = {
   },
   deleteMemory: (id: number, stepUpToken: string) =>
     request<{ ok: boolean }>(`/api/memories/${id}`, { method: 'DELETE', stepUpToken }),
-  // 插件
   plugins: () => request<Page<PluginView>>('/api/plugins'),
   enablePlugin: (id: string, stepUpToken: string) =>
     request<{ ok: boolean }>(`/api/plugins/${encodeURIComponent(id)}/enable`, { method: 'POST', stepUpToken }),
@@ -283,13 +271,11 @@ export const contentApi = {
     request<{ ok: boolean }>(`/api/plugins/${encodeURIComponent(id)}/disable`, { method: 'POST', stepUpToken }),
   deletePlugin: (id: string, stepUpToken: string) =>
     request<{ ok: boolean }>(`/api/plugins/${encodeURIComponent(id)}`, { method: 'DELETE', stepUpToken }),
-  // Skills
   skills: () => request<Page<SkillView>>('/api/skills'),
   enableSkill: (id: string, stepUpToken: string) =>
     request<{ ok: boolean }>(`/api/skills/${encodeURIComponent(id)}/enable`, { method: 'POST', stepUpToken }),
   disableSkill: (id: string, stepUpToken: string) =>
     request<{ ok: boolean }>(`/api/skills/${encodeURIComponent(id)}/disable`, { method: 'POST', stepUpToken }),
-  // Prompt 模板
   promptFragments: () => request<Page<PromptFragmentView>>('/api/prompts/fragments'),
   promptFragment: (id: string) => request<PromptFragmentView>(`/api/prompts/fragments/${encodeURIComponent(id)}`),
   updatePromptFragment: (id: string, content: string, stepUpToken: string) =>
@@ -298,7 +284,6 @@ export const contentApi = {
       body: { content },
       stepUpToken,
     }),
-  // 表情包
   stickers: (keyword = '', page = 1, pageSize = 20) => {
     const q = new URLSearchParams({ page: String(page), page_size: String(pageSize) })
     if (keyword) q.set('keyword', keyword)
@@ -308,11 +293,9 @@ export const contentApi = {
     request<{ ok: boolean }>(`/api/stickers/${id}`, { method: 'PUT', body: { tags }, stepUpToken }),
   deleteSticker: (id: number, stepUpToken: string) =>
     request<{ ok: boolean }>(`/api/stickers/${id}`, { method: 'DELETE', stepUpToken }),
-  // 命令
   commands: () => request<Page<CommandView>>('/api/commands'),
 }
 
-// 辅助：拼接 since/until 查询参数
 function queryRange(since?: string, until?: string): string {
   let s = ''
   if (since) s += `&since=${encodeURIComponent(since)}`

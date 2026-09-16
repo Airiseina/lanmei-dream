@@ -1,14 +1,19 @@
-# 技能运行时启用/关闭配置
-# 每个技能对应 skills/<id>/ 目录
+# 技能运行时启用/关闭配置。
+# 每个 [skill.<id>] 对应 skills/<id>/ 目录（需含 manifest.toml 与 SKILL.md）；
+# 目录不存在的 ID 不生效。管理面板可在运行时切换，切换后会同写回本文件。
 
+# 本仓库未提供 skills/roleplay_maid/，需自备目录后本项才生效
 [skill.roleplay_maid]
 enabled = true
 
+# 本仓库未提供 skills/game_master/，需自备目录后本项才生效
 [skill.game_master]
 enabled = false
 
+# 梅花易数占卜
 [skill.divination]
 enabled = true
 
+# 猜单词破解
 [skill.word_guess]
 enabled = true

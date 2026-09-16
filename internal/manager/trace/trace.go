@@ -1,11 +1,7 @@
-// Package trace 实现 Conduit 执行链路 Trace 的采集与落库：
-//   - 每条消息处理完成后（含错误/超时/yield），将 conduit.GetTraceResult 序列化为
-//     JSON 写入 conduit_trace 表（面板可审计查看节点状态/耗时/错误）；
-//   - 从 trace 树聚合节点级流量（管线/Pass 维度），按分钟桶写入 node_traffic 表
-//     （面板查看"经过某节点的流量"）。
-//
-// 采集回调（Sink）由 Bot 的消息处理回调并发调用，本包内部以互斥锁保护聚合状态，
-// 绝不阻塞消息主链路。
+// Package trace 实现 Conduit 执行链路 Trace 的采集与落库：消息处理完成后（含错误/超时/yield）
+// 将 trace 树写入 conduit_trace 表（面板可审计节点状态/耗时/错误），并按分钟桶聚合
+// 管线/Pass 节点级流量到 node_traffic 表。
+// Sink 回调由 Bot 的消息处理回调并发调用，包内以互斥锁保护聚合状态，绝不阻塞消息主链路。
 package trace
 
 import (
@@ -62,7 +58,7 @@ type subscriber struct {
 	ch chan model.ConduitTrace
 }
 
-// NewCollector 创建 Trace 采集器。
+// NewCollector 创建 Trace 采集器（不启动后台协程，由 Start 启动定时落库）。
 func NewCollector(s *store.Store, logger *zap.Logger) *Collector {
 	return &Collector{
 		store:   s,

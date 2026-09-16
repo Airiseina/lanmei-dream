@@ -102,13 +102,12 @@ const treeDraft = ref('')
 const treeLoaded = ref('')
 const subDrafts = new Map<string, { current: string; loaded: string }>()
 
-// ── Vue Flow 节点/边状态 ──
 const flowNodes = ref<Node[]>([])
 const flowEdges = ref<Edge[]>([])
 const selectedKey = ref<string>('')
 // 多选集合（右键框选 / Ctrl+A），selectedKey 为其中聚焦的一个
 const selectedKeys = ref(new Set<string>())
-// ── 节点位置持久化（仅 manager 前端数据，不入业务 JSON）──
+// 节点位置持久化：仅 manager 前端数据，不入业务 JSON
 // 用户拖拽的位置按上下文（主蓝图 / 各子树）存于 localStorage：
 // 刷新页面、删除/添加节点、切换子树后均能恢复，不再"回到算法初始位置"。
 const LAYOUT_KEY = 'lanmei.bt.layout'
@@ -159,7 +158,6 @@ function clearLayoutForCtx() {
 const floatingNodes = ref<Record<string, { node: BTNode; pos: { x: number; y: number } }>>({})
 let floatSeq = 0
 
-// ── 编辑历史（撤销 / 重做）与剪贴板 ──
 // 历史快照同时记录树 JSON、游离节点与节点位置（位置为 manager 前端数据，撤销/重做需一并恢复）
 interface HistoryEntry {
   json: string
@@ -189,7 +187,6 @@ function resetHistory() {
   redoStack.value = []
 }
 
-// ── 历史栈按上下文（主蓝图 / 各子树）独立保存 ──
 // 进入/退出子树时切换历史栈，而不是清空，保证切回后仍可撤销/重做。
 const historyStore = new Map<string, { undo: HistoryEntry[]; redo: HistoryEntry[] }>()
 // 保存当前上下文历史（须在 editCtx 变更前调用，layoutKey 仍指向旧上下文）
@@ -223,7 +220,6 @@ function redo() {
   renderFlow()
 }
 
-// ── 右键框选状态（右键拖动框选，支持批量操作） ──
 const boxSelecting = ref(false)
 const boxRect = ref<{ x: number; y: number; w: number; h: number } | null>(null)
 let boxStart: { x: number; y: number } | null = null
@@ -264,7 +260,6 @@ const selectedNode = computed<BTNode | null>(() => {
 })
 const isFloatSelected = computed(() => isFloatKey(selectedKey.value))
 
-// ── JSON 解析 / 树操作 ──
 function parseTree(): BTNode | null {
   try {
     const v = JSON.parse(jsonText.value)
@@ -332,7 +327,7 @@ function isAncestor(root: BTNode, ancestorKey: string, targetKey: string): boole
   return false
 }
 
-// ── 规范树布局：父节点垂直居中于子节点块，前置 Start 起始节点 ──
+// 规范树布局：父节点垂直居中于子节点块，前置 Start 起始节点
 function renderFlow() {
   const tree = parseTree()
   if (!tree) {
@@ -473,7 +468,6 @@ function nodeHeadIcon(type: string) {
   }
 }
 
-// ── Vue Flow 实例（视图变换 / 缩放，@init 注入） ──
 let flowStore: VueFlowStore | null = null
 function onFlowInit(s: VueFlowStore) {
   flowStore = s
@@ -484,7 +478,6 @@ function flowProject(x: number, y: number) {
   return flowStore?.project ? flowStore.project({ x, y }) : { x, y }
 }
 
-// ── 节点交互：点击选中 / 双击进入子树 / 右键菜单 / 拖拽微调 / 悬浮审计 ──
 function onNodeClick({ node }: NodeMouseEvent) {
   if (node.id === 'preview-target') return // 预览锚点不参与选中
   selectedKey.value = node.id
@@ -589,7 +582,6 @@ async function loadNodeAudit(bNode: BTNode) {
   }
 }
 
-// ── 右侧属性面板：属性 / 审计 双 Tab ──
 const propsTab = ref<'props' | 'audit'>('props')
 const panelAudit = ref<{ total: number; ok: number; err: number; avgMs: number; items: ConduitTrace[] } | null>(null)
 
@@ -619,7 +611,6 @@ watch(selectedKey, () => {
   if (selectedNode.value?.pipeline_id) void loadPanelAudit()
 })
 
-// ── 右键上下文菜单（空白 / 节点 / 连线 / 引脚拖出 / 动态输出引脚） ──
 interface CtxMenuState {
   visible: boolean
   x: number
@@ -696,7 +687,7 @@ function onPaneContextMenu(event: MouseEvent) {
   openCtxMenu('pane', event.clientX, event.clientY)
 }
 
-// ── 右键拖动框选：按下记录起点，移动超阈值进入框选，释放时按框选矩形选中节点 ──
+// 右键拖动框选：按下记录起点，移动超阈值进入框选，释放时按框选矩形选中节点
 // （Vue Flow 无 pane-mousedown 事件，在 bp-wrap 上用捕获阶段监听原生右键按下）
 function onWrapMouseDown(e: MouseEvent) {
   if (e.button !== 2) return // 仅右键
@@ -768,7 +759,6 @@ function removeSelectedKeys() {
   pushHistory() // 删除前入栈，保证可撤销
   const tree = parseTree()
   let changed = false
-  // 游离节点直接移除
   for (const k of keys) {
     if (isFloatKey(k) && floatingNodes.value[k]) {
       delete floatingNodes.value[k]
@@ -797,7 +787,7 @@ function removeSelectedKeys() {
   if (!changed) MessagePlugin.info('无可删除的节点')
 }
 
-// ── 动态输出引脚（虚幻蓝图 Sequence 风格：0/1/2… 可增删、可调序） ──
+// 动态输出引脚：虚幻蓝图 Sequence 风格，0/1/2… 可增删、可调序
 
 // 组合节点右侧引脚行右键：打开引脚菜单
 function pinMenu(ev: MouseEvent, key: string, idx: number, count: number) {
@@ -965,7 +955,6 @@ const menuGroups = computed<MenuGroup[]>(() => {
   ].filter((g) => searching.value || g.items.length > 0)
 })
 
-// 选择菜单条目：按当前菜单类型执行不同动作
 function pickMenuItem(item: NodeMenuItem) {
   const preset: Partial<BTNode> = {}
   if (item.pipeline_id) preset.pipeline_id = item.pipeline_id
@@ -1054,7 +1043,7 @@ function disconnectEdge() {
   MessagePlugin.success('已断开连接')
 }
 
-// ── 节点右键：断开连接（输出/输入，支持精确到目标节点） ──
+// 节点右键断开连接：区分输出/输入，可精确到目标节点
 
 // 当前节点的输出/输入连接列表（基于 flowEdges 实时值；排除 Start 与拖线预览边）
 const nodeDisconnectTargets = computed<{ outputs: { key: string; label: string }[]; inputs: { key: string; label: string }[] }>(() => {
@@ -1171,7 +1160,6 @@ function replaceNodeType(type: EditableNodeType) {
   MessagePlugin.success(`已替换为${nodeTypeLabel(target)}`)
 }
 
-// ── 可视化连线：拖线连接 / 游离节点挂载 / 连线重连 ──
 let lastConnectSource: string | null = null
 let connectedThisDrag = false
 
@@ -1258,7 +1246,7 @@ function attachFloatingAsChild(sourceKey: string, floatId: string): boolean {
   return true
 }
 
-// ── 连线拖动重连（edges-updatable） ──
+// 连线拖动重连：依赖 Vue Flow 的 edges-updatable 能力
 let draggingEdge: Edge | null = null
 let lastReconnect: Connection | null = null
 
@@ -1315,7 +1303,6 @@ function reconnectEdge(_orig: Edge, conn: Connection) {
   MessagePlugin.success('已重连')
 }
 
-// ── Sub Blueprint：进入/退出子树编辑（面包屑 + 草稿保留） ──
 function enterSubtree(id: string) {
   const sub = snapshot.value?.subtrees.find((s) => s.id === id)
   if (!sub?.node) {
@@ -1356,7 +1343,6 @@ function exitSubtree() {
   void nextTick(() => void flowStore?.fitView({ padding: 0.15 }))
 }
 
-// ── 属性编辑 ──
 function updateSelected(patch: Partial<BTNode>) {
   const key = selectedKey.value
   if (!key) return
@@ -1415,7 +1401,6 @@ function removeSelected() {
   syncJson(tree)
 }
 
-// ── 复制 / 粘贴 / 全选 ──
 function copySelected() {
   const key = selectedKey.value
   if (!key || key === 'start') {
@@ -1482,7 +1467,6 @@ function onWindowKeydown(e: KeyboardEvent) {
   if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return
   const ctrl = e.ctrlKey || e.metaKey
   const k = e.key.toLowerCase()
-  // 撤销 / 重做
   if (ctrl && k === 'z') {
     e.preventDefault()
     if (e.shiftKey) redo()
@@ -1494,7 +1478,6 @@ function onWindowKeydown(e: KeyboardEvent) {
     redo()
     return
   }
-  // 复制 / 粘贴
   if (ctrl && k === 'c') {
     e.preventDefault()
     copySelected()
@@ -1505,7 +1488,6 @@ function onWindowKeydown(e: KeyboardEvent) {
     pasteClipboard()
     return
   }
-  // 全选
   if (ctrl && k === 'a') {
     e.preventDefault()
     selectAllNodes()
@@ -1517,7 +1499,6 @@ function onWindowKeydown(e: KeyboardEvent) {
     if (dirty.value) MessagePlugin.info('请点击底部"应用变更"悬浮条保存')
     return
   }
-  // 删除（单/多选）
   if (e.key === 'Delete' || e.key === 'Backspace') {
     if (!selectedKeys.value.size) return
     e.preventDefault()
@@ -1525,7 +1506,7 @@ function onWindowKeydown(e: KeyboardEvent) {
   }
 }
 
-// ── 实时执行动画：SSE 订阅 trace，命中管线的路径高亮 ──
+// 实时执行动画：SSE 订阅 trace 流，命中管线的节点与路径高亮
 let closeTrace: (() => void) | null = null
 let traceDisposed = false
 let traceRetry = 0
@@ -1582,7 +1563,6 @@ function collectActionKeys(n: BTNode, key: string, pid: string, out: string[]) {
   n.children?.forEach((c, i) => collectActionKeys(c, `${key}.${i}`, pid, out))
 }
 
-// ── 工具栏：缩放 / 网格 / 清除游离节点 ──
 const showGrid = ref(true)
 
 function zoomIn() {
@@ -1608,7 +1588,6 @@ function clearFloatingToolbar() {
   clearFloating()
 }
 
-// ── 加载与保存 ──
 async function load() {
   try {
     snapshot.value = await conduitApi.snapshot()
@@ -1651,7 +1630,7 @@ function isMode(m: 'blueprint' | 'json') {
   return mode.value === m
 }
 
-// ── 保存：悬浮条触发 → step-up 二次验证后应用（区分主树 / 子树） ──
+// 保存：悬浮条触发，step-up 二次验证后应用（主树 / 子树走不同接口）
 function onSaveRequested(c: string) {
   if (!parseTree()) {
     MessagePlugin.warning('行为树 JSON 非法，无法保存')
@@ -1730,7 +1709,6 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="bt-view" :class="{ 'is-dark': isDark }">
-    <!-- ═══════════ 蓝图模式 ═══════════ -->
     <div
       v-if="mode === 'blueprint'"
       class="bp-wrap"
@@ -1820,7 +1798,6 @@ onBeforeUnmount(() => {
           </div>
         </template>
 
-        <!-- 条件节点：仅输入引脚 -->
         <template #node-condition="sp">
           <div class="ue-node">
             <div class="ue-head cond">
@@ -1833,7 +1810,6 @@ onBeforeUnmount(() => {
           </div>
         </template>
 
-        <!-- 动作节点：仅输入引脚 -->
         <template #node-action="sp">
           <div class="ue-node">
             <div class="ue-head act">
@@ -1846,7 +1822,6 @@ onBeforeUnmount(() => {
           </div>
         </template>
 
-        <!-- 子树引用：仅输入引脚，双击进入 -->
         <template #node-subtree="sp">
           <div class="ue-node">
             <div class="ue-head sub">
@@ -1859,7 +1834,6 @@ onBeforeUnmount(() => {
           </div>
         </template>
 
-        <!-- Start 起始节点：仅输出引脚 -->
         <template #node-start>
           <div class="ue-start">
             <Play :size="14" />
@@ -1874,14 +1848,12 @@ onBeforeUnmount(() => {
         </template>
       </VueFlow>
 
-      <!-- 右键拖动框选矩形 -->
       <div
         v-if="boxSelecting && boxRect"
         class="box-rect"
         :style="{ left: boxRect.x + 'px', top: boxRect.y + 'px', width: boxRect.w + 'px', height: boxRect.h + 'px' }"
       />
 
-      <!-- 面包屑 + 返回上一级 -->
       <div class="bp-breadcrumb">
         <button class="crumb" :class="{ on: editCtx.kind === 'tree' }" @click="editCtx.kind === 'subtree' && exitSubtree()">
           蓝图
@@ -1895,7 +1867,6 @@ onBeforeUnmount(() => {
         </template>
       </div>
 
-      <!-- 悬浮工具栏（右上角） -->
       <div class="bp-toolbar">
         <div class="tool-seg">
           <button :class="{ on: isMode('blueprint') }" @click="setMode('blueprint')">蓝图</button>
@@ -1921,7 +1892,6 @@ onBeforeUnmount(() => {
         </transition>
       </div>
 
-      <!-- 悬浮审计面板 -->
       <transition name="audit">
         <div v-if="hoverAudit" class="hover-audit" :style="{ left: hoverPos.x + 'px', top: hoverPos.y + 'px' }">
           <div class="audit-head">
@@ -1946,7 +1916,6 @@ onBeforeUnmount(() => {
         </div>
       </transition>
 
-      <!-- 右键菜单（空白 / 节点 / 连线 / 引脚拖出） -->
       <transition name="menu">
         <div
           v-if="ctxMenu.visible"
@@ -1962,9 +1931,7 @@ onBeforeUnmount(() => {
             <template v-else>节点操作</template>
           </div>
 
-          <!-- 节点菜单：属性 / 替换为 / 断开连接 / 删除 -->
           <template v-if="ctxMenu.kind === 'node'">
-            <!-- 二级：断开输出连接（精确到目标节点） -->
             <template v-if="ctxMenu.subMenu === 'outputs'">
               <div class="ctx-subtitle">断开输出连接</div>
               <button v-for="t in nodeDisconnectTargets.outputs" :key="t.key" class="ctx-item" @click="disconnectOutput(t.key)">
@@ -1974,7 +1941,6 @@ onBeforeUnmount(() => {
               </button>
               <button class="ctx-item back" @click="ctxMenu.subMenu = null">← 返回</button>
             </template>
-            <!-- 二级：断开输入连接（精确到源节点） -->
             <template v-else-if="ctxMenu.subMenu === 'inputs'">
               <div class="ctx-subtitle">断开输入连接</div>
               <button v-for="t in nodeDisconnectTargets.inputs" :key="t.key" class="ctx-item" @click="disconnectInput(t.key)">
@@ -1984,7 +1950,6 @@ onBeforeUnmount(() => {
               </button>
               <button class="ctx-item back" @click="ctxMenu.subMenu = null">← 返回</button>
             </template>
-            <!-- 替换为二级菜单 -->
             <template v-else-if="ctxMenu.showReplace">
               <div class="ctx-subtitle">替换为</div>
               <button v-for="t in NODE_TYPES" :key="t.type" class="ctx-item" @click="replaceNodeType(t.type)">
@@ -1994,7 +1959,6 @@ onBeforeUnmount(() => {
               </button>
               <button class="ctx-item back" @click="ctxMenu.showReplace = false">← 返回</button>
             </template>
-            <!-- 主菜单 -->
             <template v-else>
               <button class="ctx-item" @click="ctxMenu.showReplace = true">
                 <Wand2 />
@@ -2037,7 +2001,6 @@ onBeforeUnmount(() => {
             </template>
           </template>
 
-          <!-- 引脚菜单：断开该引脚 / 删除输出 / 上移 / 下移 -->
           <template v-else-if="ctxMenu.kind === 'pin'">
             <button class="ctx-item" @click="disconnectPin()">
               <Link2Off />
@@ -2115,7 +2078,6 @@ onBeforeUnmount(() => {
             <button :class="{ on: propsTab === 'audit' }" @click="switchPropsTab('audit')">审计</button>
           </div>
 
-          <!-- 属性 Tab -->
           <div v-if="propsTab === 'props'" class="props-body">
             <div class="field">
               <label>名称</label>
@@ -2165,7 +2127,6 @@ onBeforeUnmount(() => {
             </div>
           </div>
 
-          <!-- 审计 Tab -->
           <div v-else class="props-body">
             <template v-if="selectedNode.type !== 'action' || !selectedNode.pipeline_id">
               <div class="audit-empty">仅动作节点（引用管线）有审计数据</div>
@@ -2200,7 +2161,6 @@ onBeforeUnmount(() => {
       </transition>
     </div>
 
-    <!-- ═══════════ JSON DSL 模式 ═══════════ -->
     <div v-else class="json-wrap">
       <div class="json-head">
         <div class="json-title">
@@ -2237,7 +2197,6 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-/* ══════════ 布局 ══════════ */
 .bt-view {
   position: relative;
   width: 100%;
@@ -2267,8 +2226,7 @@ onBeforeUnmount(() => {
   width: auto;
 }
 
-/* ══════════ 连线 ══════════
-   注意：边/引脚/连接线由 Vue Flow 内部渲染，scoped 样式必须用 :deep() 穿透，
+/* 边/引脚/连接线由 Vue Flow 内部渲染，scoped 样式必须用 :deep() 穿透，
    否则选择器被加上 data-v 属性而失效（此前 hover 加粗不生效、dark 下聚焦线变暗的根因）。 */
 .bp-wrap :deep(.vue-flow__edge-path) {
   stroke: var(--mgr-text-muted);
@@ -2314,7 +2272,6 @@ onBeforeUnmount(() => {
   opacity: 0.85;
 }
 
-/* ══════════ 引脚 ══════════ */
 .bp-wrap :deep(.vue-flow__handle) {
   width: 13px;
   height: 13px;
@@ -2342,7 +2299,6 @@ onBeforeUnmount(() => {
   pointer-events: none;
 }
 
-/* ══════════ 节点卡片（虚幻蓝图风格） ══════════ */
 .ue-node {
   position: relative;
   width: 232px;
@@ -2409,7 +2365,6 @@ onBeforeUnmount(() => {
   font-weight: 700;
 }
 
-/* ══════════ 动态输出引脚（选择 / 顺序节点） ══════════ */
 .ue-dyn .ue-label {
   padding: 6px 12px 7px;
   font-size: 12px;
@@ -2491,19 +2446,16 @@ onBeforeUnmount(() => {
   pointer-events: none;
 }
 
-/* 框选多选高亮 */
 .vue-flow__node.box-sel .ue-node {
   border-color: var(--mgr-primary);
   box-shadow: 0 0 0 2px var(--mgr-primary-soft), var(--mgr-shadow-md);
 }
 
-/* 工具栏禁用态 */
 .tool-btn:disabled {
   opacity: 0.35;
   cursor: not-allowed;
 }
 
-/* Start 节点 */
 .ue-start {
   display: flex;
   align-items: center;
@@ -2520,7 +2472,6 @@ onBeforeUnmount(() => {
   cursor: grab;
 }
 
-/* 执行中节点：脉冲聚焦动画 */
 .vue-flow__node.executing .ue-node {
   border-color: var(--mgr-primary);
   box-shadow: 0 0 0 4px var(--mgr-primary-soft), 0 0 30px var(--mgr-primary-soft);
@@ -2536,7 +2487,6 @@ onBeforeUnmount(() => {
   }
 }
 
-/* ══════════ 面包屑 ══════════ */
 .bp-breadcrumb {
   position: absolute;
   top: 14px;
@@ -2587,7 +2537,6 @@ onBeforeUnmount(() => {
   background: var(--mgr-primary-soft);
 }
 
-/* ══════════ 悬浮工具栏 ══════════ */
 .bp-toolbar {
   position: absolute;
   top: 14px;
@@ -2681,7 +2630,6 @@ onBeforeUnmount(() => {
   opacity: 0;
 }
 
-/* ══════════ 悬浮审计面板（毛玻璃） ══════════ */
 .hover-audit {
   position: fixed;
   z-index: 50;
@@ -2808,7 +2756,6 @@ onBeforeUnmount(() => {
   transform: translateY(-4px) scale(0.98);
 }
 
-/* ══════════ 右键菜单（毛玻璃） ══════════ */
 .ctx-menu {
   position: fixed;
   z-index: 60;
@@ -2884,7 +2831,6 @@ onBeforeUnmount(() => {
   text-align: left;
   transition: background 0.12s ease;
 }
-/* 二级条目：一级分类下缩进 */
 .ctx-item.sub {
   padding-left: 22px;
 }
@@ -2908,7 +2854,6 @@ onBeforeUnmount(() => {
   color: var(--mgr-text-muted);
   white-space: nowrap;
 }
-/* 断连二级菜单条目：目标节点小圆点 */
 .ctx-item .ctx-dot {
   width: 7px;
   height: 7px;
@@ -2917,7 +2862,6 @@ onBeforeUnmount(() => {
   background: var(--mgr-primary);
   opacity: 0.7;
 }
-/* 一级分类行（可折叠） */
 .ctx-group {
   display: flex;
   align-items: center;
@@ -2983,7 +2927,6 @@ onBeforeUnmount(() => {
   transform: scale(0.96) translateY(-4px);
 }
 
-/* ══════════ 右侧属性面板 ══════════ */
 .props-panel {
   position: absolute;
   top: 56px;
@@ -3025,7 +2968,6 @@ onBeforeUnmount(() => {
 .props-close:hover {
   color: var(--mgr-danger);
 }
-/* 属性 / 审计 Tab */
 .props-tabs {
   display: flex;
   gap: 4px;
@@ -3107,7 +3049,6 @@ onBeforeUnmount(() => {
   transform: translateX(16px);
 }
 
-/* ══════════ JSON DSL 模式 ══════════ */
 .json-wrap {
   position: absolute;
   inset: 0;
@@ -3142,14 +3083,12 @@ onBeforeUnmount(() => {
   height: 100%;
   font-size: 13px;
 }
-/* JSON DSL 编辑器统一使用 Cascadia Code 等宽字体（含行号栏） */
 .json-editor :deep(.cm-scroller),
 .json-editor :deep(.cm-content),
 .json-editor :deep(.cm-gutters) {
   font-family: 'Cascadia Code', 'JetBrains Mono', Consolas, 'Courier New', monospace;
 }
 
-/* ══════════ 底部悬浮保存条 ══════════ */
 .canvas-savebar {
   position: absolute;
   left: 50%;

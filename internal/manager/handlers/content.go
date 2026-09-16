@@ -1,10 +1,7 @@
-// 内容管理（M3）HTTP API 处理器：
-// 群组 / 用户 / 知识库 / 记忆 / 插件 / Skills / Prompt 模板 / 表情包 / 命令。
-//
-// 安全约定：
-//   - 所有读操作走 protected 组（CSRF + Bearer）；
-//   - 所有写操作额外 super + stepUp 双重校验；
-//   - 写操作一律经 audit.Record 留痕（auditOK/auditDeny）。
+// 内容管理（M3）HTTP API 处理器：群组 / 用户 / 知识库 / 记忆 / 插件 /
+// Skills / Prompt 模板 / 表情包 / 命令。
+// 读操作走 protected 组（CSRF + Bearer）；写操作额外 super + stepUp 双重
+// 校验，并一律经 audit.Record 留痕（auditOK/auditDeny）。
 package handlers
 
 import (
@@ -24,10 +21,6 @@ import (
 	"github.com/DaWesen/lanmei-dream/internal/model"
 	"github.com/DaWesen/lanmei-dream/internal/plugin"
 )
-
-// ─────────────────────────────────────────────
-// 视图结构
-// ─────────────────────────────────────────────
 
 // GroupView 群组视图。
 type GroupView struct {
@@ -129,10 +122,6 @@ type CommandView struct {
 	Source      string `json:"source"` // builtin / plugin:<id>
 }
 
-// ─────────────────────────────────────────────
-// 依赖访问辅助
-// ─────────────────────────────────────────────
-
 func (h *Handler) pluginRegistry() *plugin.Registry {
 	if h.bot == nil {
 		return nil
@@ -161,11 +150,8 @@ func jsonString(v any) string {
 	return string(b)
 }
 
-// ─────────────────────────────────────────────
-// 群组
-// ─────────────────────────────────────────────
-
 // ListGroups 群列表（跨链路表聚合 + 群配置）。
+// 权限：登录即可，不要求超管；分页返回 items + total。
 func (h *Handler) ListGroups(c fiber.Ctx) error {
 	offset, limit := pageQuery(c)
 	ctx := c.Context()
@@ -210,6 +196,7 @@ func (h *Handler) ListGroups(c fiber.Ctx) error {
 
 // GetGroupConfig 查询单个群配置（无配置时返回空对象）。
 // 平台参数可能缺失（前端列表行平台未知时以 "all" 占位）：忽略平台按 group_id 命中。
+// 权限：登录即可，不要求超管。
 func (h *Handler) GetGroupConfig(c fiber.Ctx) error {
 	platform := c.Params("platform")
 	if platform == "all" {
@@ -249,6 +236,7 @@ type groupConfigReq struct {
 }
 
 // SaveGroupConfig 保存群配置（有则更新，无则创建）。
+// 权限：仅 super + step-up。
 func (h *Handler) SaveGroupConfig(c fiber.Ctx) error {
 	admin := currentAdmin(c)
 	var req groupConfigReq
@@ -297,11 +285,8 @@ func (h *Handler) SaveGroupConfig(c fiber.Ctx) error {
 	return c.JSON(fiber.Map{"ok": true})
 }
 
-// ─────────────────────────────────────────────
-// 用户
-// ─────────────────────────────────────────────
-
 // ListUsers 用户列表（分页 + 关键字）。
+// 权限：登录即可，不要求超管；分页返回 items + total。
 func (h *Handler) ListUsers(c fiber.Ctx) error {
 	offset, limit := pageQuery(c)
 	list, total, err := h.store.ListUsers(c.Context(), c.Query("keyword"), offset, limit)
@@ -355,11 +340,8 @@ func (h *Handler) SetUserBan(c fiber.Ctx) error {
 	return c.JSON(fiber.Map{"ok": true})
 }
 
-// ─────────────────────────────────────────────
-// 知识库
-// ─────────────────────────────────────────────
-
 // ListKnowledgeBases 知识库列表（配置元信息 + 分块数）。
+// 权限：登录即可，不要求超管。
 func (h *Handler) ListKnowledgeBases(c fiber.Ctx) error {
 	if h.knowledge == nil {
 		return c.JSON(fiber.Map{"items": []KnowledgeBaseView{}, "total": 0})
@@ -385,6 +367,7 @@ func (h *Handler) ListKnowledgeBases(c fiber.Ctx) error {
 }
 
 // ListKnowledgeChunks 知识库分块列表。
+// 权限：登录即可，不要求超管。
 func (h *Handler) ListKnowledgeChunks(c fiber.Ctx) error {
 	offset, limit := pageQuery(c)
 	list, total, err := h.store.ListKnowledgeChunks(c.Context(), c.Query("base"), c.Query("keyword"), offset, limit)
@@ -395,6 +378,7 @@ func (h *Handler) ListKnowledgeChunks(c fiber.Ctx) error {
 }
 
 // DeleteKnowledgeChunk 删除单个知识库分块。
+// 权限：仅 super + step-up。
 func (h *Handler) DeleteKnowledgeChunk(c fiber.Ctx) error {
 	admin := currentAdmin(c)
 	id, err := strconv.ParseInt(c.Params("id"), 10, 64)
@@ -410,6 +394,7 @@ func (h *Handler) DeleteKnowledgeChunk(c fiber.Ctx) error {
 }
 
 // SyncKnowledge 触发知识库内容重同步（?base= 指定单个，缺省全部）。
+// 权限：仅 super + step-up。
 func (h *Handler) SyncKnowledge(c fiber.Ctx) error {
 	admin := currentAdmin(c)
 	if h.knowledge == nil {
@@ -423,11 +408,8 @@ func (h *Handler) SyncKnowledge(c fiber.Ctx) error {
 	return c.JSON(fiber.Map{"ok": true})
 }
 
-// ─────────────────────────────────────────────
-// 记忆
-// ─────────────────────────────────────────────
-
 // ListMemories 记忆列表（按用户/群/关键字过滤）。
+// 权限：登录即可，不要求超管。
 func (h *Handler) ListMemories(c fiber.Ctx) error {
 	offset, limit := pageQuery(c)
 	list, total, err := h.store.ListMemories(c.Context(), c.Query("user_id"), c.Query("group_id"), c.Query("keyword"), offset, limit)
@@ -448,6 +430,7 @@ func (h *Handler) ListMemories(c fiber.Ctx) error {
 }
 
 // DeleteMemory 删除单条记忆。
+// 权限：仅 super + step-up。
 func (h *Handler) DeleteMemory(c fiber.Ctx) error {
 	admin := currentAdmin(c)
 	id, err := strconv.ParseInt(c.Params("id"), 10, 64)
@@ -462,11 +445,8 @@ func (h *Handler) DeleteMemory(c fiber.Ctx) error {
 	return c.JSON(fiber.Map{"ok": true})
 }
 
-// ─────────────────────────────────────────────
-// 插件
-// ─────────────────────────────────────────────
-
 // ListPlugins 插件列表：运行时注册表 + Wasm 安装记录合并。
+// 权限：登录即可，不要求超管。
 func (h *Handler) ListPlugins(c fiber.Ctx) error {
 	ctx := c.Context()
 	byID := map[string]*PluginView{}
@@ -556,9 +536,11 @@ func (h *Handler) wasmInstallation(ctx context.Context, pluginID string) (string
 }
 
 // EnablePlugin 启用插件：Wasm 走持久化启停；内置插件为运行时启停（重启按配置恢复）。
+// 权限：仅 super + step-up。
 func (h *Handler) EnablePlugin(c fiber.Ctx) error { return h.setPluginEnabled(c, true) }
 
 // DisablePlugin 停用插件。
+// 权限：仅 super + step-up。
 func (h *Handler) DisablePlugin(c fiber.Ctx) error { return h.setPluginEnabled(c, false) }
 
 func (h *Handler) setPluginEnabled(c fiber.Ctx, enabled bool) error {
@@ -586,7 +568,6 @@ func (h *Handler) setPluginEnabled(c fiber.Ctx, enabled bool) error {
 		return c.JSON(fiber.Map{"ok": true})
 	}
 
-	// 内置插件运行时启停
 	reg := h.pluginRegistry()
 	if reg != nil {
 		if _, ok := reg.Get(id); ok {
@@ -608,6 +589,7 @@ func (h *Handler) setPluginEnabled(c fiber.Ctx, enabled bool) error {
 }
 
 // DeletePlugin 删除 Wasm 插件（含安装记录与文件）。
+// 权限：仅 super + step-up。
 func (h *Handler) DeletePlugin(c fiber.Ctx) error {
 	admin := currentAdmin(c)
 	id := c.Params("id")
@@ -624,11 +606,8 @@ func (h *Handler) DeletePlugin(c fiber.Ctx) error {
 	return c.JSON(fiber.Map{"ok": true})
 }
 
-// ─────────────────────────────────────────────
-// Skills
-// ─────────────────────────────────────────────
-
 // ListSkills 技能列表。
+// 权限：登录即可，不要求超管。
 func (h *Handler) ListSkills(c fiber.Ctx) error {
 	if h.skills == nil {
 		return c.JSON(fiber.Map{"items": []SkillView{}, "total": 0})
@@ -652,9 +631,11 @@ func (h *Handler) ListSkills(c fiber.Ctx) error {
 }
 
 // EnableSkill 启用技能（运行时切换并同步写回 skills.toml）。
+// 权限：仅 super + step-up。
 func (h *Handler) EnableSkill(c fiber.Ctx) error { return h.setSkillEnabled(c, true) }
 
 // DisableSkill 停用技能。
+// 权限：仅 super + step-up。
 func (h *Handler) DisableSkill(c fiber.Ctx) error { return h.setSkillEnabled(c, false) }
 
 func (h *Handler) setSkillEnabled(c fiber.Ctx, enabled bool) error {
@@ -678,11 +659,8 @@ func (h *Handler) setSkillEnabled(c fiber.Ctx, enabled bool) error {
 	return c.JSON(fiber.Map{"ok": true})
 }
 
-// ─────────────────────────────────────────────
-// Prompt 模板
-// ─────────────────────────────────────────────
-
 // ListPromptFragments Prompt 片段列表（不含内容）。
+// 权限：登录即可，不要求超管。
 func (h *Handler) ListPromptFragments(c fiber.Ctx) error {
 	if h.prompts == nil {
 		return c.JSON(fiber.Map{"items": []PromptFragmentView{}, "total": 0})
@@ -696,6 +674,7 @@ func (h *Handler) ListPromptFragments(c fiber.Ctx) error {
 }
 
 // GetPromptFragment 单个 Prompt 片段（含内容）。
+// 权限：登录即可，不要求超管。
 func (h *Handler) GetPromptFragment(c fiber.Ctx) error {
 	if h.prompts == nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Prompt 系统未启用"})
@@ -709,6 +688,7 @@ func (h *Handler) GetPromptFragment(c fiber.Ctx) error {
 }
 
 // UpdatePromptFragment 更新 Prompt 片段内容（写回文件 + 热重载；builtin 只读）。
+// 权限：仅 super + step-up。
 func (h *Handler) UpdatePromptFragment(c fiber.Ctx) error {
 	admin := currentAdmin(c)
 	id := c.Params("id")
@@ -729,11 +709,8 @@ func (h *Handler) UpdatePromptFragment(c fiber.Ctx) error {
 	return c.JSON(fiber.Map{"ok": true})
 }
 
-// ─────────────────────────────────────────────
-// 表情包
-// ─────────────────────────────────────────────
-
 // ListStickers 表情包列表（分页 + 关键字）。
+// 权限：登录即可，不要求超管；分页返回 items + total。
 func (h *Handler) ListStickers(c fiber.Ctx) error {
 	offset, limit := pageQuery(c)
 	list, total, err := h.store.ListStickers(c.Context(), c.Query("keyword"), offset, limit)
@@ -755,6 +732,7 @@ func (h *Handler) ListStickers(c fiber.Ctx) error {
 }
 
 // UpdateSticker 更新表情包语义标签。
+// 权限：仅 super + step-up。
 func (h *Handler) UpdateSticker(c fiber.Ctx) error {
 	admin := currentAdmin(c)
 	id, err := strconv.ParseUint(c.Params("id"), 10, 32)
@@ -779,6 +757,7 @@ func (h *Handler) UpdateSticker(c fiber.Ctx) error {
 }
 
 // DeleteSticker 删除表情包记录（对象存储内容按寻址保留）。
+// 权限：仅 super + step-up。
 func (h *Handler) DeleteSticker(c fiber.Ctx) error {
 	admin := currentAdmin(c)
 	id, err := strconv.ParseUint(c.Params("id"), 10, 32)
@@ -793,11 +772,10 @@ func (h *Handler) DeleteSticker(c fiber.Ctx) error {
 	return c.JSON(fiber.Map{"ok": true})
 }
 
-// ─────────────────────────────────────────────
 // 命令（只读）
-// ─────────────────────────────────────────────
 
 // ListCommands 命令列表：内置命令 + 插件注册命令。
+// 权限：登录即可，不要求超管。
 func (h *Handler) ListCommands(c fiber.Ctx) error {
 	items := []CommandView{}
 	seen := map[string]struct{}{}
@@ -824,10 +802,7 @@ func (h *Handler) ListCommands(c fiber.Ctx) error {
 	return c.JSON(fiber.Map{"items": items, "total": len(items)})
 }
 
-// ─────────────────────────────────────────────
-// 编译期断言：确保依赖类型未被误删
-// ─────────────────────────────────────────────
-
+// 编译期断言：确保依赖类型未被误删。
 var (
 	_ = prompt.Manager{}
 	_ = skill.Manager{}

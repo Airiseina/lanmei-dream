@@ -1,10 +1,8 @@
 // Package bot 实现 Conduit 行为树的意图分析节点。
 //
-// 设计说明：
-// IntentAnalysisPass 实现 conduit.RouterPass 接口，在 Execute 中执行 LLM 意图分析，
-// 在 Route 中根据分析结果动态路由到对应管线（roleplay / command_exec / ignore / fallback）。
-// 相比传统的 Condition + Selector 方案，RouterPass 消除了「BT Tick 时分析结果尚未写入」
-// 的时序问题，因为 Route 在 Execute 之后才被引擎调用。
+// IntentAnalysisPass 实现 conduit.RouterPass：Execute 执行 LLM 意图分析，Route 按结果
+// 动态路由到对应管线（roleplay / command_exec / ignore / fallback）。相比 Condition +
+// Selector 方案，RouterPass 消除了「BT Tick 时分析结果尚未写入」的时序问题。
 package bot
 
 import (
@@ -21,20 +19,25 @@ import (
 	"github.com/DaWesen/lanmei-dream/internal/model"
 )
 
-// intentResultKey 存储意图分析结果的上下文键
 const intentResultKey = "bot.intent.result"
 
-// ── IntentAnalysisPass（RouterPass：LLM 意图分析 + 动态路由） ──
-
 // IntentAnalysisPass 实现 conduit.RouterPass。
-// Execute 调用 LLM 分析意图并写入 MessageContext，
-// Route 根据分析结果返回对应的管线 ID。
+// Execute 调用 LLM 分析意图并写入 MessageContext，Route 根据分析结果返回对应的管线 ID。
 type IntentAnalysisPass struct {
 	Analyzer *intent.Analyzer
 	ChatSvc  *ai.ChatService // nil 时 IntentChat/IntentTool 走 fallback
 	logger   *zap.Logger
 }
 
+// Execute 调用意图分析器分析 ctx.RawMsg，把 *intent.Result 写入 ctx.data（私有键 intentResultKey），
+// 供 Route 选择下游管线。
+//
+// 位置：pipeline.intent_analysis 唯一 Pass（私聊非命令消息；RouterPass：Execute 只写分析结果）。
+//
+// 依赖上下文键：ctx.Ctx（LLM 调用沿用其取消/超时）、ctx.RawMsg；私聊无群聊上下文，judgeCtx 传 nil。
+//
+// 失败降级：Analyzer 为 nil 时按 IntentChat/置信度 1.0 处理；分析出错时记录日志并按
+// IntentChat/0.5 降级；两种情况 Execute 都返回 nil（错误不中断管线，由 Route 兜底）。
 func (p *IntentAnalysisPass) Execute(ctx *conduit.MessageContext) error {
 	if p.Analyzer == nil {
 		p.logger.Warn("intent: analyzer is nil, defaulting to chat")
@@ -81,14 +84,19 @@ func (p *IntentAnalysisPass) Route(ctx *conduit.MessageContext) (string, error) 
 	}
 }
 
-// ── IntentIgnorePass：静默忽略 ──
-
 // IntentIgnorePass 保存消息到对话历史但不生成回复。
 // 适用于用户发送了无需回复的内容（表情包、系统通知等）。
 type IntentIgnorePass struct {
 	DB *database.DB
 }
 
+// Execute 把用户消息保存到对话历史（SourceChat，不生成回复），供后续压缩与记忆使用。
+//
+// 位置：pipeline.intent_ignore 唯一 Pass（意图为 IntentIgnore 的消息）。
+//
+// 依赖上下文键：ctx.Ctx 与 Extra 的 KeyPlatform/KeyPlatformUserID/KeyNickname（查询或创建用户）。
+//
+// 失败语义：取用户或写库失败返回 conduit.NewSoftError（引擎记录日志但不中断管线）。
 func (p *IntentIgnorePass) Execute(ctx *conduit.MessageContext) error {
 	// 保存用户消息到对话历史（供后续压缩/记忆使用）
 	platform := platformFromCtx(ctx)
@@ -101,11 +109,8 @@ func (p *IntentIgnorePass) Execute(ctx *conduit.MessageContext) error {
 	if err := p.DB.SaveConversation(ctx.Ctx, user.ID, ctx.GroupID, "user", ctx.RawMsg, model.SourceChat, ""); err != nil {
 		return conduit.NewSoftError(fmt.Errorf("intent_ignore: save conversation: %w", err))
 	}
-	// 不生成任何回复 → 静默忽略
 	return nil
 }
-
-// ── IntentCommandExecPass：从意图结果执行命令 ──
 
 // IntentCommandExecPass 从意图分析结果中提取命令名并执行对应命令。
 // 其内部复用 ExecuteCommandPass 的执行逻辑。
@@ -113,6 +118,16 @@ type IntentCommandExecPass struct {
 	CmdSys *command.System
 }
 
+// Execute 读取意图分析结果中的命令名并执行对应命令；命令不存在时回复提示，不静默降级。
+//
+// 位置：pipeline.intent_command_exec 唯一 Pass（意图为 IntentCommand 时由 Route 路由进入）。
+//
+// 依赖上下文键：intentResultKey（IntentAnalysisPass/TopicGatePass 写入的 *intent.Result）；
+// 命中后把命令名/参数/handler 写入 ExecuteCommandPass 使用的三个私有键，并委托 ExecuteCommandPass 执行
+// （参数透传 LLM 从消息中提取的命令参数，而非固定空参数）。
+//
+// 失败语义：结果缺失或 CommandName 为空时直接返回 nil（不产生输出）；命令未注册时写入
+// "不认识命令"提示并返回 nil；handler 的错误由 ExecuteCommandPass 原样返回。
 func (p *IntentCommandExecPass) Execute(ctx *conduit.MessageContext) error {
 	result, ok := conduit.Get[*intent.Result](ctx, intentResultKey)
 	if !ok || result == nil || result.CommandName == "" {
@@ -138,8 +153,6 @@ func (p *IntentCommandExecPass) Execute(ctx *conduit.MessageContext) error {
 
 	return (&ExecuteCommandPass{}).Execute(ctx)
 }
-
-// ── 构建辅助 ──
 
 // BuildIntentCommands 从 command.System 提取命令定义列表，用于意图分析 prompt。
 func BuildIntentCommands(cmdSys *command.System) []intent.CommandDef {

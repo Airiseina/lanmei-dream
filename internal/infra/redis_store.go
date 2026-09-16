@@ -19,7 +19,8 @@ type RedisStore struct {
 	prefix string // 键前缀，避免与其他业务冲突
 }
 
-// NewRedisStore 创建基于 Redis 的状态存储
+// NewRedisStore 创建基于 Redis 的状态存储。
+// prefix 为空时回退为 "conduit"；client 生命周期由 Infra 统一管理（本存储的 Close 不关闭连接）。
 func NewRedisStore(client *redis.Client, prefix string) *RedisStore {
 	if prefix == "" {
 		prefix = "conduit"

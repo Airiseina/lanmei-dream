@@ -1,3 +1,4 @@
+// Package memory 定义长期记忆的存储/检索抽象（MemoryStore）与多路召回合并（MultiRetriever）。
 package memory
 
 import "context"
@@ -13,11 +14,13 @@ type Memory struct {
 	Metadata map[string]any
 }
 
-// MemoryStore 抽象记忆的存储与检索。
-// PGVectorStore 是其基于 pgvector 的实现。
+// MemoryStore 抽象记忆的存储与检索，PGVectorStore 是其 pgvector 实现。
 //
-// 群级过滤约定：groupID 为空时仅检索用户个人记忆（group_id=”）；
-// groupID 非空时检索该群的群级记忆（group_id=gid）或该用户的个人记忆。
+// 群级过滤约定：groupID 为空仅检索用户个人记忆（group_id=”）；
+// 非空时检索该群的群级记忆（group_id=gid）或该用户的个人记忆。
+//
+// 契约：实现必须并发安全（对话记忆写入与话题归档、多路召回会从不同 goroutine 并发调用），
+// 并尊重 ctx 的取消与超时；检索类方法失败时由调用方降级（返回错误但不中断对话）。
 type MemoryStore interface {
 	// Store 存储一条记忆（含向量），mem.GroupID 非空时写入群级记忆
 	Store(ctx context.Context, mem *Memory) error

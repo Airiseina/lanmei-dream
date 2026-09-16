@@ -11,24 +11,11 @@ import (
 	"github.com/zrurf/conduit"
 )
 
-// ============================================================
-// CatPlugin 猫猫插件
-// ============================================================
-
-// CatPlugin 返回 HTTP Cat 图片。
+// CatPlugin 返回 HTTP Cat 图片：/猫猫、/哈基米 随机取图，带数字参数时取该状态码的图片，
+// 状态码不在 http.cat 支持列表内则回退 404 猫猫。
 //
-// 功能：
-//   - /猫猫 或 /哈基米：返回随机 HTTP Cat 图片
-//   - /猫猫 404：返回指定状态码的猫猫图片
-//   - 无效状态码返回 404 猫猫图片
-//
-// 行为树：
-//
-//	subtree.cat → Sequence(isCatCommand, Action("pipeline.plugin.cat"))
-//
-// 管线：
-//
-//	pipeline.plugin.cat → [catPass]
+// 插件 ID cat；命令 /猫猫、/哈基米，工具 cat_image；
+// 仅依赖外部 http.cat 图床（无本地配置项与降级开关）。
 type CatPlugin struct{}
 
 // NewCatPlugin 创建猫猫插件。
@@ -60,7 +47,6 @@ func (p *CatPlugin) Info() pluginpkg.PluginInfo {
 
 // OnInit 初始化猫猫插件，注册 Pass、Pipeline 和 Subtree。
 func (p *CatPlugin) OnInit(ctx *pluginpkg.PluginContext) error {
-	// 注册 Pass
 	passID := pluginpkg.PassID("cat", "main")
 	pass := &catPass{}
 
@@ -69,7 +55,6 @@ func (p *CatPlugin) OnInit(ctx *pluginpkg.PluginContext) error {
 	}
 	ctx.Registry.TrackPass("cat", passID)
 
-	// 注册管线
 	pipelineID := pluginpkg.PipelineID("cat", "main")
 	pl := conduit.NewPipelineFromIDs(pipelineID, passID)
 	if err := ctx.Engine.RegisterPipeline(pl); err != nil {
@@ -77,7 +62,6 @@ func (p *CatPlugin) OnInit(ctx *pluginpkg.PluginContext) error {
 	}
 	ctx.Registry.TrackPipeline("cat", pipelineID)
 
-	// 注册行为树子树
 	subtree := conduit.NewSequence(
 		conduit.NewCondition(isCatCommand),
 		conduit.NewAction(pipelineID),
@@ -95,10 +79,6 @@ func (p *CatPlugin) OnStart(_ *pluginpkg.PluginContext) error { return nil }
 // OnStop 猫猫插件无需清理资源。
 func (p *CatPlugin) OnStop(_ *pluginpkg.PluginContext) error { return nil }
 
-// ============================================================
-// 条件判断
-// ============================================================
-
 // isCatCommand 判断消息是否为猫猫命令。
 // 匹配 /猫猫、/哈基米（无参数）或 /猫猫 <数字>、/哈基米 <数字>。
 func isCatCommand(ctx *conduit.MessageContext) bool {
@@ -110,10 +90,6 @@ func isCatCommand(ctx *conduit.MessageContext) bool {
 	cmd := parts[0]
 	return cmd == "/猫猫" || cmd == "/哈基米"
 }
-
-// ============================================================
-// Pass 实现
-// ============================================================
 
 // httpCatStatusCodes 是 HTTP Cat 支持的状态码列表（与上游 LanMei 保持一致）。
 // 来源：https://http.cat
@@ -143,6 +119,9 @@ func isValidCatCode(code int) bool {
 // catPass 解析命令参数并输出猫猫图片 URL。
 type catPass struct{}
 
+// Execute 输出猫猫图片 URL：带数字参数时取该状态码的 http.cat 图片，
+// 参数非法或不在支持列表内时回退 404 猫猫，无参数时从支持列表随机取一个状态码。
+// 由 plugin.cat.pipeline.main 在 isCatCommand 命中 /猫猫、/哈基米 后调用，不读写上下文键。
 func (pass *catPass) Execute(ctx *conduit.MessageContext) error {
 	msg := strings.TrimSpace(ctx.RawMsg)
 	parts := strings.SplitN(msg, " ", 2)
@@ -150,17 +129,14 @@ func (pass *catPass) Execute(ctx *conduit.MessageContext) error {
 	var imageURL string
 
 	if len(parts) == 2 && strings.TrimSpace(parts[1]) != "" {
-		// 带参数：尝试解析为状态码
 		arg := strings.TrimSpace(parts[1])
 		code, err := strconv.Atoi(arg)
 		if err != nil || !isValidCatCode(code) {
-			// 无效状态码，返回 404
 			imageURL = httpCatURL(404)
 		} else {
 			imageURL = httpCatURL(code)
 		}
 	} else {
-		// 无参数：随机返回一张
 		code := httpCatStatusCodes[rand.IntN(len(httpCatStatusCodes))]
 		imageURL = httpCatURL(code)
 	}
@@ -171,10 +147,6 @@ func (pass *catPass) Execute(ctx *conduit.MessageContext) error {
 	})
 	return nil
 }
-
-// ============================================================
-// AI 工具
-// ============================================================
 
 // toolCatImage 是 AI 工具处理器，返回随机猫猫图片 URL。
 func (p *CatPlugin) toolCatImage(_ context.Context, _ string) (string, error) {

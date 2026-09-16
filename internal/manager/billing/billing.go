@@ -1,12 +1,6 @@
-// Package billing 负责 LLM Token 用量采集与计费。
-//
-// 设计要点：
-//   - 实现 llm.UsageHook 回调（由 ChatService / EinoClient / ProviderManager 注入），
-//     将每次 LLM 调用的用量异步批量写入 token_usage 表；
-//   - 按 Provider 定价表（元/百万 token）实时计算费用（分），价格表由面板
-//     LLM Provider 管理接口同步维护（内存缓存，写请求时刷新）；
-//   - 批量落库采用"队列 + 后台消费者"模式：单次调用不阻塞主链路，
-//     队列积压时主动丢弃并告警，绝不拖慢消息处理。
+// Package billing 负责 LLM Token 用量采集与计费：通过 llm.UsageHook 回调将每次调用
+// 按 Provider 定价表（元/百万 token）实时计价，并以“队列 + 后台消费者”异步批量写入
+// token_usage 表；价格表由面板 Provider 管理接口维护，队列积压时主动丢弃并告警。
 package billing
 
 import (

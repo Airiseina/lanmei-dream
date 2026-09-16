@@ -20,18 +20,10 @@ import (
 )
 
 // ObjectStore 基于 RustFS（S3 兼容对象存储）的多媒体缓存封装。
+// key 为内容寻址（sha256(data)[:16] + 扩展名），同一内容只落一份对象，重复下载零成本。
 //
-// 职责：
-//   - Put：将媒体字节上传到桶，key = sha256(data)[:16] + 扩展名（内容寻址，天然去重）
-//   - Get：按 key 下载对象内容
-//   - Head：判断对象是否已存在（缓存命中判定）
-//   - Presign：生成临时只读 URL，供视觉理解与发送图片使用
-//   - Delete：按对象键删除不再被业务记录引用的对象
-//
-// 设计要点：
-//   - 内容寻址 key 保证同一张图片只落一份对象，重复下载零成本；
-//   - 桶不存在时 Put 自动创建并重试一次（启动不依赖网络可达）；
-//   - 所有方法均返回可读错误，调用方（MediaPass）负责降级。
+// Put 在桶不存在时自动创建并重试一次（启动不依赖网络可达）；
+// 各方法均返回可读错误，由调用方（MediaPass）负责降级。
 type ObjectStore struct {
 	client       *s3.Client
 	presigner    *s3.PresignClient
@@ -42,6 +34,7 @@ type ObjectStore struct {
 // NewObjectStore 创建 RustFS（S3 兼容）对象存储客户端。
 // endpoint 形如 http://localhost:9000；accessKey/secretKey 为 S3 凭据；
 // region 对 RustFS 无实际意义，传任意值（默认 us-east-1）。
+// endpoint/bucket 为空或 endpoint 解析不出 host 时返回错误；构造过程不发起网络请求。
 func NewObjectStore(endpoint, accessKey, secretKey, bucket, region string) (*ObjectStore, error) {
 	if endpoint == "" {
 		return nil, errors.New("media: endpoint 为空")

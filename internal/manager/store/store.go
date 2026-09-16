@@ -33,10 +33,6 @@ func (s *Store) DB() *database.DB {
 	return s.db
 }
 
-// ─────────────────────────────────────────────
-// 管理员
-// ─────────────────────────────────────────────
-
 // CreateAdmin 创建管理员。
 func (s *Store) CreateAdmin(ctx context.Context, admin *model.ManagerAdmin) error {
 	return s.db.Orm.WithContext(ctx).Create(admin).Error
@@ -68,7 +64,8 @@ func (s *Store) GetAdminByID(ctx context.Context, id uint) (*model.ManagerAdmin,
 	return &admin, nil
 }
 
-// ListAdmins 分页列出管理员。
+// ListAdmins 分页列出管理员，按 ID 升序。
+// 分页参数 offset/limit；返回当前页数据与总条数。
 func (s *Store) ListAdmins(ctx context.Context, offset, limit int) ([]model.ManagerAdmin, int64, error) {
 	var list []model.ManagerAdmin
 	var total int64
@@ -99,10 +96,6 @@ func (s *Store) DeleteAdmin(ctx context.Context, id uint) error {
 		return tx.Delete(&model.ManagerAdmin{}, id).Error
 	})
 }
-
-// ─────────────────────────────────────────────
-// 认证凭据
-// ─────────────────────────────────────────────
 
 // CreateCredential 创建凭据。
 func (s *Store) CreateCredential(ctx context.Context, cred *model.AuthCredential) error {
@@ -159,10 +152,6 @@ func (s *Store) SaveCredentialUpsert(ctx context.Context, cred *model.AuthCreden
 	}
 	return s.UpdateCredential(ctx, cred)
 }
-
-// ─────────────────────────────────────────────
-// 会话
-// ─────────────────────────────────────────────
 
 // CreateSession 创建会话。
 func (s *Store) CreateSession(ctx context.Context, sess *model.AuthSession) error {
@@ -233,16 +222,12 @@ func (s *Store) OldestActiveSessionID(ctx context.Context, adminID uint) (*model
 	return &sess, nil
 }
 
-// ─────────────────────────────────────────────
-// 登录尝试
-// ─────────────────────────────────────────────
-
 // CreateLoginAttempt 记录登录尝试。
 func (s *Store) CreateLoginAttempt(ctx context.Context, att *model.LoginAttempt) error {
 	return s.db.Orm.WithContext(ctx).Create(att).Error
 }
 
-// CountRecentLoginFails 统计某用户名在时间窗口内的连续失败次数。
+// CountRecentLoginFails 统计某用户名在时间窗口内的登录失败次数。
 func (s *Store) CountRecentLoginFails(ctx context.Context, username string, since time.Time) (int64, error) {
 	var n int64
 	err := s.db.Orm.WithContext(ctx).Model(&model.LoginAttempt{}).
@@ -251,7 +236,8 @@ func (s *Store) CountRecentLoginFails(ctx context.Context, username string, sinc
 	return n, err
 }
 
-// ListLoginAttempts 分页查询登录记录。
+// ListLoginAttempts 分页查询登录记录，按 ID 降序；username 为空时不按用户名过滤。
+// 分页参数 offset/limit；返回当前页数据与总条数。
 func (s *Store) ListLoginAttempts(ctx context.Context, username string, offset, limit int) ([]model.LoginAttempt, int64, error) {
 	var list []model.LoginAttempt
 	var total int64
@@ -268,16 +254,13 @@ func (s *Store) ListLoginAttempts(ctx context.Context, username string, offset, 
 	return list, total, nil
 }
 
-// ─────────────────────────────────────────────
-// 审计日志
-// ─────────────────────────────────────────────
-
 // CreateAuditLog 写入审计日志。
 func (s *Store) CreateAuditLog(ctx context.Context, log *model.AuditLog) error {
 	return s.db.Orm.WithContext(ctx).Create(log).Error
 }
 
-// ListAuditLogs 分页查询审计日志。
+// ListAuditLogs 分页查询审计日志，按 ID 降序；filter 各字段为零值时不过滤。
+// 分页参数 offset/limit；返回当前页数据与总条数。
 func (s *Store) ListAuditLogs(ctx context.Context, filter AuditFilter, offset, limit int) ([]model.AuditLog, int64, error) {
 	var list []model.AuditLog
 	var total int64
@@ -311,16 +294,13 @@ type AuditFilter struct {
 	Until    time.Time
 }
 
-// ─────────────────────────────────────────────
-// 配置版本
-// ─────────────────────────────────────────────
-
 // CreateConfigRevision 保存配置版本快照。
 func (s *Store) CreateConfigRevision(ctx context.Context, rev *model.ConfigRevision) error {
 	return s.db.Orm.WithContext(ctx).Create(rev).Error
 }
 
-// ListConfigRevisions 按作用域列出配置版本。
+// ListConfigRevisions 按作用域列出配置版本，按 ID 降序；name 为空时不按名称过滤。
+// 分页参数 offset/limit；返回当前页数据与总条数。
 func (s *Store) ListConfigRevisions(ctx context.Context, scope model.ConfigScope, name string, offset, limit int) ([]model.ConfigRevision, int64, error) {
 	var list []model.ConfigRevision
 	var total int64
@@ -350,10 +330,6 @@ func (s *Store) GetConfigRevision(ctx context.Context, id uint) (*model.ConfigRe
 	return &rev, nil
 }
 
-// ─────────────────────────────────────────────
-// Conduit Trace
-// ─────────────────────────────────────────────
-
 // BatchCreateTraces 批量写入 trace。
 func (s *Store) BatchCreateTraces(ctx context.Context, traces []model.ConduitTrace) error {
 	if len(traces) == 0 {
@@ -362,7 +338,8 @@ func (s *Store) BatchCreateTraces(ctx context.Context, traces []model.ConduitTra
 	return s.db.Orm.WithContext(ctx).Create(&traces).Error
 }
 
-// ListTraces 分页查询 trace。
+// ListTraces 分页查询 trace，按 ID 降序；filter 各字段为空值时不过滤。
+// 分页参数 offset/limit；返回当前页数据与总条数。
 func (s *Store) ListTraces(ctx context.Context, filter TraceFilter, offset, limit int) ([]model.ConduitTrace, int64, error) {
 	var list []model.ConduitTrace
 	var total int64
@@ -413,10 +390,6 @@ func (s *Store) CountTraces(ctx context.Context, since time.Time, status string)
 	return n, err
 }
 
-// ─────────────────────────────────────────────
-// 节点流量
-// ─────────────────────────────────────────────
-
 // UpsertNodeTraffic 按分钟桶累加节点流量。
 func (s *Store) UpsertNodeTraffic(ctx context.Context, bucket time.Time, pipelineID, nodeName string, count, errCount, durMS int64) error {
 	// 先更新已存在的桶；影响 0 行则插入（并发场景由 unique 兜底）。
@@ -463,10 +436,6 @@ func (s *Store) DeleteNodeTrafficBefore(ctx context.Context, before time.Time) (
 	res := s.db.Orm.WithContext(ctx).Where("bucket < ?", before).Delete(&model.NodeTraffic{})
 	return res.RowsAffected, res.Error
 }
-
-// ─────────────────────────────────────────────
-// LLM Provider
-// ─────────────────────────────────────────────
 
 // ListLLMProviders 列出全部 Provider。
 func (s *Store) ListLLMProviders(ctx context.Context) ([]model.LLMProvider, error) {
@@ -526,10 +495,6 @@ func (s *Store) SetLLMProviderActive(ctx context.Context, id uint) error {
 	})
 }
 
-// ─────────────────────────────────────────────
-// Token 用量
-// ─────────────────────────────────────────────
-
 // BatchCreateTokenUsage 批量写入 token 用量。
 func (s *Store) BatchCreateTokenUsage(ctx context.Context, usages []model.TokenUsage) error {
 	if len(usages) == 0 {
@@ -568,11 +533,17 @@ type TokenUsageAgg struct {
 type Dimension string
 
 const (
-	DimModel    Dimension = "model"
+	// DimModel 按模型聚合（TokenUsage.Model）。
+	DimModel Dimension = "model"
+	// DimProvider 按 Provider 聚合（TokenUsage.Provider）。
 	DimProvider Dimension = "provider"
-	DimScene    Dimension = "scene"
-	DimUser     Dimension = "user_id"
-	DimGroup    Dimension = "group_id"
+	// DimScene 按用量场景聚合（chat/intent/compress/topic/vision）。
+	DimScene Dimension = "scene"
+	// DimUser 按用户聚合（TokenUsage.UserID 字符串化后的列值）。
+	DimUser Dimension = "user_id"
+	// DimGroup 按群聚合（私聊为空串）。
+	DimGroup Dimension = "group_id"
+	// DimPlatform 按平台聚合（qq/wechat/telegram 等）。
 	DimPlatform Dimension = "platform"
 )
 
@@ -640,10 +611,6 @@ func (s *Store) SumTokenCallsSince(ctx context.Context, since time.Time) (calls,
 	return row.Calls, row.CostCents, nil
 }
 
-// ─────────────────────────────────────────────
-// 群配置
-// ─────────────────────────────────────────────
-
 // GetGroupConfig 查询群配置（无则返回 nil）。
 // 平台为空时忽略 platform 条件（兼容前端列表行未携带平台的情况，按 group_id 命中即可）。
 func (s *Store) GetGroupConfig(ctx context.Context, platform, groupID string) (*model.GroupConfig, error) {
@@ -662,7 +629,8 @@ func (s *Store) GetGroupConfig(ctx context.Context, platform, groupID string) (*
 	return &g, nil
 }
 
-// ListGroupConfigs 分页查询群配置。
+// ListGroupConfigs 分页查询群配置，按 ID 降序；platform 为空时不按平台过滤。
+// 分页参数 offset/limit；返回当前页数据与总条数。
 func (s *Store) ListGroupConfigs(ctx context.Context, platform string, offset, limit int) ([]model.GroupConfig, int64, error) {
 	var list []model.GroupConfig
 	var total int64
@@ -693,10 +661,6 @@ func (s *Store) SaveGroupConfig(ctx context.Context, g *model.GroupConfig) error
 	}
 	return s.db.Orm.WithContext(ctx).Save(g).Error
 }
-
-// ─────────────────────────────────────────────
-// 定时任务
-// ─────────────────────────────────────────────
 
 // ListScheduledJobs 列出定时任务。
 func (s *Store) ListScheduledJobs(ctx context.Context) ([]model.ScheduledJob, error) {

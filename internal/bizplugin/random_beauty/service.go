@@ -9,7 +9,12 @@ import (
 )
 
 var (
-	ErrNoSafeImage         = errors.New("random_beauty: no safe image")
+	// ErrNoSafeImage 表示固定尝试次数内未选出任何明确审核为安全的图片
+	// （含审核依赖未注入、候选都被元数据或视觉审核拒绝、下载校验失败等情况）。
+	// 触发后调用方应放弃本次取图并按「无可用图片」降级，不得放宽阈值或跳过审核继续使用该图片。
+	ErrNoSafeImage = errors.New("random_beauty: no safe image")
+	// ErrProviderUnavailable 表示所有尝试都在获取候选阶段失败（上游不可达、超时或返回错误），
+	// 一张候选也未拿到。调用方应视为上游故障稍后重试，不得为凑数降低审核标准。
 	ErrProviderUnavailable = errors.New("random_beauty: provider unavailable")
 )
 

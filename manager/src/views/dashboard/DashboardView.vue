@@ -40,7 +40,6 @@ function formatCents(cents: number): string {
     <t-skeleton v-if="!stats && loading" :row="4" />
 
     <template v-else-if="stats">
-      <!-- 今日统计卡片 -->
       <t-row :gutter="[16, 16]">
         <t-col :xs="12" :sm="6" :lg="3">
           <t-card class="stat-card">
@@ -80,7 +79,6 @@ function formatCents(cents: number): string {
         </t-col>
       </t-row>
 
-      <!-- 运行时状态 -->
       <t-card title="运行时状态" class="mt-16">
         <t-descriptions :column="3" bordered>
           <t-descriptions-item label="活跃 Provider">

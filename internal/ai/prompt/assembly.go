@@ -1,11 +1,7 @@
-// Package prompt 提供 System Prompt 的组件化组装能力。
-//
-// 设计目标：
-//   - 将硬编码的 System Prompt 拆分为多个命名的 Fragment（Markdown 文件）
-//   - 通过组装模板（assembly_template.md）定义各 Fragment 的拼接顺序
-//   - 支持 Prefix Cache 优化：静态内容在前，动态内容在后
-//   - 支持变量注入（{{ .Vars.xxx }}），使 Prompt 可配置化
-//   - 支持技能注入（{{ .Skills }}），将启用的技能内容批量注入
+// Package prompt 提供 System Prompt 的组件化组装能力：硬编码 Prompt 拆分为多个
+// 命名的 Fragment（Markdown 文件），由 assembly_template.md 定义拼接顺序，
+// 支持变量注入（{{ .Vars.xxx }}）与技能注入（{{ .Skills }}）。
+// 拼接顺序上静态内容在前、动态内容在后，以命中 Prefix Cache。
 package prompt
 
 import "text/template"
@@ -31,13 +27,8 @@ type AssemblyContext struct {
 	Skills string
 }
 
-// funcMap 返回 text/template 可用的自定义函数映射。
-//
-// 可用函数：
-//   - {{ fragment "id" }} → 按 ID 返回指定 Fragment 的内容
-//
-// 可用数据字段（通过 {{ .FieldName }} 访问）：
-//   - .Vars, .CurrentTime, .UserName, .GroupName, .Conversation, .Skills
+// funcMap 返回 text/template 可用的自定义函数映射，
+// 目前仅 {{ fragment "id" }}（按 ID 返回 Fragment 内容）；可用数据字段见 AssemblyContext。
 func (m *Manager) funcMap() template.FuncMap {
 	return template.FuncMap{
 		"fragment": func(id string) string {

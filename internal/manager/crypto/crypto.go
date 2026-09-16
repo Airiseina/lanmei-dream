@@ -19,10 +19,6 @@ import (
 	"golang.org/x/crypto/argon2"
 )
 
-// ─────────────────────────────────────────────
-// AES-256-GCM 对称加解密
-// ─────────────────────────────────────────────
-
 // keySize AES-256 密钥长度（字节）
 const keySize = 32
 
@@ -109,10 +105,6 @@ func (b *Box) Decrypt(ciphertext []byte) ([]byte, error) {
 	return plain, nil
 }
 
-// ─────────────────────────────────────────────
-// argon2id 密码哈希
-// ─────────────────────────────────────────────
-
 // argon2 参数（OWASP 推荐级别）
 const (
 	argonTime    = 1
@@ -166,10 +158,6 @@ func VerifyPassword(encodedHash, password string) (bool, error) {
 	got := argon2.IDKey([]byte(password), salt, uint32(t), uint32(m), uint8(p), uint32(len(want)))
 	return subtle.ConstantTimeCompare(got, want) == 1, nil
 }
-
-// ─────────────────────────────────────────────
-// 随机 token / 摘要
-// ─────────────────────────────────────────────
 
 // RandomToken 生成 URL-safe 随机 token（n 字节熵，base64url 编码，无填充）。
 func RandomToken(n int) (string, error) {

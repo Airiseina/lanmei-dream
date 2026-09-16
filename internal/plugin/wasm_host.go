@@ -11,17 +11,12 @@ import (
 	"go.uber.org/zap"
 )
 
-// NewDenyAllHostFunctions 返回一组"全拒绝"的 Host Function 定义。
+// NewDenyAllHostFunctions 返回一组"全拒绝"的 Host Function。
+// 用于在权限确认前创建实例：导入签名与正式实例一致，任何宿主调用都返回 ErrCodePermissionDenied，
+// 遵循沙箱的默认拒绝（deny-by-default）原则，避免未授权插件在初始化阶段执行敏感操作。
 //
-// 设计用途：
-// 当创建 WASM 插件实例时，必须提供与插件导入签名匹配的 Host Function 集合。
-// 在权限检查或初始化阶段，可以先使用全拒绝版本创建实例，
-// 确保在权限未确认前，插件的任何宿主调用都会被安全拒绝。
-//
-// 安全意义：
-//   - 默认拒绝（deny-by-default）是安全沙箱的基本原则
-//   - 防止未授权的插件在初始化阶段就执行敏感操作
-//   - 所有函数返回 ErrCodePermissionDenied 错误，明确告知调用未被授权
+// 返回：state_get、state_set、state_delete、compare_and_swap、incr_by、set_if_not_exists
+// 六个统一返回 permission_denied 的 Host Function。
 func NewDenyAllHostFunctions() []extism.HostFunction {
 	return []extism.HostFunction{
 		newHostFunction("state_get", func(context.Context, []byte) HostResponse {
@@ -45,28 +40,21 @@ func NewDenyAllHostFunctions() []extism.HostFunction {
 	}
 }
 
-// NewStateHostFunctions 创建绑定到可信安装实例身份的状态存储 Host Functions。
-//
-// Host Function 设计原理：
-// WASM 插件运行在沙箱中，无法直接访问宿主的文件系统、网络或数据库。
-// 所有对外部资源的访问都必须通过 Host Function 实现——插件调用导入的函数名，
-// 宿主在对应的 Go 函数中执行实际操作并返回结果。
-//
-// 安全检查链（每个 Host Function 的执行流程）：
-//  1. 输入验证：反序列化 JSON 输入，校验 key/value 合法性
-//  2. 权限检查：通过 requireHostAction 调用 Authorizer，验证 principal 是否拥有对应 action 的权限
-//  3. 命名空间隔离：使用 conduit.MakeStoreKey("plugin", installationID, key) 构造隔离 key，
-//     确保不同插件的存储互不可见
-//  4. 执行操作：调用 StateStore 的对应方法
-//  5. 返回结果：通过 HostOK/HostErr 编码为标准化的响应格式
+// NewStateHostFunctions 创建绑定到可信安装实例身份的状态存储 Host Function。
+// 每次调用依次做输入校验、Authorizer 权限检查，再用 conduit.MakeStoreKey 按 installationID
+// 隔离存储 key，保证不同插件以及同一插件的不同安装实例状态互不可见。
 //
 // 参数：
-//   - authorizer: 权限检查器，验证 principal 是否有权限执行对应 action
-//   - store: 状态存储后端（conduit.StateStore）
-//   - principal: 操作主体标识（格式 "plugin:<pluginID>:<installationID>"）
-//   - installationID: 安装实例 ID，用于构造隔离的存储 key
-//   - limits: 运行时限制（输入大小、key 长度等），nil 时使用默认值
-//   - logger: 日志记录器
+//   - authorizer：权限判定器；为 nil 时所有调用返回 internal_error（视为宿主配置错误）
+//   - store：状态存储；物理 key 由宿主按 installationID 加前缀生成
+//   - principal：宿主可信的插件安装实例主体，须由 PluginPrincipal 构造
+//   - installationID：安装实例 ID，用于状态隔离
+//   - limits：运行时限制；为 nil 时使用 DefaultLimits
+//   - logger：日志器
+//
+// 返回：state_get、state_set、state_delete、compare_and_swap、incr_by、set_if_not_exists
+// 六个 Host Function；权限检查依次使用 state.read、state.write、state.delete 动作，
+// 原子操作统一归入 state.write。
 func NewStateHostFunctions(
 	authorizer Authorizer,
 	store conduit.StateStore,
@@ -217,19 +205,8 @@ func NewStateHostFunctions(
 	}
 }
 
-// requireHostAction 在 Host Function 中执行权限检查。
-//
-// 这是所有 Host Function 的统一权限门控：
-//   - 如果 authorizer 为 nil，返回内部错误（说明系统配置有误）
-//   - 调用 authorizer.Require(principal, action) 检查权限
-//   - 权限拒绝时记录 Warn 级别审计日志，并返回 ErrPermissionDenied
-//   - 权限通过时返回 nil
-//
-// 参数：
-//   - authorizer: 权限检查器
-//   - principal: 操作主体标识
-//   - action: 请求的操作（如 ActionStateRead、ActionStateWrite）
-//   - logger: 用于记录权限拒绝事件
+// requireHostAction 是所有 Host Function 的统一权限门控。
+// authorizer 为 nil 视为系统配置错误；权限拒绝时记 Warn 审计日志并原样返回 ErrPermissionDenied。
 func requireHostAction(authorizer Authorizer, principal, action string, logger *zap.Logger) error {
 	if authorizer == nil {
 		return fmt.Errorf("%w: authorizer unavailable", ErrHostInternalError)
@@ -243,16 +220,14 @@ func requireHostAction(authorizer Authorizer, principal, action string, logger *
 	return nil
 }
 
-// stateUnavailable 处理 StateStore 调用失败的情况。
-// 记录 Error 级别日志并返回 ErrCodeStateUnavailable 错误，
-// 告知插件状态服务暂不可用（而非权限拒绝）。
+// stateUnavailable 记录 Error 日志并返回 ErrCodeStateUnavailable，
+// 表示状态服务暂不可用，以便与权限拒绝区分。
 func stateUnavailable(err error, logger *zap.Logger) HostResponse {
 	logger.Error("[wasm] StateStore 调用失败", zap.Error(err))
 	return HostErr(ErrCodeStateUnavailable, "状态服务暂不可用")
 }
 
-// hostHandler 是 Host Function 的业务逻辑签名。
-// 接收上下文和 WASM 侧传入的 JSON 字节，返回标准化的 HostResponse。
+// hostHandler 是 Host Function 的业务逻辑签名：接收上下文与 Guest 传入的 JSON 字节，返回 HostResponse。
 type hostHandler func(context.Context, []byte) HostResponse
 
 // newHostFunction 创建一个使用默认输入大小限制的 Host Function。
@@ -260,19 +235,9 @@ func newHostFunction(name string, handler hostHandler) extism.HostFunction {
 	return newLimitedHostFunction(name, DefaultLimits.MaxGuestInputJSON, handler)
 }
 
-// newLimitedHostFunction 创建一个带输入大小限制的 Host Function。
-//
-// 这是所有 Host Function 的底层构造器，封装了 Extism SDK 的调用约定：
-//  1. 从 WASM 栈中读取输入指针（stack[0]）
-//  2. 读取输入长度并检查是否超过 maxInput 限制（防止恶意超大输入）
-//  3. 读取输入字节并调用 handler 处理
-//  4. 将 handler 返回的 HostResponse 序列化为 JSON
-//  5. 将 JSON 写回 WASM 内存并通过栈返回指针
-//
-// 安全措施：
-//   - 输入大小限制（maxInput）防止单个请求耗尽宿主内存
-//   - 所有 handler 返回值通过 json.Marshal 序列化，确保格式一致
-//   - 设置 HostNamespace 命名空间，避免与其他可能的 WASM 导入冲突
+// newLimitedHostFunction 构造带输入大小限制的 Host Function，封装 Extism SDK 的调用约定：
+// 从栈读取输入指针与长度，超过 maxInput 直接拒绝（避免恶意超大输入耗尽宿主内存），
+// 处理结果统一 json.Marshal 后写回 Guest 内存；命名空间固定为 HostNamespace，避免与其他 Wasm 导入冲突。
 func newLimitedHostFunction(name string, maxInput int, handler hostHandler) extism.HostFunction {
 	fn := extism.NewHostFunctionWithStack(
 		name,

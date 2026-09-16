@@ -15,34 +15,18 @@ import (
 	"go.uber.org/zap"
 )
 
-// ============================================================
-// TurtleSoupPlugin 海龟汤插件
-// ============================================================
-
-// TurtleSoupPlugin 实现海龟汤（情境推理）文字游戏：
-//   - /开汤（或 /海龟汤）：蓝妹用 LLM 生成一局谜题（汤面公开、汤底隐藏）
-//   - /问 <问题>：向汤面提问，蓝妹只回答 是/否/无关，不作任何补充
-//   - /猜 <答案>：尝试猜出汤底，命中则揭晓结算；未命中时仅按大方向给出
-//     固定的"方向正确/猜错了"整体判断，不透露汤底任何细节
-//   - /认输（或 /看汤底）：放弃并揭晓汤底
+// TurtleSoupPlugin 实现海龟汤（情境推理）文字游戏：/开汤（或 /海龟汤）由 LLM 生成一局谜题
+// （汤面公开、汤底隐藏），/问 只回答 是/否/无关、不作任何补充，/猜 命中才揭晓结算，
+// 未命中时仅按大方向给出固定的"方向正确/猜错了"整体判断，/认输（或 /看汤底）直接揭晓汤底。
 //
 // 防混乱约束：**同一个群（或同一私聊）同时只能开一局**，未结束前 /开汤 会被拒绝；
 // 提问只在有进行中的局时生效；局超过 12 小时自动作废。
 //
 // 局状态存插件受限 KV 存储（PostgreSQL 持久化，重启不丢），按群/私聊隔离。
 //
-// 行为树：
-//
-//	subtree.turtle_soup → Selector(
-//	  Sequence(isOpenSoupCommand,  Action("pipeline.plugin.turtle_soup.main")),
-//	  Sequence(isAskSoupCommand,   Action("pipeline.plugin.turtle_soup.main")),
-//	  Sequence(isGuessSoupCommand, Action("pipeline.plugin.turtle_soup.main")),
-//	  Sequence(isGiveUpSoupCommand,Action("pipeline.plugin.turtle_soup.main")),
-//	)
-//
-// 管线：
-//
-//	pipeline.plugin.turtle_soup.main → [turtleSoupPass]
+// 插件 ID turtle_soup；命令 /开汤（别名 /海龟汤）、/问、/猜、/认输（别名 /放弃、/看汤底、/汤底），
+// 无工具；依赖 LLM 客户端（llmClient 为 nil 时出题与判定不可用，命令提示"需要 LLM 才能……"）与
+// 受限 KV（未注入时局状态无法持久化：开汤后提问与猜底都会提示没有进行中的汤）。
 type TurtleSoupPlugin struct {
 	llmClient llm.LLMClient
 	kv        *database.PluginKVStore
@@ -124,10 +108,6 @@ func (p *TurtleSoupPlugin) OnStart(_ *pluginpkg.PluginContext) error { return ni
 // OnStop 海龟汤插件无需清理资源。
 func (p *TurtleSoupPlugin) OnStop(_ *pluginpkg.PluginContext) error { return nil }
 
-// ============================================================
-// 条件判断
-// ============================================================
-
 // isOpenSoupCommand 判断消息是否为开汤命令。
 func isOpenSoupCommand(ctx *conduit.MessageContext) bool {
 	msg := strings.TrimSpace(ctx.RawMsg)
@@ -150,10 +130,6 @@ func isGiveUpSoupCommand(ctx *conduit.MessageContext) bool {
 	return msg == "/认输" || msg == "/放弃" || msg == "/看汤底" || msg == "/汤底"
 }
 
-// ============================================================
-// 局状态
-// ============================================================
-
 const (
 	// turtleSoupPluginID 受限 KV 存储命名空间
 	turtleSoupPluginID = "turtle_soup"
@@ -171,13 +147,13 @@ type turtleQA struct {
 
 // turtleGame 一局海龟汤状态
 type turtleGame struct {
-	SoupFace      string     `json:"soup_face"`      // 汤面（公开谜面）
-	SoupBase      string     `json:"soup_base"`      // 汤底（答案，隐藏）
-	Hints         []string   `json:"hints"`          // 判定要点（内部参考，不公开）
-	QuestionCount int        `json:"question_count"` // 已提问次数
-	Creator       string     `json:"creator"`        // 开局人
-	CreatedAt     int64      `json:"created_at"`     // 开局时间戳
-	QAPairs       []turtleQA `json:"qa_pairs"`       // 历史问答（判定上下文）
+	SoupFace      string     `json:"soup_face"` // 汤面（公开谜面）
+	SoupBase      string     `json:"soup_base"` // 汤底（答案，隐藏）
+	Hints         []string   `json:"hints"`     // 判定要点（内部参考，不公开）
+	QuestionCount int        `json:"question_count"`
+	Creator       string     `json:"creator"`
+	CreatedAt     int64      `json:"created_at"`
+	QAPairs       []turtleQA `json:"qa_pairs"` // 历史问答（判定上下文）
 }
 
 // soupKey 生成局的 KV 键：群聊按群 ID 隔离，私聊按用户 ID 隔离。
@@ -202,7 +178,6 @@ func loadGame(kv *database.PluginKVStore, ctx context.Context, groupID, userID s
 	if err := json.Unmarshal([]byte(raw), &g); err != nil {
 		return nil
 	}
-	// 过期作废并清理
 	if time.Since(time.Unix(g.CreatedAt, 0)) > turtleSoupMaxAge {
 		_ = kv.Set(ctx, turtleSoupPluginID, key, "")
 		return nil
@@ -224,15 +199,11 @@ func saveGame(kv *database.PluginKVStore, ctx context.Context, groupID, userID s
 	_ = kv.Set(ctx, turtleSoupPluginID, key, string(data))
 }
 
-// ============================================================
-// LLM 出题 / 判定
-// ============================================================
-
 // turtleGeneration LLM 出题结果
 type turtleGeneration struct {
 	SoupFace string   `json:"soup_face"`
 	SoupBase string   `json:"soup_base"`
-	Hints    []string `json:"hints"` // 判定要点列表（模型输出数组）
+	Hints    []string `json:"hints"`
 }
 
 // turtleJudgement LLM 判定结果（提问）
@@ -363,15 +334,10 @@ func judgeGuess(ctx context.Context, client llm.LLMClient, g *turtleGame, guess 
 	return resp.Correct, resp.Direction, nil
 }
 
-// ============================================================
-// Pass 实现
-// ============================================================
-
 // turtleSoupPass 按命令前缀分发处理海龟汤请求。
 //
-// LLM 出题/判定采用**异步模式**：命令到达后立即回复提示语并挂起管线（yield），
-// 后台 goroutine 用独立长超时调用 LLM（不占消息 20s 预算，多慢都能完成），
-// 完成后经段落投递通道（bot.stream.ch）自动发送结果。
+// LLM 出题/判定采用异步模式：命令到达后立即回复提示语并挂起管线（yield），后台 goroutine
+// 用独立长超时调用 LLM（不占消息 20s 预算），完成后经段落投递通道（bot.stream.ch）发送结果。
 // 这是为适配慢速/推理型 LLM（响应 10~30s 波动）的必要设计：同步等待必然超时。
 type turtleSoupPass struct {
 	llmClient llm.LLMClient
@@ -382,7 +348,7 @@ type turtleSoupPass struct {
 	// mu 保护游戏状态临界区（loadGame/saveGame）与 inFlight 标记。
 	// LLM 调用本身在锁外执行（慢网络调用不持锁），由 inFlight 保证同一群同时只有一个异步任务。
 	mu       sync.Mutex
-	inFlight map[string]bool // soupKey → 是否有进行中的异步出题/判定
+	inFlight map[string]bool
 }
 
 // streamChannelKey 段落投递通道键（复用 bot 层的流式段落机制，见 internal/bot/passes.go；
@@ -397,6 +363,12 @@ const streamTimeout = 120 * time.Second
 // 出题/判定只需几百 token 的 JSON，设 1024 可让模型收敛、显著提速。
 const turtleSoupMaxTokens = 1024
 
+// Execute 按命令前缀分发海龟汤请求：/开汤（或 /海龟汤）出题开局、/问 判定提问、
+// /猜 判定猜底、/认输（或 /放弃、/看汤底、/汤底）揭晓汤底。
+// 由 plugin.turtle_soup.pipeline.main 在四个命令条件任一命中后调用；
+// 开汤 / 问 / 猜 经 beginAsync 立即回复提示语并以 conduit.ErrPassYielded 挂起管线，
+// LLM 调用在后台 goroutine 用独立超时执行、经段落投递通道（bot.stream.ch）发送结果，
+// 不占用消息级预算（同步等待慢速 LLM 必然超时）；认输无 LLM 调用、同步完成；命令未命中时静默返回。
 func (pass *turtleSoupPass) Execute(ctx *conduit.MessageContext) error {
 	msg := strings.TrimSpace(ctx.RawMsg)
 	switch {
@@ -421,16 +393,12 @@ func (pass *turtleSoupPass) reply(ctx *conduit.MessageContext, content string) {
 	})
 }
 
-// beginAsync 启动一个异步 LLM 任务并挂起管线（yield）。
+// beginAsync 以 yield 方式启动异步 LLM 任务：登记 inFlight（同一群同时只允许一个异步任务，
+// 防并发覆盖游戏状态），把结果通道写入黑板 streamChannelKey 并返回 ErrPassYielded，
+// 由 bot 层消费该通道、把 fn 写入的结果作为段落自动发送。
 //
-// 工作方式（复用 bot 层流式段落投递机制）：
-//  1. 登记 inFlight（同一群同时只允许一个异步任务，防并发覆盖游戏状态）；
-//  2. 同步回复 hint 提示语；
-//  3. 将结果通道写入黑板（streamChannelKey），返回 ErrPassYielded；
-//  4. 引擎 yield 后，bot 消费通道把 fn 写入的结果作为段落自动发送。
-//
-// fn 在后台 goroutine 执行，使用独立长超时 context（不受消息 20s 预算约束），
-// 结果（最终回复文案）写入 ch，函数返回前由调用方保证 saveGame 已完成。
+// fn 在后台 goroutine 执行，使用独立长超时 context（不受消息 20s 预算约束）；
+// 结果写入 ch 之前由 fn 内保证 saveGame 已完成。
 func (pass *turtleSoupPass) beginAsync(ctx *conduit.MessageContext, key, hint string, fn func(gctx context.Context, ch chan<- string)) error {
 	pass.mu.Lock()
 	if pass.inFlight[key] {

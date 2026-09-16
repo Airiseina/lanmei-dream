@@ -16,11 +16,10 @@ import (
 )
 
 // compressLLMTimeout 压缩/聚合单次 LLM 调用的超时上限。
-// MaybeCompress 在每次对话后异步触发，可能并发执行；
-// 无超时上限时 LLM 挂起会导致后台 goroutine 只进不出。
+// MaybeCompress 在每次对话后异步触发且可能并发，无超时上限时 LLM 挂起会导致后台 goroutine 只进不出。
 const compressLLMTimeout = 60 * time.Second
 
-// Compressor 使用 LLM 对记忆进行 LOD 压缩
+// Compressor 使用 LLM 对记忆进行 LOD 压缩。
 type Compressor struct {
 	llm      llm.LLMClient
 	embedder embedding.Embedder
@@ -33,7 +32,7 @@ type Compressor struct {
 	userLocks sync.Map // userID(int64) -> *sync.Mutex
 }
 
-// NewCompressor 创建压缩器
+// NewCompressor 创建压缩器。
 func NewCompressor(l llm.LLMClient, emb embedding.Embedder, mem memory.MemoryStore, db *database.DB, logger *zap.Logger) *Compressor {
 	return &Compressor{llm: l, embedder: emb, memStore: mem, db: db, logger: logger}
 }
@@ -47,11 +46,8 @@ func (c *Compressor) lockUser(userID int64) func() {
 	return mu.Unlock
 }
 
-// MaybeCompress 检查并触发压缩（L0→L1 和 L1→L2）
-// 在每次对话后异步调用。
-//
-// 并发安全：按 userID 加锁，同一用户同时仅允许一个压缩流程，
-// 避免并发时对同一批对话重复压缩产生重复摘要。
+// MaybeCompress 检查并触发压缩（L0→L1 和 L1→L2），在每次对话后异步调用。
+// 按 userID 加锁，同一用户同时仅允许一个压缩流程，避免重复压缩产生重复摘要。
 func (c *Compressor) MaybeCompress(ctx context.Context, userID int64) {
 	unlock := c.lockUser(userID)
 	defer unlock()
@@ -67,10 +63,9 @@ func (c *Compressor) MaybeCompress(ctx context.Context, userID int64) {
 	}
 }
 
-// ─── L0→L1: 原始对话 → Episode Summary ───
-
 func (c *Compressor) compressL0ToL1(ctx context.Context, userID int64) error {
 	const (
+		// 阈值 40、批 20：压缩后剩余至少 20 条，天然形成缓冲，避免每轮对话都触发 LLM 压缩。
 		threshold = 40 // 原始对话超过此数触发压缩
 		batchSize = 20 // 每次压缩的条数
 	)
@@ -93,7 +88,6 @@ func (c *Compressor) compressL0ToL1(ctx context.Context, userID int64) error {
 		return nil // 无对话可压缩（可能在计数和查询间被并发删除）
 	}
 
-	// 构造压缩 prompt
 	dialogue := formatConversations(convs)
 	prompt := buildCompressPrompt(dialogue)
 
@@ -109,7 +103,6 @@ func (c *Compressor) compressL0ToL1(ctx context.Context, userID int64) error {
 		return fmt.Errorf("llm compress: %w", err)
 	}
 
-	// 解析 LLM 输出
 	var result compressResult
 	if err := json.Unmarshal([]byte(resp.Content), &result); err != nil {
 		// LLM 输出不是合法 JSON，做 fallback：整段当 detailed
@@ -139,12 +132,11 @@ func (c *Compressor) compressL0ToL1(ctx context.Context, userID int64) error {
 		LastConvoID:  convs[len(convs)-1].ID,
 	}
 
-	// 先存摘要
+	// 先存摘要再删原文，避免删除后摘要落库失败造成数据丢失。
 	if err := c.db.SaveEpisodeSummary(ctx, episode); err != nil {
 		return fmt.Errorf("save episode: %w", err)
 	}
 
-	// 再删原文
 	if err := c.db.DeleteConversationsInRange(ctx, userID, "", episode.FirstConvoID, episode.LastConvoID); err != nil {
 		c.logger.Error("compressor: delete compressed conversations", zap.Error(err))
 	}
@@ -153,10 +145,9 @@ func (c *Compressor) compressL0ToL1(ctx context.Context, userID int64) error {
 	return nil
 }
 
-// ─── L1→L2: Episode Summaries → Topic Cluster ───
-
 func (c *Compressor) compressL1ToL2(ctx context.Context, userID int64) error {
 	const (
+		// 阈值 10、批 5：聚合后剩余至少 5 条，同样形成缓冲，避免频繁触发聚合并减少 LLM 成本。
 		threshold = 10 // episode 超过此数触发聚合
 		batchSize = 5  // 每次聚合的条数
 	)
@@ -177,7 +168,7 @@ func (c *Compressor) compressL1ToL2(ctx context.Context, userID int64) error {
 		return nil // 无摘要可聚合（可能在计数和查询间被并发删除）
 	}
 
-	// 拼接 episode 内容
+	// 拼接 episode 内容：带序号便于聚合 prompt 引用来源。
 	var episodeTexts string
 	for i, e := range episodes {
 		episodeTexts += fmt.Sprintf("【片段%d】\n摘要: %s\n详细: %s\n\n", i+1, e.Brief, e.Detailed)
@@ -208,9 +199,8 @@ func (c *Compressor) compressL1ToL2(ctx context.Context, userID int64) error {
 	}
 
 	// 三态合并：被聚合 episodes 的历史事实（带各自置信度）与 LLM 本轮新抽取事实合并。
-	// 相同事实（value 精确相等）重复确认 → 置信度 +0.05 封顶 0.98；
-	// 不同事实各自保留（不自动判定矛盾，避免武断丢弃）。
-	// 顺序在 DeleteEpisodesByID 之前，保证被删 episode 的事实先沉淀进 topic。
+	// 相同事实重复确认 → 置信度 +0.05 封顶 0.98；不同事实各自保留（不自动判定矛盾，避免武断丢弃）。
+	// 须在 DeleteEpisodesByID 之前完成，保证被删 episode 的事实先沉淀进 topic。
 	var merged []model.FactItem
 	for _, e := range episodes {
 		merged = model.MergeFacts(merged, model.ParseFacts(e.Facts))
@@ -226,7 +216,6 @@ func (c *Compressor) compressL1ToL2(ctx context.Context, userID int64) error {
 		CoveredCount: len(episodes),
 	}
 
-	// 存主题
 	if err := c.db.SaveTopicCluster(ctx, topic); err != nil {
 		return fmt.Errorf("save topic: %w", err)
 	}
@@ -244,7 +233,6 @@ func (c *Compressor) compressL1ToL2(ctx context.Context, userID int64) error {
 		}
 	}
 
-	// 删除已聚合的 episodes
 	var ids []int64
 	for _, e := range episodes {
 		ids = append(ids, e.ID)
@@ -256,8 +244,6 @@ func (c *Compressor) compressL1ToL2(ctx context.Context, userID int64) error {
 	c.logger.Info("compressor: L1→L2 聚合完成", zap.Int64("user", userID), zap.Int("count", len(episodes)))
 	return nil
 }
-
-// ─── 压缩 prompt ───
 
 const compressSystemPrompt = `你是一个记忆压缩引擎。你的任务是阅读一段对话记录，生成压缩后的记忆。
 
@@ -334,7 +320,7 @@ func formatConversations(convs []*model.Conversation) string {
 		if c.Role == "assistant" {
 			role = "蓝妹"
 		}
-		// 插件来源的对话标注工具名，帮助压缩器区分真实对话与工具输出
+		// 插件来源的对话标注工具名，帮助压缩器区分真实对话与工具输出。
 		if c.Source == model.SourcePlugin && c.PluginTag != "" {
 			s += fmt.Sprintf("%s: [插件:%s] %s\n", role, c.PluginTag, c.Content)
 		} else {

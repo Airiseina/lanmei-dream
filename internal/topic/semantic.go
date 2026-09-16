@@ -29,11 +29,8 @@ func (m *Manager) embedMessage(ctx context.Context, msg *IncomingMsg) (vec []flo
 }
 
 // semanticRelevant 判断消息是否属于话题 t 的延续。
-//
-// 判定逻辑（成本从低到高）：
-//  1. 阈值 <= 0 → 关闭语义判定，成员制宽松模式（发送者是成员即相关）；
-//  2. 有向量（vecOK）且话题有语义中心 → cos(vec, t.Vector) >= threshold；
-//  3. 语义不可用 → 降级为成员制宽松模式（失败不阻塞）。
+// 有向量（vecOK）且话题有语义中心时比较 cos(vec, t.Vector) 与阈值；
+// 阈值 <= 0（语义关闭）或语义不可用时降级为成员制宽松模式（发送者是成员即相关，失败不阻塞）。
 func semanticRelevant(m *Manager, t *Topic, msg *IncomingMsg, vec []float32, vecOK bool) bool {
 	if m.cfg == nil || m.cfg.SemanticThreshold <= 0 || !vecOK {
 		return t.isMember(msg.UserID)
@@ -46,11 +43,8 @@ func semanticRelevant(m *Manager, t *Topic, msg *IncomingMsg, vec []float32, vec
 }
 
 // semanticMatch 在候选话题中找出与消息语义最匹配的一个。
-//
-// 匹配策略：
-//   - 语义命中（vecOK 且话题有中心）：取相似度最高者，需 >= threshold；
-//   - 语义不可用：取最近活跃的话题（LastActiveAt 最新）；
-//   - 冷却话题也可被匹配（重入恢复，由调用方决定是否传入）。
+// 语义命中（vecOK 且话题有中心）时取相似度最高者且须 >= threshold；
+// 否则取最近活跃的话题（LastActiveAt 最新）。冷却话题也可被匹配，是否传入由调用方决定。
 func semanticMatch(m *Manager, candidates []*Topic, msg *IncomingMsg, vec []float32, vecOK bool) *Topic {
 	if len(candidates) == 0 {
 		return nil
@@ -71,7 +65,6 @@ func semanticMatch(m *Manager, candidates []*Topic, msg *IncomingMsg, vec []floa
 			return best
 		}
 	}
-	// 语义不可用/无命中：取最近活跃的话题
 	best := candidates[0]
 	for _, t := range candidates[1:] {
 		if t.LastActiveAt.After(best.LastActiveAt) {

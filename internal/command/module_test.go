@@ -5,8 +5,7 @@ import (
 	"testing"
 )
 
-// ── 并发安全 ──
-
+// TestSystemConcurrentRegister 验证并发注册同名命令时仅一次成功，其余均返回重复错误。
 func TestSystemConcurrentRegister(t *testing.T) {
 	s := New()
 	var wg sync.WaitGroup
@@ -35,6 +34,7 @@ func TestSystemConcurrentRegister(t *testing.T) {
 	}
 }
 
+// TestSystemConcurrentProcess 验证多 goroutine 并发分发同一命令时的读写安全。
 func TestSystemConcurrentProcess(t *testing.T) {
 	s := New()
 	if err := s.Register(Command{
@@ -57,8 +57,7 @@ func TestSystemConcurrentProcess(t *testing.T) {
 	wg.Wait()
 }
 
-// ── 重复注册不被覆盖 ──
-
+// TestSystemDuplicateRegister 验证重复注册同名命令返回错误且不覆盖已有命令。
 func TestSystemDuplicateRegister(t *testing.T) {
 	s := New()
 	if err := s.Register(Command{Name: "x", Handler: func(ctx *Context) error { return nil }}); err != nil {
@@ -69,13 +68,13 @@ func TestSystemDuplicateRegister(t *testing.T) {
 	}
 }
 
+// TestSystemUnregisterIdempotent 验证注销不存在的命令不 panic（幂等语义）。
 func TestSystemUnregisterIdempotent(t *testing.T) {
 	s := New()
-	s.Unregister("nonexistent") // should not panic
+	s.Unregister("nonexistent") // 不应 panic
 }
 
-// ── Process 参数传递 ──
-
+// TestSystemProcessArgs 验证带参数命令经 Process 后 Message 归一化为 "/命令 参数"。
 func TestSystemProcessArgs(t *testing.T) {
 	s := New()
 	captured := ""
@@ -97,6 +96,7 @@ func TestSystemProcessArgs(t *testing.T) {
 	}
 }
 
+// TestSystemProcessNoArgs 验证无参数命令经 Process 后 Message 为 "/命令"。
 func TestSystemProcessNoArgs(t *testing.T) {
 	s := New()
 	captured := ""
@@ -118,6 +118,7 @@ func TestSystemProcessNoArgs(t *testing.T) {
 	}
 }
 
+// TestSystemProcessUnknownCommand 验证未知命令返回错误并经 Reply 回复提示。
 func TestSystemProcessUnknownCommand(t *testing.T) {
 	s := New()
 	replied := ""
@@ -130,6 +131,7 @@ func TestSystemProcessUnknownCommand(t *testing.T) {
 	}
 }
 
+// TestSystemListSorted 验证 List 返回的命令按命令名升序排列。
 func TestSystemListSorted(t *testing.T) {
 	s := New()
 	for _, name := range []string{"zebra", "alpha", "mango"} {

@@ -31,7 +31,6 @@ const pageSize = 20
 const stepUpVisible = ref(false)
 const pendingAction = ref<((token: string) => Promise<void>) | null>(null)
 
-// 创建/编辑对话框
 const editVisible = ref(false)
 const editing = ref<Admin | null>(null)
 const form = reactive({
@@ -219,7 +218,6 @@ onMounted(load)
       </t-table>
     </t-card>
 
-    <!-- 创建 / 编辑 -->
     <t-dialog
       v-model:visible="editVisible"
       :header="editing ? '编辑管理员' : '新建管理员'"
@@ -246,7 +244,6 @@ onMounted(load)
       </t-form>
     </t-dialog>
 
-    <!-- step-up 二次验证 -->
     <StepUpDialog v-model="stepUpVisible" @success="onStepUpSuccess" />
   </div>
 </template>

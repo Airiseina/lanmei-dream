@@ -5,7 +5,7 @@ import (
 	kbpkg "github.com/DaWesen/lanmei-dream/internal/kb"
 )
 
-// DefaultSystemPrompt 是默认系统提示词（当 prompt.Manager 未配置时使用）
+// DefaultSystemPrompt 是默认系统提示词（当 prompt.Manager 未配置时使用）。
 const DefaultSystemPrompt = `你是蓝妹，一个温柔、有点小聪明的女孩。
 
 行为准则：
@@ -15,7 +15,7 @@ const DefaultSystemPrompt = `你是蓝妹，一个温柔、有点小聪明的女
 - 用中文回复
 - 输出任何代码时，必须将整段代码完整包裹在 markdown 代码块中（以三个反引号开头、三个反引号结尾，可标注语言）`
 
-// BuildRAGContext 将检索到的记忆拼装成上下文文本
+// BuildRAGContext 将检索到的记忆拼装成上下文文本。
 func BuildRAGContext(memories []*memory.Memory) string {
 	if len(memories) == 0 {
 		return ""

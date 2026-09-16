@@ -1,16 +1,9 @@
-// Package sheet 实现基于飞书电子表格（Sheets）的 KV 知识库 Provider。
+// Package sheet 实现基于飞书电子表格（Sheets）的 KV 知识库 Provider，支持 vector/fuzzy 召回。
 //
-// 能力：
-//   - vector：向量召回（本地对每行知识内容实时向量化 + 余弦相似度排序，结果缓存）
-//   - fuzzy：模糊召回（对索引列/知识列的本地 token 命中评分）
-//
-// 表格结构（KV）：两列（默认 A=索引/关键词，B=知识内容），首行为表头。
-// 通过飞书 Sheets v2 的 values 接口读取整列非空范围，在本地完成召回计算；
-// 行数据与向量均带 TTL 内存缓存，避免每次查询都打飞书接口。
-//
-// 认证：应用身份 tenant_access_token（SDK 自动换取，本地按过期时间缓存）。
-// 需在飞书开放平台为企业自建应用开通 sheets:spreadsheet:readonly 权限，
-// 并将应用添加为目标电子表格的协作者（可查看）。
+// 表格为两列 KV（默认 A=索引/关键词，B=知识内容，首行为表头）；飞书不提供服务端检索，
+// 故通过 Sheets v2 values 接口读取整列非空范围在本地计算召回，行数据与向量带 TTL 缓存。
+// 认证用应用身份 tenant_access_token（SDK 自动换取，本地按过期时间缓存），
+// 需开通 sheets:spreadsheet:readonly 权限并将应用加为目标电子表格的协作者（可查看）。
 package sheet
 
 import (
@@ -57,9 +50,9 @@ type Provider struct {
 	spreadsheetToken string // 表格 token（URL /sheets/<token>）
 	sheetID          string // 工作表 ID（URL ?sheet= 参数；空则由 sheet_name 解析）
 	sheetName        string // 工作表名（sheet_id 为空时的解析依据，默认 Sheet1）
-	indexColumn      string // 索引列字母（默认 A）
-	contentColumn    string // 知识列字母（默认 B）
-	skipHeaderRows   int    // 跳过表头行数
+	indexColumn      string
+	contentColumn    string
+	skipHeaderRows   int
 
 	maxRows        int
 	fuzzyThreshold float64
@@ -133,7 +126,7 @@ func New(_ context.Context, kbb *kbpkg.KnowledgeBase, cfg map[string]any, deps k
 	}, nil
 }
 
-// Name 实现 kb.Provider
+// Name 实现 kb.Provider。
 func (p *Provider) Name() string { return providerName }
 
 // Capabilities 实现 kb.Provider。

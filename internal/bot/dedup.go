@@ -24,7 +24,13 @@ type Deduper struct {
 	ttl   time.Duration
 }
 
-// NewDeduper 创建消息去重器。ttl <= 0 时使用默认 dedupTTL。
+// NewDeduper 创建消息去重器。
+//
+// 参数：
+//   - store：Conduit 状态存储（Redis SETNX 语义）；nil 时 Accept 全部放行
+//   - ttl：去重键存活时间；<=0 时使用默认 dedupTTL
+//
+// 返回：去重器（无可变状态，可被多 goroutine 并发调用）。
 func NewDeduper(store conduit.StateStore, ttl time.Duration) *Deduper {
 	if ttl <= 0 {
 		ttl = dedupTTL
@@ -33,6 +39,12 @@ func NewDeduper(store conduit.StateStore, ttl time.Duration) *Deduper {
 }
 
 // Accept 返回 true 表示该消息应被处理（通过去重检查）。
+//
+// 参数：
+//   - msg：网关标准化消息；nil、无 MessageID 或存储未配置时直接放行
+//
+// 返回：首次出现的 (ConnID, MessageID) 返回 true，重复消息返回 false；
+// 存储故障时 fail-open 返回 true，不阻塞业务。
 func (d *Deduper) Accept(msg *gateway.NormalizedMessage) bool {
 	if d == nil || d.store == nil || msg == nil || msg.MessageID == "" {
 		return true

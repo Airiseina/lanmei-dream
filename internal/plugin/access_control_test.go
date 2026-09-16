@@ -87,32 +87,29 @@ func (a *fakeAuthz) IsKnownAction(_ string) bool { return true }
 
 var _ Authorizer = (*fakeAuthz)(nil)
 
-// 绑定角色后可以执行动作，解绑后立即被拒绝。
+// TestFakeAuthz_BindUnbindImmediate 验证绑定角色后可执行动作、解绑后立即被拒绝。
 func TestFakeAuthz_BindUnbindImmediate(t *testing.T) {
 	a := newFakeAuthz()
 	_ = a.GrantAction("system::test", RolePluginCommandBasic, ActionStateRead)
 
 	principal := "plugin::signin::001"
 
-	// 未绑定时拒绝
 	if err := a.Require(principal, ActionStateRead); err == nil {
 		t.Fatal("expected deny before bind")
 	}
 
-	// 绑定后允许
 	_ = a.BindRole("system::test", principal, RolePluginCommandBasic)
 	if err := a.Require(principal, ActionStateRead); err != nil {
 		t.Fatalf("expected allow after bind: %v", err)
 	}
 
-	// 解绑后拒绝
 	_ = a.UnbindRole("system::test", principal, RolePluginCommandBasic)
 	if err := a.Require(principal, ActionStateRead); err == nil {
 		t.Fatal("expected deny after unbind")
 	}
 }
 
-// 内置动作集不含通配符。
+// TestBuiltinActionsNoWildcards 校验内置动作集不含通配符。
 func TestBuiltinActionsNoWildcards(t *testing.T) {
 	for _, action := range allActions() {
 		if action == "state.*" || action == "plugin.*" {
@@ -121,7 +118,7 @@ func TestBuiltinActionsNoWildcards(t *testing.T) {
 	}
 }
 
-// 主体格式校验。
+// TestValidatePrincipal 校验主体格式。
 func TestValidatePrincipal(t *testing.T) {
 	tests := []struct {
 		p     string
@@ -141,7 +138,7 @@ func TestValidatePrincipal(t *testing.T) {
 	}
 }
 
-// 角色名格式校验。
+// TestValidateRoleName 校验角色名格式。
 func TestValidateRoleName(t *testing.T) {
 	tests := []struct {
 		role  string

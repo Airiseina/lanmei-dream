@@ -69,7 +69,6 @@ func New(cfg *config.ManagerConfig, deps Deps) (*Manager, error) {
 	}
 	m := &Manager{cfg: cfg, logger: deps.Logger}
 
-	// 依赖装配
 	m.store = store.New(deps.DB)
 	m.trace = trace.NewCollector(m.store, deps.Logger)
 	m.billing = billing.New(m.store, deps.Logger)
@@ -84,7 +83,7 @@ func New(cfg *config.ManagerConfig, deps Deps) (*Manager, error) {
 		WebAuthnRPID:        cfg.WebAuthnRPID,
 		WebAuthnDisplayName: cfg.WebAuthnDisplayName,
 		WebAuthnOrigins:     cfg.WebAuthnOrigins,
-		// 敏感配置一律来自环境变量（LANMEI_MANAGER_* 前缀，避免与其它项目冲突），绝不写入 toml（见实施文档 §4.3）
+		// 敏感配置一律来自环境变量（LANMEI_MANAGER_* 前缀，避免与其它项目冲突），绝不写入 toml 配置文件
 		SuperAdminUsername: os.Getenv("LANMEI_MANAGER_ADMIN_USERNAME"),
 		SuperAdminPassword: os.Getenv("LANMEI_MANAGER_ADMIN_PASSWORD"),
 		SecretKey:          os.Getenv("LANMEI_MANAGER_SECRET_KEY"),
@@ -117,12 +116,10 @@ func New(cfg *config.ManagerConfig, deps Deps) (*Manager, error) {
 	})
 	m.h = h
 
-	// 接入实时 Trace 采集
 	if deps.Bot != nil {
 		deps.Bot.SetTraceSink(m.trace.Sink())
 	}
 
-	// Fiber 应用装配
 	m.app = fiber.New(fiber.Config{
 		AppName:      "lanmei-manager",
 		BodyLimit:    4 * 1024 * 1024,
@@ -167,7 +164,6 @@ func (m *Manager) setupRoutes() {
 	svc := m.authSvc
 	cfg := m.cfg
 
-	// 全局恢复
 	app.Use(middleware.Recover(func(format string, args ...any) {
 		m.logger.Error(fmt.Sprintf(format, args...))
 	}))
@@ -191,7 +187,7 @@ func (m *Manager) setupRoutes() {
 		},
 	}))
 
-	// ── 公开 API（无需登录；登录接口限流） ──
+	// 公开 API：无需登录，登录接口限流
 	api := app.Group("/api")
 	api.Get("/health", func(c fiber.Ctx) error {
 		return c.JSON(fiber.Map{"status": "ok", "service": "lanmei-manager", "time": time.Now()})
@@ -206,7 +202,7 @@ func (m *Manager) setupRoutes() {
 	authPub.Post("/refresh", loginLimit, h.Refresh)
 	authPub.Post("/logout", h.Logout)
 
-	// ── 受保护 API（CSRF + Bearer 鉴权） ──
+	// 受保护 API：统一 CSRF + Bearer 鉴权
 	super := middleware.RequireRole(model.AdminRoleSuper)
 	stepUp := middleware.RequireStepUp(svc)
 	protected := api.Group("", middleware.CSRF(), middleware.Auth(svc))
@@ -258,7 +254,7 @@ func (m *Manager) setupRoutes() {
 	protected.Get("/audit-logs", h.ListAuditLogs)
 	protected.Get("/dashboard/stats", h.DashboardStats)
 
-	// ── 内容管理（M3）：群组 / 用户 / 知识库 / 记忆 / 插件 / Skills / Prompt / 表情包 / 命令 ──
+	// 内容管理：群组 / 用户 / 知识库 / 记忆 / 插件 / Skills / Prompt / 表情包 / 命令
 	protected.Get("/groups", h.ListGroups)
 	protected.Get("/groups/:platform/:group_id/config", h.GetGroupConfig)
 	protected.Put("/groups/:platform/:group_id/config", super, stepUp, h.SaveGroupConfig)

@@ -17,12 +17,8 @@ import (
 // valuesAPIBase 飞书电子表格 v2 values 读取接口前缀。
 const valuesAPIBase = "https://open.feishu.cn/open-apis/sheets/v2/spreadsheets/"
 
-// ensureRows 返回 KV 行缓存，必要时从飞书重新拉取。
-//
-// 缓存逻辑：
-//   - 缓存有效期内直接返回；
-//   - 拉取失败但已有缓存时降级使用旧数据（记录告警），保证召回不被单次网络故障击穿；
-//   - 拉取失败且无缓存时返回错误，由上层按空结果处理。
+// ensureRows 确保行缓存有效，必要时从飞书重新拉取：拉取失败但已有缓存时降级用旧数据
+// （保证召回不被单次网络故障击穿）；无缓存则返回错误，由上层按空结果处理。
 func (p *Provider) ensureRows(ctx context.Context) error {
 	p.mu.Lock()
 	fresh := p.loaded && time.Since(p.fetchedAt) < p.cacheTTL
@@ -70,10 +66,9 @@ func (p *Provider) snapshotRows() []*kvRow {
 	return out
 }
 
-// fetchRows 从飞书拉取 KV 行数据：
-//  1. 解析工作表 ID（配置 sheet_id 优先，否则按 sheet_name 从工作表列表匹配）；
-//  2. 调用 values 接口读取「索引列:知识列」整列非空范围；
-//  3. 跳过表头行，过滤空行，截断到 maxRows。
+// fetchRows 从飞书拉取 KV 行数据：先解析工作表 ID（sheet_id 优先，否则按 sheet_name
+// 匹配工作表列表），再调用 values 接口读取「索引列:知识列」整列非空范围，
+// 跳过表头行、过滤空行并截断到 maxRows。
 func (p *Provider) fetchRows(ctx context.Context) ([]*kvRow, error) {
 	sheetID, err := p.resolveSheetID(ctx)
 	if err != nil {

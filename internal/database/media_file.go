@@ -10,7 +10,6 @@ import (
 	"gorm.io/gorm/clause"
 )
 
-// isRecordNotFound 判断是否为 GORM 记录不存在错误。
 func isRecordNotFound(err error) bool {
 	return errors.Is(err, gorm.ErrRecordNotFound)
 }

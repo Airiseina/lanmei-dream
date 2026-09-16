@@ -1,10 +1,8 @@
-// Package plugin 实现了 WASM 插件的运行时安全沙箱，包括能力授权（Capability）、
-// 作用域检查（Scope）、审计日志（Audit）、数据库/HTTP/状态存储访问控制等。
+// Package plugin 实现 WASM 插件的运行时安全沙箱：能力授权（Capability）、
+// 作用域检查（Scope）、审计日志（Audit）以及数据库/HTTP/状态存储访问控制。
 //
-// 安全模型的核心设计借鉴了 Tauri v2 的 Capability 模型：
-//   - Permission：细粒度的原子权限标识（如 "state:read"、"http:get"）
-//   - Scope：对权限的运行时约束（如 state 操作的 key 前缀、HTTP 请求的 host 白名单）
-//   - Capability：将 Permission + Scope 绑定到特定插件安装实例的授权声明
+// 安全模型借鉴 Tauri v2：Permission 是原子权限标识，Scope 对其施加运行时约束
+// （如 state 的 key 前缀、HTTP 的 host 白名单），Capability 将二者绑定到安装实例。
 package plugin
 
 import (
@@ -14,42 +12,35 @@ import (
 	"strings"
 )
 
-// ScopeChecker 在运行时检查操作是否满足 Scope 约束。
+// ScopeChecker 在运行时校验操作参数是否满足 Scope 约束，是对 Permission 的进一步限定
+// （如拥有 state:read 却只能访问 "user_" 前缀的 key）。
 //
-// 设计原理：
-// Scope 是对 Permission 的进一步限定。一个插件可能拥有 "state:read" 权限，
-// 但通过 Scope 可以约束其只能访问 "user_" 前缀的 key。
-// ScopeChecker 的职责是在每次操作前验证操作参数是否符合 Scope 中声明的约束。
-//
-// 核心判定模式——"有约束则严格、无约束则放行"：
-//   - 如果某个权限存在 Scope 约束，则操作参数必须匹配至少一个 Scope 才被允许
-//   - 如果某个权限不存在任何 Scope 约束，则该权限下的操作默认全部允许
-//   - 这个模式通过 hasScopeForPermission 辅助函数实现：它判断某权限是否存在 Scope，
-//     当遍历完所有 Scope 都未匹配时，返回 !hasScopeForPermission(perm)
+// 核心判定模式"有约束则严格、无约束则放行"：某权限存在 Scope 时，操作须匹配至少
+// 一个 Scope 才允许；不存在任何 Scope 时该权限下的操作默认放行。该模式由
+// hasScopeForPermission 实现——遍历所有 Scope 未匹配时返回 !hasScopeForPermission(perm)。
 type ScopeChecker struct {
 	scopes []Scope
 }
 
 // NewScopeChecker 创建 Scope 检查器。
-// scopes 参数来自 Capability 中声明的 Scope 列表。
+//
+// 参数：
+//   - scopes：来自 Capability 的 Scope 列表；为空时所有权限视为无约束（Check 系列直接放行）
+//
+// 返回：检查器实例。
 func NewScopeChecker(scopes []Scope) *ScopeChecker {
 	return &ScopeChecker{scopes: scopes}
 }
 
-// CheckStateKey 检查 state 操作的 key 是否在允许的前缀范围内。
-//
-// 匹配逻辑：
-//  1. 遍历所有与目标权限匹配的 Scope
-//  2. 如果 Scope 未配置 "key_prefix" 参数，表示无前缀约束，直接允许
-//  3. 如果配置了 "key_prefix"，则 key 必须以该前缀开头才被允许
-//  4. 遍历完所有 Scope 都未匹配时，采用兜底策略：
-//     若该权限存在 Scope 约束则拒绝（说明有约束但不匹配），若不存在则允许（无限制）
+// CheckStateKey 检查 state key 是否落在允许的前缀范围内：Scope 未配置 key_prefix
+// 时视为无约束直接允许，配置了则 key 必须以该前缀开头；遍历完所有 Scope 仍未匹配时，
+// 该权限存在 Scope 约束则拒绝、不存在则放行。
 //
 // 参数：
-//   - perm: 需要检查的权限（如 PermStateRead）
-//   - key: 要访问的 state key
+//   - perm：待检查的权限（如 state:read、state:write）
+//   - key：Guest 逻辑 key
 //
-// 返回：true 表示允许访问，false 表示拒绝
+// 返回：允许访问返回 true；存在约束且不匹配返回 false。
 func (sc *ScopeChecker) CheckStateKey(perm Permission, key string) bool {
 	for _, s := range sc.scopes {
 		if s.Permission != perm {
@@ -63,29 +54,21 @@ func (sc *ScopeChecker) CheckStateKey(perm Permission, key string) bool {
 			return true
 		}
 	}
-	// 如果存在该权限的 scope 约束但 key 不匹配任何前缀，则拒绝访问
-	// 如果不存在该权限的 scope 约束，则默认允许（无限制）
+	// 存在 scope 约束但均不匹配时拒绝，无约束时放行
 	return !sc.hasScopeForPermission(perm)
 }
 
-// CheckHTTPHost 检查 HTTP 请求的目标 host 是否在白名单中。
+// CheckHTTPHost 检查 HTTP 目标 host 是否在 Scope 的 allow_hosts 白名单
+// （JSON 数组，支持 "*.example.com" 通配）内；未配置 allow_hosts 视为无限制直接允许。
 //
-// 匹配逻辑：
-//  1. 遍历所有与目标权限匹配的 Scope
-//  2. 从 Scope 的 "allow_hosts" 参数中解析白名单（JSON 数组格式）
-//  3. 逐个匹配白名单中的 pattern（支持 * 通配符，如 "*.example.com"）
-//  4. 如果未配置 "allow_hosts" 参数，表示无 host 限制，直接允许
-//  5. 遍历完所有 Scope 都未匹配时，采用 hasScopeForPermission 兜底策略
-//
-// 安全考虑：
-//   - allow_hosts 的 JSON 解析失败视为拒绝（fail-closed），防止配置错误导致越权
-//   - 当存在 Scope 约束但 host 不在白名单中时，直接返回 false（不再检查其他 Scope）
+// 安全约束：allow_hosts 解析失败一律视为拒绝（fail-closed），避免配置错误导致越权；
+// 存在 Scope 约束但 host 不匹配时立即返回 false，不再检查其他 Scope。
 //
 // 参数：
-//   - perm: 需要检查的权限（如 PermHTTPGet）
-//   - host: 目标主机名（不含 scheme 和端口）
+//   - perm：待检查的权限（http:get 或 http:post）
+//   - host：从目标 URL 提取的主机名（不含端口）
 //
-// 返回：true 表示允许访问，false 表示拒绝
+// 返回：允许访问返回 true；白名单不匹配或解析失败返回 false。
 func (sc *ScopeChecker) CheckHTTPHost(perm Permission, host string) bool {
 	for _, s := range sc.scopes {
 		if s.Permission != perm {
@@ -109,27 +92,17 @@ func (sc *ScopeChecker) CheckHTTPHost(perm Permission, host string) bool {
 	return !sc.hasScopeForPermission(perm)
 }
 
-// CheckDBTable 检查数据库表是否在允许的列表中。
-//
-// IndexedDB 隔离模型说明：
-// WASM 插件使用类似浏览器 IndexedDB 的隔离模型——每个插件只能访问自己的命名空间，
-// 表名格式为 plugin_<pluginID>_<tableName>。这保证了即使不同插件使用了相同的逻辑表名，
-// 在物理存储上也是隔离的，不会互相干扰。
-//
-// 匹配逻辑：
-//  1. 先构造隔离表名 isolatedTable = "plugin_<pluginID>_<table>"
-//  2. 遍历所有与目标权限匹配的 Scope
-//  3. 从 Scope 的 "tables" 参数中解析允许的表名列表
-//  4. 同时匹配逻辑表名和隔离表名（兼容两种配置方式）
-//  5. 如果未配置 "tables" 参数，表示无表名限制，允许访问隔离命名空间内的任何表
-//  6. 遍历完所有 Scope 都未匹配时，采用 hasScopeForPermission 兜底策略
+// CheckDBTable 检查数据库表是否在 Scope 的 tables 列表内。
+// 插件表使用 IndexedDB 式隔离命名空间（plugin_<pluginID>_<table>），
+// 同名逻辑表物理隔离、互不干扰，匹配时逻辑表名与隔离表名都接受；
+// 未配置 tables 视为无限制，可访问隔离命名空间内的任何表。
 //
 // 参数：
-//   - perm: 需要检查的权限（如 PermDBRead）
-//   - pluginID: 插件标识符，用于构造隔离表名
-//   - table: 逻辑表名（插件请求的原始表名）
+//   - perm：待检查的权限（db:read 或 db:write）
+//   - pluginID：插件 ID，用于推导隔离表名
+//   - table：逻辑表名
 //
-// 返回：true 表示允许访问，false 表示拒绝
+// 返回：允许访问返回 true；存在 tables 约束且不匹配或解析失败返回 false。
 func (sc *ScopeChecker) CheckDBTable(perm Permission, pluginID, table string) bool {
 	// IndexedDB 隔离模型：插件只能访问 plugin_<pluginID>_ 前缀的表
 	isolatedTable := fmt.Sprintf("plugin_%s_%s", pluginID, table)
@@ -157,23 +130,22 @@ func (sc *ScopeChecker) CheckDBTable(perm Permission, pluginID, table string) bo
 	return !sc.hasScopeForPermission(perm)
 }
 
-// IsolatedTableName 返回插件隔离后的完整表名。
-// 格式：plugin_<pluginID>_<tableName>
-// 此函数供 DBAccess 等组件在构造 SQL 查询时使用，确保物理表名始终带有隔离前缀。
+// IsolatedTableName 返回插件隔离后的完整表名 plugin_<pluginID>_<tableName>，
+// 供 DBAccess 等组件构造 SQL 时使用，确保物理表名始终带有隔离前缀。
+//
+// 参数：
+//   - pluginID：插件 ID
+//   - table：逻辑表名
+//
+// 返回：带 plugin_<pluginID>_ 前缀的物理表名。
 func IsolatedTableName(pluginID, table string) string {
 	return fmt.Sprintf("plugin_%s_%s", pluginID, table)
 }
 
 // hasScopeForPermission 判断是否存在针对指定权限的 Scope 约束。
-//
-// 这是 ScopeChecker 的核心辅助函数，实现了"有约束则严格、无约束则放行"的判定模式：
-//   - 返回 true：说明该权限存在 Scope 约束，但前面的 Check 函数遍历了所有 Scope
-//     都未匹配，因此应拒绝访问（返回 !true = false）
-//   - 返回 false：说明该权限不存在任何 Scope 约束，应默认允许（返回 !false = true）
-//
-// 这个模式确保了：
-//   - 新增权限时，如果忘记配置 Scope，不会意外阻止合法操作
-//   - 配置了 Scope 后，未匹配的操作会被正确拒绝
+// 它是"有约束则严格、无约束则放行"模式的实现基础：Check 系列函数遍历完所有
+// Scope 仍未匹配时返回其取反值——有约束则拒绝、无约束则放行，
+// 避免新增权限漏配 Scope 时误拦合法操作。
 func (sc *ScopeChecker) hasScopeForPermission(perm Permission) bool {
 	for _, s := range sc.scopes {
 		if s.Permission == perm {
@@ -183,18 +155,8 @@ func (sc *ScopeChecker) hasScopeForPermission(perm Permission) bool {
 	return false
 }
 
-// matchHost 执行域名匹配，支持 filepath.Match 风格的通配符。
-//
-// 匹配规则：
-//   - "*" 匹配所有 host（用于完全开放的场景）
-//   - 精确匹配：pattern == host
-//   - 通配符匹配：如 "*.example.com" 可匹配 "api.example.com"
-//
-// 参数：
-//   - pattern: 白名单中的模式串（如 "*.example.com"）
-//   - host: 实际请求的目标主机名
-//
-// 返回：true 表示匹配成功
+// matchHost 执行域名匹配，支持 filepath.Match 风格通配符："*" 匹配所有 host，
+// pattern == host 为精确匹配，其余（如 "*.example.com"）交给 filepath.Match。
 func matchHost(pattern, host string) bool {
 	if pattern == "*" {
 		return true

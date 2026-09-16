@@ -14,16 +14,17 @@ const defaultKnowledgeVectorDim = 1024
 
 // Migrate 使用 GORM AutoMigrate 自动建表（幂等），并确保 pgvector / pg_trgm 扩展和索引就绪。
 //
-// vectorDim 为知识库向量列的目标维度（来自 ai.embedding_dim 配置）；
-// 若 >0 且与默认维度不同，迁移时对 knowledge_chunks.embedding 执行 ALTER 自适应。
+// vectorDim 为知识库向量列的目标维度（来自 ai.embedding_dim）：>0 且与默认维度不同时，
+// 对 knowledge_chunks.embedding 执行 ALTER 自适应。
 func (db *DB) Migrate(ctx context.Context, vectorDim int) error {
-	// 启用 pgvector 扩展
+	// 迁移顺序：先启用扩展再 AutoMigrate —— memory_vectors/knowledge_chunks 的 vector 列
+	// 依赖 vector 类型，缺扩展会导致建表失败。
 	if err := db.Orm.WithContext(ctx).Exec("CREATE EXTENSION IF NOT EXISTS vector").Error; err != nil {
 		return fmt.Errorf("enable pgvector: %w", err)
 	}
 	db.logger.Info("pgvector 扩展已启用")
 
-	// 启用 pg_trgm 扩展（本地知识库模糊召回倒排索引）
+	// pg_trgm 提供本地知识库模糊召回所需的倒排索引。
 	if err := db.Orm.WithContext(ctx).Exec("CREATE EXTENSION IF NOT EXISTS pg_trgm").Error; err != nil {
 		return fmt.Errorf("enable pg_trgm: %w", err)
 	}
@@ -61,13 +62,13 @@ func (db *DB) Migrate(ctx context.Context, vectorDim int) error {
 		return fmt.Errorf("migrate: %w", err)
 	}
 
-	// 创建 HNSW 索引（幂等，已存在则跳过）
+	// HNSW 向量索引（IF NOT EXISTS 幂等，已存在则跳过）。
 	db.Orm.WithContext(ctx).Exec(
 		"CREATE INDEX IF NOT EXISTS idx_memory_vectors_embedding ON memory_vectors USING hnsw (embedding vector_cosine_ops)",
 	)
 	db.logger.Info("HNSW 向量索引已就绪")
 
-	// 创建 GIN 全文搜索索引（用于关键词召回）
+	// GIN 全文搜索索引，供关键词召回使用。
 	db.Orm.WithContext(ctx).Exec(
 		"CREATE INDEX IF NOT EXISTS idx_memory_vectors_search_vec ON memory_vectors USING gin (search_vec)",
 	)
@@ -91,8 +92,7 @@ CREATE TRIGGER trg_memory_vectors_search_vec
   FOR EACH ROW EXECUTE FUNCTION memory_vectors_search_vec_trigger()`)
 	db.logger.Info("全文搜索触发器已就绪")
 
-	// ── 知识库索引 ──
-	// 向量召回（HNSW）
+	// 知识库向量召回索引（HNSW）与模糊召回索引（pg_trgm GIN）。
 	db.Orm.WithContext(ctx).Exec(
 		"CREATE INDEX IF NOT EXISTS idx_knowledge_chunks_embedding ON knowledge_chunks USING hnsw (embedding vector_cosine_ops)",
 	)

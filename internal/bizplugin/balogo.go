@@ -11,24 +11,11 @@ import (
 	"github.com/zrurf/conduit"
 )
 
-// ============================================================
-// BaLogoPlugin 蔚蓝档案风格LOGO插件
-// ============================================================
-
-// BaLogoPlugin 生成蔚蓝档案（Blue Archive）风格LOGO图片。
+// BaLogoPlugin 生成蔚蓝档案（Blue Archive）风格 LOGO 图片：/balogo 左文字 右文字 触发，
+// 由外部服务 balogo.huankong.top 渲染成图，参数个数不为 2 时回复用法提示。
 //
-// 功能：
-//   - 触发命令：/balogo 左文字 右文字
-//   - 通过外部服务 balogo.huankong.top 代理生成 BA 风格 LOGO 图片
-//   - 参数格式错误时回复用法提示
-//
-// 行为树：
-//
-//	subtree.balogo → Sequence(IsBaLogoCommand, Action("pipeline.plugin.balogo"))
-//
-// 管线：
-//
-//	pipeline.plugin.balogo → [executePass, replyPass]
+// 插件 ID balogo；命令 /balogo，工具 balogo_generate；
+// 仅依赖外部渲染服务的可访问性（无本地配置项，服务不可达时无法出图）。
 type BaLogoPlugin struct{}
 
 // NewBaLogoPlugin 创建 BA-LOGO 插件。
@@ -36,8 +23,7 @@ func NewBaLogoPlugin() *BaLogoPlugin {
 	return &BaLogoPlugin{}
 }
 
-// baLogoURL 外部 BA-LOGO 生成服务地址（与上游 LanMei 一致）。
-// textL/textR 分别对应左右两部分文字，由服务端渲染成图片。
+// baLogoURL 外部 BA-LOGO 生成服务地址（与上游 LanMei 一致），textL/textR 对应左右两部分文字。
 var baLogoURL = "https://balogo.huankong.top/?textL=%v&textR=%v"
 
 // Info 返回 BA-LOGO 插件元信息。
@@ -63,7 +49,6 @@ func (p *BaLogoPlugin) Info() pluginpkg.PluginInfo {
 
 // OnInit 初始化 BA-LOGO 插件，注册 Pass、Pipeline 和 Subtree。
 func (p *BaLogoPlugin) OnInit(ctx *pluginpkg.PluginContext) error {
-	// 注册 Pass
 	executePassID := pluginpkg.PassID("balogo", "execute")
 	replyPassID := pluginpkg.PassID("balogo", "reply")
 
@@ -77,11 +62,9 @@ func (p *BaLogoPlugin) OnInit(ctx *pluginpkg.PluginContext) error {
 		return fmt.Errorf("register reply pass: %w", err)
 	}
 
-	// 跟踪 Pass
 	ctx.Registry.TrackPass("balogo", executePassID)
 	ctx.Registry.TrackPass("balogo", replyPassID)
 
-	// 注册管线
 	pipelineID := pluginpkg.PipelineID("balogo", "main")
 	pl := conduit.NewPipelineFromIDs(
 		pipelineID,
@@ -92,10 +75,8 @@ func (p *BaLogoPlugin) OnInit(ctx *pluginpkg.PluginContext) error {
 		return fmt.Errorf("register pipeline: %w", err)
 	}
 
-	// 跟踪 Pipeline
 	ctx.Registry.TrackPipeline("balogo", pipelineID)
 
-	// 注册行为树子树
 	subtree := conduit.NewSequence(
 		conduit.NewCondition(isBaLogoCommand),
 		conduit.NewAction(pipelineID),
@@ -113,44 +94,38 @@ func (p *BaLogoPlugin) OnStart(_ *pluginpkg.PluginContext) error { return nil }
 // OnStop BA-LOGO 插件无需清理资源。
 func (p *BaLogoPlugin) OnStop(_ *pluginpkg.PluginContext) error { return nil }
 
-// ============================================================
-// 条件判断
-// ============================================================
-
 // isBaLogoCommand 判断消息是否为 balogo 命令。
 func isBaLogoCommand(ctx *conduit.MessageContext) bool {
 	return strings.HasPrefix(strings.TrimSpace(ctx.RawMsg), "/balogo")
 }
 
-// ============================================================
-// Pass 实现
-// ============================================================
-
 // balogoResult BA-LOGO 生成结果，Pass 间通过 MessageContext 传递
 type balogoResult struct {
-	ImageURL string // 生成的 BA-LOGO 图片 URL
+	ImageURL string
 }
 
-const balogoResultKey = "plugin.balogo.result" // MessageContext 中结果的键
+const balogoResultKey = "plugin.balogo.result"
 
 // balogoExecutePass 解析命令参数，生成 BA-LOGO 图片 URL
 type balogoExecutePass struct{}
 
+// Execute 解析 /balogo 参数：去掉命令前缀后按空白切分为左右两段文字，
+// QueryEscape 编码后拼出外部生成服务 URL，写入上下文键 plugin.balogo.result（balogoResult）。
+// 由 plugin.balogo.pipeline.main 在 isBaLogoCommand 命中 /balogo 前缀后首先调用；
+// 参数个数不为 2 时写入空 URL，由回复 Pass 输出用法提示。
 func (pass *balogoExecutePass) Execute(ctx *conduit.MessageContext) error {
-	// 解析命令：/balogo 左文字 右文字
 	raw := strings.TrimSpace(ctx.RawMsg)
 	raw = strings.TrimPrefix(raw, "/balogo")
 	raw = strings.TrimSpace(raw)
 
 	parts := strings.Fields(raw)
 
-	// 参数校验：必须恰好 2 部分
 	if len(parts) != 2 {
 		conduit.Set(ctx, balogoResultKey, &balogoResult{ImageURL: ""})
 		return nil
 	}
 
-	// 生成图片 URL（QueryEscape 编码中文等特殊字符，保证 URL 合法）
+	// QueryEscape 编码中文等特殊字符，保证生成的 URL 合法
 	imageURL := fmt.Sprintf(baLogoURL, url.QueryEscape(parts[0]), url.QueryEscape(parts[1]))
 
 	conduit.Set(ctx, balogoResultKey, &balogoResult{ImageURL: imageURL})
@@ -160,6 +135,9 @@ func (pass *balogoExecutePass) Execute(ctx *conduit.MessageContext) error {
 // balogoReplyPass 组装 BA-LOGO 回复消息
 type balogoReplyPass struct{}
 
+// Execute 组装 BA-LOGO 回复：从上下文键 plugin.balogo.result 读取生成结果，
+// URL 非空时输出图片链接（由网关识别为图片消息发送），为空时回复格式错误与用法示例。
+// 由 plugin.balogo.pipeline.main 在 execute Pass 之后调用；结果缺失时回复「LOGO生成异常，请重试。」。
 func (pass *balogoReplyPass) Execute(ctx *conduit.MessageContext) error {
 	result, ok := conduit.Get[*balogoResult](ctx, balogoResultKey)
 	if !ok {
@@ -170,7 +148,6 @@ func (pass *balogoReplyPass) Execute(ctx *conduit.MessageContext) error {
 		return nil
 	}
 
-	// 参数不足时输出用法提示
 	if result.ImageURL == "" {
 		conduit.AppendOutput(ctx, &conduit.Message{
 			UserID: ctx.UserID, GroupID: ctx.GroupID, IsGroup: ctx.IsGroup,
@@ -179,17 +156,13 @@ func (pass *balogoReplyPass) Execute(ctx *conduit.MessageContext) error {
 		return nil
 	}
 
-	// 输出图片 URL（由网关层识别为图片消息发送）
+	// 输出图片 URL，由网关层识别为图片消息发送
 	conduit.AppendOutput(ctx, &conduit.Message{
 		UserID: ctx.UserID, GroupID: ctx.GroupID, IsGroup: ctx.IsGroup,
 		Content: result.ImageURL,
 	})
 	return nil
 }
-
-// ============================================================
-// AI 工具处理器
-// ============================================================
 
 // toolBaLogoGenerate 是 AI 工具处理器，生成 BA 风格 LOGO 图片 URL。
 func (p *BaLogoPlugin) toolBaLogoGenerate(_ context.Context, argsJSON string) (string, error) {

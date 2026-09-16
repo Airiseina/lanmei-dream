@@ -1,14 +1,9 @@
-// Package bot 中群聊话题（Topic）系统的行为树集成节点。
+// Package bot 中群聊话题（Topic）系统的行为树集成节点（设计详见 docs/group-topic-design.md）。
 //
-// 设计说明（详见 docs/group-topic-design.md）：
-// TopicGatePass 是 RouterPass —— Execute 中对群消息做"是否应回复"的决策：
-//   - 私聊：直接放行（不决策）；
-//   - 群聊：调用意图分析器（一次 LLM 调用）同时返回意图与"是否在跟机器人说话"
-//     的提及判断（注入群聊最近对话做指代消解），再交 TopicManager 决策；
-//   - Route 按决策与意图路由到对话管线（roleplay / intent_command_exec）
-//     或静默保存管线（topic_ignore）。
-//
-// 命中话题时在黑板写入 TopicContext，供 RoleplayStreamPass 组装对话上下文。
+// TopicGatePass 是 RouterPass：Execute 对群消息做"是否应回复"的决策 —— 私聊直接放行；
+// 群聊用一次 LLM 调用同时得到意图与"是否在跟机器人说话"的提及判断（注入群聊最近对话
+// 做指代消解），再交 TopicManager 决策；Route 按决策与意图路由到 roleplay /
+// intent_command_exec，或静默保存到 topic_ignore。命中话题时写入黑板 TopicContext。
 package bot
 
 import (
@@ -28,8 +23,6 @@ import (
 // topicReplyKey 存储 TopicGatePass 的回复决策（data，Route 读取）。
 const topicReplyKey = "bot.topic.reply"
 
-// ── TopicGatePass：群聊选择性放行（RouterPass）──
-
 // TopicGatePass 实现 conduit.RouterPass。
 // Execute：私聊放行；群聊合并调用意图+提及判断（Analyzer）后交 Manager 决策，
 // 命中话题时写黑板；Route：私聊 → intent_analysis；群聊按决策与意图动态路由。
@@ -39,9 +32,18 @@ type TopicGatePass struct {
 	Logger   *zap.Logger
 }
 
-// Execute 执行群消息话题决策并写入黑板。
+// Execute 对消息做"是否应回复"的决策：私聊或 topic 系统未启用时直接放行；
+// 群聊时构造 IncomingMsg、执行提示词注入检测、合并一次 LLM 调用（意图 + 提及判断），
+// 再交 TopicManager 决策，并把话题上下文、提及模式与回复决策写入 ctx.data。
+//
+// 位置：pipeline.topic_gate 唯一 Pass（群聊与私聊的非命令消息都进入；RouterPass：Execute 只做决策）。
+//
+// 依赖上下文键：读取 Extra 的 KeyPlatform/KeySelfID/KeyNickname/KeyAtTargets；写入 intentResultKey、
+// KeyTopicID/KeyTopicLabel/KeyTopicContext、KeyMentionMode 与私有键 topicReplyKey（均 ctx.data）。
+//
+// 失败降级：Analyzer 失败时按 IntentChat/0.5 且视为未提及；judge 省略提及置信度时回退用意图置信度；
+// Execute 始终返回 nil（错误不中断管线，由 Route 按决策兜底）。
 func (p *TopicGatePass) Execute(ctx *conduit.MessageContext) error {
-	// 私聊或管理器未启用：不决策，直接放行
 	if p.Manager == nil || !ctx.IsGroup {
 		return nil
 	}
@@ -145,15 +147,21 @@ func (p *TopicGatePass) Route(ctx *conduit.MessageContext) (string, error) {
 	}
 }
 
-// ── TopicIgnorePass：群聊静默保存 ──
-
 // TopicIgnorePass 保存未命中话题的群消息到对话历史（带 group_id），不生成回复。
 // 这些记录供未来"群回忆"查询使用，但不进入话题归档链路。
 type TopicIgnorePass struct {
 	DB *database.DB
 }
 
-// Execute 保存用户消息到群对话历史并静默结束。
+// Execute 把未命中话题的群消息保存到对话历史（带 group_id，SourceChat），不生成回复；
+// 这些记录供后续"群回忆"查询使用，但不进入话题归档链路。
+//
+// 位置：pipeline.topic_ignore 唯一 Pass。
+//
+// 依赖上下文键：ctx.Ctx 与 Extra 的 KeyPlatform/KeyPlatformUserID/KeyNickname；DB 为 nil 时
+// 直接返回 nil（不落库）。
+//
+// 失败语义：取用户或写库失败返回 conduit.NewSoftError（引擎记录日志但不中断管线）。
 func (p *TopicIgnorePass) Execute(ctx *conduit.MessageContext) error {
 	if p.DB == nil {
 		return nil

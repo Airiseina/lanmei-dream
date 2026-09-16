@@ -26,14 +26,21 @@ const imageSafetySystemPrompt = `你是严格的图片内容安全审核器。�
 仅输出一行 JSON，不要 Markdown，不要解释：
 {"verdict":"safe|suggestive|adult|uncertain","confidence":0.0,"reasons":["简短原因"]}`
 
-// ImageSafetyVerdict 是视觉审核的封闭结论集合。
+// ImageSafetyVerdict 是视觉审核的封闭结论集合，仅以下四种取值；
+// 模型返回集合外的值视为审核失败（parseImageSafetyResult 返回错误），调用方按失败关闭处理。
 type ImageSafetyVerdict string
 
 const (
-	ImageSafetySafe       ImageSafetyVerdict = "safe"
+	// ImageSafetySafe 明确安全：普通风景/动物/食物/物品，或穿着正常且无性暗示姿势与身体强调的人物。
+	ImageSafetySafe ImageSafetyVerdict = "safe"
+	// ImageSafetySuggestive 擦边：泳装、内衣、湿身、透视、走光、明显裸露上身、强调私密部位、
+	// 性暗示姿势或恋物表现；未成年或疑似未成年人的性化表现至少归入本档。
 	ImageSafetySuggestive ImageSafetyVerdict = "suggestive"
-	ImageSafetyAdult      ImageSafetyVerdict = "adult"
-	ImageSafetyUncertain  ImageSafetyVerdict = "uncertain"
+	// ImageSafetyAdult 色情：裸体、可见性器官或乳头、性行为、成人用品或明确色情内容。
+	ImageSafetyAdult ImageSafetyVerdict = "adult"
+	// ImageSafetyUncertain 无法确认：画面不清、遮挡严重，或无法可靠判断人物是否被性化。
+	// 不确定即拒绝：IsSafe 仅认 ImageSafetySafe，本档不会被放行。
+	ImageSafetyUncertain ImageSafetyVerdict = "uncertain"
 )
 
 // ImageSafetyResult 是结构化图片安全审核结果。
@@ -49,7 +56,16 @@ func (r *ImageSafetyResult) IsSafe(minConfidence float64) bool {
 }
 
 // ModerateImage 对实际图片字节执行结构化内容安全审核。
-// 调用方必须采用失败关闭策略：任何错误都不得当作安全结果继续处理。
+// 调用方必须采用失败关闭策略：任何错误都不得当作安全结果继续处理
+// （图片审核宁拒绝不放行：审核失败/结论不确定都由调用方按拒绝处理）。
+//
+// 参数：
+//   - ctx：审核调用上下文（内部再叠加 v.timeout 超时）
+//   - imageData：图片原始字节；为空返回错误
+//   - mime：图片 MIME；为空时按 image/png 处理，非 image/ 前缀返回错误
+//
+// 返回：结构化审核结论（Verdict/Confidence/Reasons）；模型未配置、调用失败或
+// 结果不可解析时返回错误。
 func (v *VisionService) ModerateImage(ctx context.Context, imageData []byte, mime string) (*ImageSafetyResult, error) {
 	if len(imageData) == 0 {
 		return nil, errors.New("vision: image data 为空")

@@ -21,18 +21,14 @@ const visionSystemPrompt = "你是图片理解助手。请用简体中文客观�
 	"控制在 200 字以内，不要猜测图片之外的信息。"
 
 // stickerTagSystemPrompt 表情包标签生成系统提示：输出 2~4 个简短中文标签。
-// 标签用于表情库检索（ILIKE 双向匹配 + trgm 相似度），长句标签无法命中，
-// 因此严格要求"简短词"而非描述句。
+// 标签用于表情库检索（ILIKE 双向匹配 + trgm 相似度），长句标签无法命中，故要求简短词而非描述句。
 const stickerTagSystemPrompt = "你是表情包标注助手。看图生成 2~4 个适合检索的简短中文标签，" +
 	"描述情绪、内容与使用场景（如：无语、吐槽、开心、被坑、求安慰、委屈）。" +
 	"只输出标签本身，用中文逗号分隔，不要输出任何其他内容。"
 
 // VisionService 基于多模态 LLM 的图片理解服务。
-//
-// 降级链（调用方 MediaPass 负责）：
-//  1. 多模态模型可用 → 返回文字描述；
-//  2. 模型调用失败 → Describe 返回错误，调用方回退 "[图片]" 占位；
-//  3. 未配置视觉模型（Vision=nil）→ 直接占位，不进入本服务。
+// 降级链由调用方 MediaPass 负责：模型可用则返回文字描述；调用失败返回错误并由调用方回退
+// "[图片]" 占位；未配置视觉模型（Vision=nil）时直接占位，不进入本服务。
 type VisionService struct {
 	model        model.BaseChatModel
 	systemPrompt string
@@ -98,10 +94,8 @@ func (v *VisionService) Describe(ctx context.Context, imageURL string) (string, 
 }
 
 // GenerateTags 用视觉模型为表情包图片生成检索标签（2~4 个简短中文词）。
-// imageData 为图片字节，以 data URL 内嵌请求——无需对象存储可被 API 公网访问，
-// 本地/内网部署（RustFS 预签名 URL 外部模型拉不到）也能打标。
-// 打标是短输出任务，调用关闭推理思考（thinking=disabled）：
-// 推理模型开思考会拖慢响应，且可能出现"只思考不输出正文"（PR #39 同源问题）。
+// imageData 以 data URL 内嵌请求，无需对象存储可被 API 公网访问，本地/内网部署也能打标。
+// 打标是短输出任务，调用关闭推理思考：推理模型开思考会拖慢响应且可能"只思考不输出正文"。
 func (v *VisionService) GenerateTags(ctx context.Context, imageData []byte, mime string) ([]string, error) {
         if len(imageData) == 0 {
                 return nil, errors.New("vision: image data 为空")
@@ -140,7 +134,7 @@ func (v *VisionService) GenerateTags(ctx context.Context, imageData []byte, mime
 
 // parseStickerTags 解析视觉模型返回的标签串：按逗号/顿号/分号/空白切分，
 // 剥离 markdown 反引号与引号包裹，去重；过滤空项与超长项
-// （>12 rune 的是描述句不是检索标签，恰是本次自动打标要消灭的数据质量问题）。
+//（>12 rune 的是描述句不是检索标签，正是自动打标要消灭的数据质量问题）。
 func parseStickerTags(raw string) []string {
         s := strings.TrimSpace(strings.Trim(strings.TrimSpace(raw), "`"))
         if s == "" {

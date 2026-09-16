@@ -2,23 +2,25 @@ package model
 
 import "time"
 
-// ─────────────────────────────────────────────────────────────
 // 管理面板（Manager）专属数据模型
-// ─────────────────────────────────────────────────────────────
 
 // AdminRole 管理员角色
 type AdminRole string
 
 const (
-	AdminRoleSuper  AdminRole = "super_admin" // 超级管理员：全部权限
-	AdminRoleNormal AdminRole = "admin"       // 普通管理员：授权范围内的管理操作
+	// AdminRoleSuper 超级管理员，拥有全部权限（管理员账号管理等敏感操作仅限此角色）。
+	AdminRoleSuper AdminRole = "super_admin" // 超级管理员：全部权限
+	// AdminRoleNormal 普通管理员，可执行日常管理操作，部分敏感接口要求超管角色。
+	AdminRoleNormal AdminRole = "admin" // 普通管理员：授权范围内的管理操作
 )
 
 // AdminStatus 管理员账号状态
 type AdminStatus string
 
 const (
-	AdminStatusActive   AdminStatus = "active"   // 正常
+	// AdminStatusActive 账号正常，允许登录；会话校验要求账号处于此状态。
+	AdminStatusActive AdminStatus = "active" // 正常
+	// AdminStatusDisabled 账号已禁用，禁止登录，已登录会话在中间件校验时也会被拒绝。
 	AdminStatusDisabled AdminStatus = "disabled" // 禁用
 )
 
@@ -26,8 +28,10 @@ const (
 type AuthSource string
 
 const (
+	// AuthSourceEnv 凭据来自环境变量引导：每次启动按 LANMEI_MANAGER_ADMIN_PASSWORD 重新派生密码哈希。
 	AuthSourceEnv AuthSource = "env" // 环境变量引导（每次启动由 env 重派生哈希）
-	AuthSourceDB  AuthSource = "db"  // 面板内修改过凭据（env 不再覆盖）
+	// AuthSourceDB 凭据已被面板修改：引导流程不再用环境变量覆盖密码。
+	AuthSourceDB AuthSource = "db" // 面板内修改过凭据（env 不再覆盖）
 )
 
 // ManagerAdmin 管理面板账户。
@@ -46,15 +50,18 @@ type ManagerAdmin struct {
 	UpdatedAt    time.Time   `json:"updated_at"`
 }
 
-// TableName 指定表名
+// TableName 指定 GORM 表名为 manager_admin。
 func (ManagerAdmin) TableName() string { return "manager_admin" }
 
 // CredentialKind 认证凭据类型
 type CredentialKind string
 
 const (
+	// CredentialPassword 密码凭据：manager_admin.PasswordHash（argon2id）的镜像记录，用于凭据枚举与审计追踪。
 	CredentialPassword CredentialKind = "password" // argon2id 密码哈希（manager_admin.PasswordHash 的镜像，用于审计追踪）
-	CredentialTOTP     CredentialKind = "totp"     // TOTP 二次验证
+	// CredentialTOTP TOTP 二次验证凭据，Data 为加密后的 TOTP 密钥。
+	CredentialTOTP CredentialKind = "totp" // TOTP 二次验证
+	// CredentialWebAuthn WebAuthn passkey 凭据，Data 为 webauthn.Credential 的 JSON 序列化。
 	CredentialWebAuthn CredentialKind = "webauthn" // WebAuthn passkey
 )
 
@@ -74,7 +81,7 @@ type AuthCredential struct {
 	UpdatedAt    time.Time      `json:"updated_at"`
 }
 
-// TableName 指定表名
+// TableName 指定 GORM 表名为 auth_credential。
 func (AuthCredential) TableName() string { return "auth_credential" }
 
 // AuthSession 管理员登录会话（长期 Refresh Token 的载体）。
@@ -95,14 +102,16 @@ type AuthSession struct {
 	CreatedAt       time.Time  `json:"created_at"`
 }
 
-// TableName 指定表名
+// TableName 指定 GORM 表名为 auth_session。
 func (AuthSession) TableName() string { return "auth_session" }
 
 // LoginMethod 登录方式
 type LoginMethod string
 
 const (
+	// LoginMethodPassword 密码登录；账号绑定 TOTP 时验证密码后还需二次校验 TOTP。
 	LoginMethodPassword LoginMethod = "password" // 密码 + TOTP
+	// LoginMethodWebAuthn WebAuthn passkey 登录，无需密码。
 	LoginMethodWebAuthn LoginMethod = "webauthn" // passkey
 )
 
@@ -119,7 +128,7 @@ type LoginAttempt struct {
 	CreatedAt time.Time   `gorm:"index" json:"created_at"`
 }
 
-// TableName 指定表名
+// TableName 指定 GORM 表名为 login_attempt。
 func (LoginAttempt) TableName() string { return "login_attempt" }
 
 // AuditLog 操作审计日志（零信任：敏感操作全量留痕）。
@@ -136,18 +145,23 @@ type AuditLog struct {
 	CreatedAt  time.Time `gorm:"index" json:"created_at"`
 }
 
-// TableName 指定表名
+// TableName 指定 GORM 表名为 audit_log。
 func (AuditLog) TableName() string { return "audit_log" }
 
 // ConfigScope 配置版本作用域
 type ConfigScope string
 
 const (
-	ConfigScopeConduit   ConfigScope = "conduit"
-	ConfigScopePrompts   ConfigScope = "prompts"
-	ConfigScopeSkills    ConfigScope = "skills"
+	// ConfigScopeConduit 管道（行为树/管线）配置，控制台保存管道时写入此作用域的修订。
+	ConfigScopeConduit ConfigScope = "conduit"
+	// ConfigScopePrompts 提示词配置的版本作用域。
+	ConfigScopePrompts ConfigScope = "prompts"
+	// ConfigScopeSkills 技能配置的版本作用域。
+	ConfigScopeSkills ConfigScope = "skills"
+	// ConfigScopeKnowledge 知识库配置的版本作用域。
 	ConfigScopeKnowledge ConfigScope = "knowledge"
-	ConfigScopeBot       ConfigScope = "bot"
+	// ConfigScopeBot Bot 全局配置的版本作用域。
+	ConfigScopeBot ConfigScope = "bot"
 )
 
 // ConfigRevision 配置变更版本（支持回滚）。
@@ -162,7 +176,7 @@ type ConfigRevision struct {
 	CreatedAt  time.Time   `json:"created_at"`
 }
 
-// TableName 指定表名
+// TableName 指定 GORM 表名为 config_revision。
 func (ConfigRevision) TableName() string { return "config_revision" }
 
 // ConduitTrace 单条消息的执行 Trace（行为树 + 管线各节点状态与耗时）。
@@ -181,7 +195,7 @@ type ConduitTrace struct {
 	CreatedAt  time.Time `gorm:"index" json:"created_at"`
 }
 
-// TableName 指定表名
+// TableName 指定 GORM 表名为 conduit_trace。
 func (ConduitTrace) TableName() string { return "conduit_trace" }
 
 // NodeTraffic 节点级流量聚合（按分钟分桶）。
@@ -196,7 +210,7 @@ type NodeTraffic struct {
 	TotalDurationMS int64     `json:"total_duration_ms"`
 }
 
-// TableName 指定表名
+// TableName 指定 GORM 表名为 node_traffic。
 func (NodeTraffic) TableName() string { return "node_traffic" }
 
 // LLMProvider LLM Provider 配置（支持热切换 + 计费）。
@@ -218,18 +232,23 @@ type LLMProvider struct {
 	UpdatedAt    time.Time `json:"updated_at"`
 }
 
-// TableName 指定表名
+// TableName 指定 GORM 表名为 llm_provider。
 func (LLMProvider) TableName() string { return "llm_provider" }
 
 // UsageScene token 用量场景
 type UsageScene string
 
 const (
-	UsageSceneChat     UsageScene = "chat"
-	UsageSceneIntent   UsageScene = "intent"
+	// UsageSceneChat 普通对话（主聊天链路）的 token 用量。
+	UsageSceneChat UsageScene = "chat"
+	// UsageSceneIntent 意图识别调用的 token 用量。
+	UsageSceneIntent UsageScene = "intent"
+	// UsageSceneCompress 记忆压缩（摘要生成）调用的 token 用量。
 	UsageSceneCompress UsageScene = "compress"
-	UsageSceneTopic    UsageScene = "topic"
-	UsageSceneVision   UsageScene = "vision"
+	// UsageSceneTopic 话题标签/归档生成调用的 token 用量。
+	UsageSceneTopic UsageScene = "topic"
+	// UsageSceneVision 图片视觉理解与安全审核调用的 token 用量。
+	UsageSceneVision UsageScene = "vision"
 )
 
 // TokenUsage Token 用量明细（计费基础数据）。
@@ -251,7 +270,7 @@ type TokenUsage struct {
 	CreatedAt    time.Time  `json:"created_at"`
 }
 
-// TableName 指定表名
+// TableName 指定 GORM 表名为 token_usage。
 func (TokenUsage) TableName() string { return "token_usage" }
 
 // GroupConfig 群级配置（群管理模块）。
@@ -271,7 +290,7 @@ type GroupConfig struct {
 	UpdatedAt     time.Time `json:"updated_at"`
 }
 
-// TableName 指定表名
+// TableName 指定 GORM 表名为 group_config。
 func (GroupConfig) TableName() string { return "group_config" }
 
 // ScheduledJob 定时任务。
@@ -288,5 +307,5 @@ type ScheduledJob struct {
 	UpdatedAt time.Time  `json:"updated_at"`
 }
 
-// TableName 指定表名
+// TableName 指定 GORM 表名为 scheduled_job。
 func (ScheduledJob) TableName() string { return "scheduled_job" }

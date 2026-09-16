@@ -21,11 +21,9 @@ const (
 // seedInterval 种子补图单张之间的固定间隔（var 以便测试缩短等待）。
 var seedInterval = 3 * time.Second
 
-// refillOne 补一张图入池：候选 → 查重 → 元数据过滤 → 下载 → vision 审核 → 上传 → 入库。
-//
-// 任何一步失败只 Warn 后结束，不重试；返回是否成功入库。
-// parent 必须派生自 refillCtx，绝不引用消息 ctx；
-// attemptCtx 与 moderationCtx 是两个正交预算，互不嵌套。
+// refillOne 补一张图入池：候选 → 查重 → 元数据过滤 → 下载 → vision 审核 → 上传 → 入库；
+// 任何一步失败只 Warn 后结束、不重试，返回是否成功入库。
+// parent 必须派生自 refillCtx，绝不引用消息 ctx；attemptCtx 与 moderationCtx 是两个正交预算。
 func (p *Plugin) refillOne(parent context.Context) bool {
 	if p.moderator == nil {
 		// 视觉审核未配置，fail-closed 不补图（New 时已 Warn，这里不刷日志）。
@@ -123,7 +121,7 @@ func (p *Plugin) refillOne(parent context.Context) bool {
 		// 误删会把已入库的图变成坏记录；孤儿对象由内容寻址去重兜底。
 		return false
 	}
-	// 入库成功观测点：带最新存量，部署后据此核对灌图进度。
+	// 入库成功日志附最新存量，便于观测补图进度。
 	if count, err := p.db.CountRandomBeautyPool(parent); err == nil {
 		p.logger.Info("random_beauty: 补图入库成功",
 			zap.Int64("pid", pid), zap.Int64("pool_size", count))
@@ -134,8 +132,8 @@ func (p *Plugin) refillOne(parent context.Context) bool {
 	return true
 }
 
-// seedLoop 种子补图：循环补图直到池达到 PoolInitSize。
-// 单张之间固定间隔 seedInterval；连续 seedFailureBreaker 张未产出（含在池弃置）则熔断退出。
+// seedLoop 种子补图：补到 PoolInitSize 为止，单张之间间隔 seedInterval；
+// 连续 seedFailureBreaker 张未产出（含在池弃置）则熔断退出。
 func (p *Plugin) seedLoop() {
 	target := int64(p.cfg.PoolInitSize)
 	consecutiveFailures := 0

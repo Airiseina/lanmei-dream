@@ -38,7 +38,7 @@
 | 网关 | lxzan/gws 反向 WebSocket，OneBot 12/11 |
 | AI | CloudWeGo Eino（LLM / Embedding / ToolCalling） |
 | 数据库 | PostgreSQL 18 + pgvector（HNSW 索引，GORM 参数化查询） |
-| 缓存 | Redis 7（Conduit StateStore + 插件 KV） |
+| 缓存 | Redis 7（Conduit StateStore + 插件会话状态） |
 | 插件 | Extism + wazero（Wasm） |
 | 权限 | Casbin RBAC |
 | 管理 API | gofiber/fiber v3 |
@@ -143,6 +143,10 @@ make dev-web     # 管理面板前端（vite :5173，/api 代理到 :8090）
 - Wasm 插件开发（WIT 接口、权限、生命周期、ABI）：见 [PLUGIN_DEVELOPMENT.md](PLUGIN_DEVELOPMENT.md) 与 [schema/plugin/lanmei-plugin.wit](schema/plugin/lanmei-plugin.wit)
 - 插件示例：`examples/plugin/signin/`
 
+## 想一起玩？
+
+想给我加新活儿、修 bug，或者单纯想让我变得更聪明？超级欢迎！不过动笔之前，先去翻翻[贡献准则](CONTRIBUTING.md)——代码规范、提交约定、还有请 AI 帮忙写代码时该守的规矩，里面都写得明明白白。看完再动手，咱们合作愉快 (๑•̀ㅂ•́)و✧
+
 ## 目录结构
 
 我的身体结构大致长这样：
@@ -177,6 +181,7 @@ docs/                → 架构图与数据流文档
 
 - [架构图（drawio + mermaid）](docs/architecture.md) — 系统总览、消息流程、插件安全模型
 - [数据流说明](docs/data-flow.md) — 消息 / 意图 / 工具调用 / 插件 / 记忆压缩全链路
+- [贡献准则](CONTRIBUTING.md) — 想给我添砖加瓦的话，先看这份
 - [插件开发规范](PLUGIN_DEVELOPMENT.md)
 - [项目规则（AI 助手）](CLAUDE.md)
 

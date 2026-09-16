@@ -10,10 +10,10 @@ import (
 
 // EinoOptions eino Embedding 创建参数（provider 无关）
 type EinoOptions struct {
-	BaseURL   string // API 基础地址
-	APIKey    string // API 密钥
-	Model     string // 模型名
-	Dimension int    // 向量维度
+	BaseURL   string
+	APIKey    string
+	Model     string
+	Dimension int
 }
 
 // EinoEmbedder 基于 eino 的 Embedder 实现。
@@ -68,7 +68,6 @@ func (e *EinoEmbedder) EmbedBatch(ctx context.Context, texts []string) ([][]floa
 		return nil, fmt.Errorf("embedding: eino embed: %w", err)
 	}
 
-	// float64 → float32
 	vecs32 := make([][]float32, len(vecs64))
 	for i, v64 := range vecs64 {
 		v32 := make([]float32, len(v64))

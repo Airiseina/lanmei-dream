@@ -12,11 +12,17 @@ import (
 type NodeKind string
 
 const (
+	// NodeSelector 选择节点（OR）：任一子节点成功即成功。
 	NodeSelector  NodeKind = "selector"  // 选择节点（OR）
+	// NodeSequence 顺序节点（AND）：子节点依次执行，任一失败即失败。
 	NodeSequence  NodeKind = "sequence"  // 顺序节点（AND）
+	// NodeCondition 条件节点：引用命名条件，对应 Node.Condition 字段。
 	NodeCondition NodeKind = "condition" // 条件节点（引用命名条件）
+	// NodeAction 动作节点：引用一条管线，对应 Node.PipelineID 字段。
 	NodeAction    NodeKind = "action"    // 动作节点（引用管线）
+	// NodeSubtree 子树引用节点：引用已注册子树，对应 Node.SubtreeID 字段。
 	NodeSubtree   NodeKind = "subtree"   // 子树引用节点
+	// NodeCustom 自定义节点（插件实现）：序列化时降级为只读展示，不可编辑。
 	NodeCustom    NodeKind = "custom"    // 自定义节点（插件实现，只读展示）
 )
 
@@ -34,8 +40,8 @@ type Node struct {
 // Readonly 为 true 表示管线含不可序列化的静态 Pass 实例，面板禁止编辑。
 type PipelineView struct {
 	ID       string   `json:"id"`
-	PassIDs  []string `json:"pass_ids"`  // 动态 Pass 引用（可按序编辑）
-	Readonly bool     `json:"readonly"`  // 静态管线不可编辑
+	PassIDs  []string `json:"pass_ids"` // 动态 Pass 引用（可按序编辑）
+	Readonly bool     `json:"readonly"`
 }
 
 // PassView Pass 注册信息。

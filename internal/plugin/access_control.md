@@ -12,13 +12,20 @@ Casbin 只负责动作授权。插件身份、状态隔离、Host Function 参�
 
 | 类型 | 格式 | 示例 |
 |---|---|---|
-| 用户主体 | `user::<qq_id>` | `user::123456789` |
+| 用户主体 | `user::<platform>::<platformUserID>` | `user::qq::123456789` |
 | 插件主体 | `plugin::<plugin_id>::<installation_id>` | `plugin::signin::01J4F7ABCD` |
 | 系统主体 | `system::<name>` | `system::startup` |
 | 角色 | `role::<name>` | `role::plugin_command_basic` |
 | 动作 | `<resource>.<verb>` | `state.write` |
 
-插件主体必须精确到安装实例，使用 `PluginPrincipal(pluginID, installationID)` 构造。Host Function 闭包捕获这个主体和 `installationID`；绝不能相信 Wasm 请求里的插件或安装 ID。
+插件主体必须精确到安装实例，使用 `PluginPrincipal(pluginID, installationID)` 构造；用户主体用 `UserPrincipal(platform, platformUserID)`，系统主体用 `SystemPrincipal(name)`。Host Function 闭包捕获这个主体和 `installationID`；绝不能相信 Wasm 请求里的插件或安装 ID。
+
+## Permission 与 Action 是两个层次
+
+- **Action**（本文件，`access_control.go`）：`<resource>.<verb>` 形式（`command.handle`、`state.read`），是 Casbin 策略实际匹配的名字，也是 Host Function 运行时 `Require` 用的名字。
+- **Permission**（`capability.go`）：`<facility>:<action>` 形式（`state:read`、`http:get`、`db:read`），属于能力声明模型，与 `PermissionSet`（如 `state:default`）、`Scope`、`Capability` 配套，用于描述插件申请的能力与范围约束。
+
+两者不可混用，且并非一一对应：`HostFunctionActions`（`wasm_abi.go`）登记了 Host Function 到 Action 的映射——`state_get→state.read`、`state_set/compare_and_swap/incr_by/set_if_not_exists→state.write`、`state_delete→state.delete`；`state:atomic` 只是 Permission 侧的标识，没有同名 Action。
 
 ## 内置角色
 
@@ -63,9 +70,9 @@ if err := authorizer.Require(pluginPrincipal, plugin.ActionStateWrite); err != n
 
 ## Wasm 接入规则
 
-1. `WasmManager.Load` 校验插件声明的必需角色；缺失时关闭刚创建的实例并拒绝加载。
+1. `WasmManager.Load` 校验插件声明的必需角色；`required: true` 的角色未被授予时关闭刚创建的实例并拒绝加载。
 2. `WasmCommandPass` 调用 `lanmei_handle` 前检查 `command.handle`，消费非空输出前检查 `message.reply`。
-3. `NewStateHostFunctions` 在 `state_get`、`state_set`、`state_delete` 前分别检查对应的 `state.*` 动作。
+3. `NewStateHostFunctions` 在 `state_get`、`state_set`、`state_delete` 前分别检查对应的 `state.*` 动作；`compare_and_swap`、`incr_by`、`set_if_not_exists` 统一检查 `state.write`。
 4. 输出不能指定目标用户或群组；宿主始终从触发事件回填回复目标。
 5. Guest key 只能是逻辑 key。宿主使用 `conduit.MakeStoreKey("plugin", installationID, guestKey)` 生成物理 key，因此不同安装实例互相隔离。
 
@@ -83,7 +90,7 @@ if err := authorizer.Require(pluginPrincipal, plugin.ActionStateWrite); err != n
 }
 ```
 
-声明不是授权。管理主体必须显式为具体安装实例绑定角色；缺少 `required: true` 的角色时，加载失败并返回 `required_role_not_granted`。
+声明不是授权。管理主体必须显式为具体安装实例绑定角色；缺少 `required: true` 的角色时，`Load` 返回 `ErrInvalidMetadata` 错误（消息形如 `插件元数据无效: 缺少必需角色 role::…`），不会创建可运行的实例。
 
 ## 扩展检查表
 

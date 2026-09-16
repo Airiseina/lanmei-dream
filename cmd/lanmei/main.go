@@ -35,17 +35,15 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// ── 配置初始化 ──
 	cfg, err := config.Init()
 	if err != nil {
 		zap.L().Fatal("配置初始化失败", zap.Error(err))
 	}
 
-	// ── 日志初始化 ──
 	logger := infra.InitLogger(&cfg.Log)
 	defer logger.Sync()
 
-	// ── 基础设施（PostgreSQL+pgvector + Redis + RustFS 对象存储）──
+	// 基础设施（PostgreSQL+pgvector + Redis + RustFS 对象存储）
 	// embeddingDim 透传给数据库迁移，保证 knowledge_chunks 向量列维度与模型一致
 	inf, err := infra.Setup(ctx, &cfg.Database, &cfg.Redis, &cfg.Bot.Media, cfg.AI.EmbeddingDim, logger)
 	if err != nil {
@@ -68,7 +66,7 @@ func main() {
 		llmMgr    *llm.ProviderManager // 管理面板启用时承载热切换；禁用时为 nil
 	)
 
-	// ── LLM 客户端（eino，支持 OpenAI/DeepSeek/Qwen/Moonshot/Ark/Ollama）──
+	// LLM 客户端（eino，支持 OpenAI/DeepSeek/Qwen/Moonshot/Ark/Ollama）
 	if cfg.AI.LLMAPIKey != "" {
 		einoLLM, err := llm.NewEinoClient(ctx, &llm.EinoOptions{
 			BaseURL:     cfg.AI.LLMBaseURL,
@@ -105,7 +103,6 @@ func main() {
 		logger.Warn("LLM API Key 未配置，角色扮演不可用")
 	}
 
-	// ── Embedder 客户端 ──
 	if cfg.AI.EmbeddingAPIKey != "" {
 		embOpts := &embedding.EinoOptions{
 			BaseURL:   cfg.AI.EmbeddingBaseURL,
@@ -137,7 +134,6 @@ func main() {
 		logger.Warn("Embedding API Key 未配置，RAG 检索不可用")
 	}
 
-	// ── Skill 系统 ──
 	skillMgr := skill.NewManager(cfg.Skills.Dir, cfg.Skills.Config)
 	if err := skillMgr.LoadAll(); err != nil {
 		logger.Warn("技能加载不完整", zap.Error(err))
@@ -145,7 +141,6 @@ func main() {
 		logger.Info("Skill 系统就绪", zap.Int("count", len(skillMgr.List())), zap.String("dir", cfg.Skills.Dir))
 	}
 
-	// ── Prompt 系统 ──
 	promptMgr := prompt.NewManager(cfg.Prompts.Dir, cfg.Prompts.Config)
 	promptMgr.SetSkills(skillMgr)
 	if err := promptMgr.Load(cfg.Prompts.Config); err != nil {
@@ -163,9 +158,9 @@ func main() {
 		chatSvc = ai.NewChatService(llmClient, embedder, inf.MemStore, inf.DB, toolReg, logger)
 		chatSvc.SetPromptManager(promptMgr)
 
-		// ── 知识库系统（provider 工厂注册 + 服务构建 + 工具注册 + 隐式召回注入）──
+		// 知识库系统（provider 工厂注册 + 服务构建 + 工具注册 + 隐式召回注入）
 		if cfg.Knowledge.Enabled {
-			// 注册 provider 工厂（未来新增 provider 在此追加注册即可）
+			// 注册 provider 工厂（新增 provider 在此追加注册）
 			if err := kbpkg.RegisterProvider("local", local.New); err != nil {
 				logger.Fatal("注册 local provider 失败", zap.Error(err))
 			}
@@ -189,7 +184,7 @@ func main() {
 		}
 		logger.Info("AI 对话服务就绪")
 
-		// ── 记忆维护器：后台周期清理膨胀的对话表与超龄向量记忆 ──
+		// 记忆维护器：后台周期清理膨胀的对话表与超龄向量记忆
 		// （群聊 L0 不参与压缩只增不减，memory_vectors 持续写入；按保留上限+时间衰减淘汰）
 		maintainer := ai.NewMemoryMaintainer(inf.DB, logger)
 		maintainer.Start(ctx)
@@ -197,7 +192,7 @@ func main() {
 		logger.Warn("LLM 未配置，角色扮演不可用")
 	}
 
-	// ── 群聊话题（Topic）系统：决策管理器 + 冷却归档器 ──
+	// 群聊话题（Topic）系统：决策管理器 + 冷却归档器
 	// 启用时替换群聊全量回复为"提及/话题制"选择性回复；未启用时传入 nil 退化为原行为。
 	var topicMgr *topic.Manager
 	if cfg.Bot.Topic.Enabled {
@@ -212,7 +207,6 @@ func main() {
 		logger.Info("群聊话题系统未启用（群聊退化为全量回复）")
 	}
 
-	// ── 命令系统 ──
 	cmdSys := command.New()
 	if err := cmdSys.Register(command.Command{
 		Name:        "帮助",
@@ -232,7 +226,7 @@ func main() {
 		logger.Fatal("注册 help 命令失败", zap.Error(err))
 	}
 
-	// ── 视觉理解服务（多模态图片描述，可选）──
+	// 视觉理解服务（多模态图片描述，可选）
 	var visionSvc *ai.VisionService
 	if cfg.Bot.Media.VisionEnabled && llmClient != nil {
 		visionModel := cfg.Bot.Media.VisionModel
@@ -255,13 +249,11 @@ func main() {
 		logger.Info("视觉理解未启用（图片仅缓存或占位）")
 	}
 
-	// ── 插件系统 ──
 	pluginReg := pluginpkg.NewRegistry(nil, inf.StateStore, inf.DB, cmdSys, toolReg, logger)
 	// 注入插件受限 KV 存储（PostgreSQL 持久化，类似前端 IndexedDB）：
 	// 插件私有业务数据（如签到积分）通过 PluginContext.KV 读写，重启不丢失。
 	pluginReg.SetKVStore(database.NewPluginKVStore(inf.DB.Orm))
 
-	// ── 网关 ──
 	gwServer := gateway.NewServer(&gateway.ListenConfig{
 		ListenAddr:  cfg.Bot.Gateway.ListenAddr,
 		AccessToken: cfg.Bot.Gateway.AccessToken,
@@ -285,9 +277,8 @@ func main() {
 		logger.Fatal("恢复已启用 Wasm 插件失败", zap.Error(err))
 	}
 
-	// ── 内置业务插件：配置驱动注册（[plugin.builtins]）──
-	// 替代在 main.go 硬编码 if 块逐个注册的写法：启停由配置文件控制；
-	// 内置插件与 Wasm 插件同走一个注册表，同名插件已由 Wasm 加载时自动跳过，避免 ID 冲突。
+	// 内置业务插件：配置驱动注册（[plugin.builtins]）
+	// 启停由配置文件控制；内置插件与 Wasm 插件同走一个注册表，同名插件已由 Wasm 加载时自动跳过，避免 ID 冲突。
 	bizReg := bizplugin.NewBusinessRegistry(&cfg.Plugin.Builtins, pluginReg, logger)
 	bizReg.SetNCMURL(cfg.Plugin.NCMURL)
 	bizReg.SetMusicSendMode(cfg.Plugin.MusicSendMode)
@@ -296,7 +287,8 @@ func main() {
 	bizReg.SetLLMClient(llmClient)
 	bizReg.SetQuizDir(cfg.Quiz.Dir)
 	bizReg.SetRandomBeautyConfig(cfg.Plugin.RandomBeauty)
-	// 海龟汤出题/判定 LLM 独立超时（默认 15s）：LLM 慢时快速降级回"汤煮糊了"，不耗尽消息预算
+	// 海龟汤出题/判定 LLM 独立超时（默认 120s，见 LANMEI_BOT_TURTLE_SOUP_TIMEOUT_SECONDS）：
+	// 走独立 context，不占用消息级 20s 预算
 	bizReg.SetTurtleSoupTimeout(time.Duration(cfg.Bot.TurtleSoupTimeoutSeconds) * time.Second)
 	if err := bizReg.RegisterBuiltins(); err != nil {
 		logger.Fatal("内置业务插件注册失败", zap.Error(err))
@@ -318,7 +310,6 @@ func main() {
 	// 插件可能注册了新的命令/工具，刷新意图分析器使其感知
 	b.RefreshIntentAnalyzer()
 
-	// ── 管理面板（内嵌，独立端口；config.manager.enabled=false 时跳过）──
 	var mgr *manager.Manager
 	if cfg.Manager.Enabled {
 		mgr, err = manager.New(&cfg.Manager, manager.Deps{

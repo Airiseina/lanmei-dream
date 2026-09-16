@@ -1,6 +1,5 @@
-// 内容管理（M3）数据访问层：
-// 知识库分块 / 记忆 / 表情包 / 用户 / 群组聚合。
-// 全部直接复用主服务连接池，仅查询/删除，不介入各子系统内部逻辑。
+// 内容管理数据访问层：知识库分块 / 记忆 / 表情包 / 用户 / 群组聚合。
+// 直接复用主服务连接池，仅做查询与删除，不介入各子系统内部逻辑。
 package store
 
 import (
@@ -12,10 +11,6 @@ import (
 
 	"github.com/DaWesen/lanmei-dream/internal/model"
 )
-
-// ─────────────────────────────────────────────
-// 知识库分块
-// ─────────────────────────────────────────────
 
 // ListKnowledgeChunks 分页查询知识库分块（排除大字段 Embedding）。
 func (s *Store) ListKnowledgeChunks(ctx context.Context, kbID, keyword string, offset, limit int) ([]model.KnowledgeChunk, int64, error) {
@@ -50,10 +45,6 @@ func (s *Store) CountKnowledgeChunks(ctx context.Context, kbID string) (int64, e
 	return n, err
 }
 
-// ─────────────────────────────────────────────
-// 记忆
-// ─────────────────────────────────────────────
-
 // ListMemories 分页查询记忆（排除向量大字段）。
 // userID/groupID 为空表示不限制；keyword 按内容模糊匹配。
 func (s *Store) ListMemories(ctx context.Context, userID, groupID, keyword string, offset, limit int) ([]model.MemoryVector, int64, error) {
@@ -81,10 +72,6 @@ func (s *Store) ListMemories(ctx context.Context, userID, groupID, keyword strin
 func (s *Store) DeleteMemory(ctx context.Context, id int64) error {
 	return s.db.Orm.WithContext(ctx).Delete(&model.MemoryVector{}, id).Error
 }
-
-// ─────────────────────────────────────────────
-// 表情包
-// ─────────────────────────────────────────────
 
 // ListStickers 分页查询表情包（keyword 按标签/来源模糊匹配）。
 func (s *Store) ListStickers(ctx context.Context, keyword string, offset, limit int) ([]model.StickerLibrary, int64, error) {
@@ -131,10 +118,6 @@ func (s *Store) DeleteSticker(ctx context.Context, id uint) error {
 	return s.db.Orm.WithContext(ctx).Delete(&model.StickerLibrary{}, id).Error
 }
 
-// ─────────────────────────────────────────────
-// 用户
-// ─────────────────────────────────────────────
-
 // ListUsers 分页查询用户（keyword 按昵称/平台用户ID匹配）。
 func (s *Store) ListUsers(ctx context.Context, keyword string, offset, limit int) ([]model.User, int64, error) {
 	var list []model.User
@@ -159,10 +142,6 @@ func (s *Store) UpdateUserBan(ctx context.Context, id int64, banned bool, reason
 	}
 	return s.DB().SetUserBanned(ctx, u.Platform, u.PlatformUserID, banned, reason)
 }
-
-// ─────────────────────────────────────────────
-// 群组（聚合）
-// ─────────────────────────────────────────────
 
 // GroupRow 群聚合行：group_id 唯一，附带的 platform/config 来自 group_config（可能为空）。
 type GroupRow struct {

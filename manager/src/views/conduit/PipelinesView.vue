@@ -210,7 +210,6 @@ onMounted(load)
   color: var(--mgr-text-secondary);
 }
 
-/* 追加按钮（链尾图形化） */
 .add-pass-btn {
   margin-left: 8px;
   border-style: dashed;
@@ -265,7 +264,6 @@ onMounted(load)
   color: var(--mgr-text-muted);
 }
 
-/* 底部悬浮保存条 */
 .savebar-wrap {
   position: sticky;
   bottom: 12px;

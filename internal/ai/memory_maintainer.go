@@ -8,11 +8,9 @@ import (
 	"go.uber.org/zap"
 )
 
-// 记忆维护默认参数：
-//   - groupConvKeepPerScope：群聊每个 (user, group) 维度保留的 L0 原文条数上限
-//   - topicKeepPerUser：每个用户保留的 L2 主题聚类条数上限（LOD 仅取最近 10 个）
-//   - memoryRetention：长期向量记忆的超龄保留期（到期未更新即淘汰）
-//   - maintainInterval：后台清理周期
+// 记忆维护默认参数：群聊每个 (user, group) 维度保留的 L0 原文条数上限、
+// 每个用户保留的 L2 主题聚类条数上限（LOD 仅取最近 10 个）、
+// 长期向量记忆的超龄保留期（到期未更新即淘汰）与后台清理周期。
 const (
 	groupConvKeepPerScope = 200
 	topicKeepPerUser      = 50
@@ -22,13 +20,9 @@ const (
 
 // MemoryMaintainer 后台记忆维护：按周期清理膨胀的对话表与超龄的向量记忆。
 //
-// 背景：群聊 L0 原始对话不参与压缩（压缩仅针对私聊），只增不减；
-// L2 聚合持续写入 memory_vectors 且 TopicCluster 只增不删。
-// 维护器按"保留上限 + 时间衰减"策略清理（借鉴长期记忆的遗忘思想）：
-//   - 群聊对话：每个 (user_id, group_id) 维度仅保留最近 N 条；
-//   - L2 主题：每个用户仅保留最近 N 个聚类；
-//   - 向量记忆：删除超过保留期未变动的记忆。
-//
+// 群聊 L0 原始对话不参与压缩（压缩仅针对私聊）且只增不减，L2 聚合持续写入且 TopicCluster
+// 只增不删，故按"保留上限 + 时间衰减"清理：每个 (user_id, group_id) 仅留最近 N 条原文、
+// 每个用户仅留最近 N 个主题聚类、删除超过保留期未变动的向量记忆。
 // 不影响检索质量：LOD 组装的 L2/L1 摘要与近期 L0 原文均保留。
 type MemoryMaintainer struct {
 	db          *database.DB
@@ -51,8 +45,7 @@ func NewMemoryMaintainer(db *database.DB, logger *zap.Logger) *MemoryMaintainer 
 	}
 }
 
-// Start 启动后台清理 goroutine：立即执行一次，之后按 interval 周期执行。
-// ctx 取消时退出（不阻塞）。
+// Start 启动后台清理 goroutine：立即执行一次，之后按 interval 周期执行；ctx 取消时退出（不阻塞）。
 func (m *MemoryMaintainer) Start(ctx context.Context) {
 	if m.db == nil {
 		return

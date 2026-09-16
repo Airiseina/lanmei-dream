@@ -13,7 +13,6 @@ app.use(createPinia())
 app.use(TDesign)
 app.use(router)
 
-// 应用初始主题（light/dark）+ 跟随系统主题变化
 const appStore = useAppStore()
 appStore.applyTheme()
 appStore.watchSystemTheme()
