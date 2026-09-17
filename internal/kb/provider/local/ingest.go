@@ -164,6 +164,9 @@ func (p *Provider) buildChunk(ctx context.Context, sourceID, title, content, met
 		title = string(r[:maxTitleRunes])
 	}
 
+	// embedder 为 nil 时保持 NULL（不填充空向量）：否则 pgvector-go 会把空向量
+	// 序列化为 '[]' 写入 vector(1024) 列，PostgreSQL 报维度错误导致整批 upsert 失败。
+	// 模糊/时间检索不受影响，向量检索 SQL 已过滤 embedding IS NULL。
 	var emb pgvector.Vector
 	if p.embedder != nil {
 		vecs, err := p.embedder.EmbedBatch(ctx, []string{content})

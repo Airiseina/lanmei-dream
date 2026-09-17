@@ -201,9 +201,11 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("ai.llm_temperature", 0.7)
 
 	// Embedding 非敏感默认值（API Key 仅从环境变量读取）
+	// 默认维度 1024 与 memory_vectors / knowledge_chunks 的 vector(1024) 硬编码一致
+	// （BAAI/bge-m3 固定输出 1024 维）；如配置其他维度需显式设置 LANMEI_AI_EMBEDDING_DIM。
 	v.SetDefault("ai.embedding_base_url", "https://api.openai.com/v1")
 	v.SetDefault("ai.embedding_model", "text-embedding-3-small")
-	v.SetDefault("ai.embedding_dim", 1536)
+	v.SetDefault("ai.embedding_dim", 1024)
 
 	// 数据库连接字符串从环境变量 LANMEI_DATABASE_URL 获取，此处仅保留默认
 	v.SetDefault("database.url", "postgres://postgres:postgres@localhost:5432/lanmei?sslmode=disable")

@@ -217,6 +217,11 @@ roundLoop:
 				}
 			}
 			if len(chunk.ToolCalls) > 0 {
+				// 中间文本 chunk 已在前面的循环里发送给用户，但未进入工具消息；
+				// 若不补回，下一轮 LLM 上下文缺失这段已输出内容，会重复/矛盾输出。
+				if chunk.Content != "" {
+					firstChunk.Content += chunk.Content
+				}
 				chunks := []*schema.Message{firstChunk, chunk}
 				for {
 					c, err := reader.Recv()

@@ -26,14 +26,17 @@ func (h *Handler) DashboardStats(c fiber.Ctx) error {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "统计失败"})
 	}
 
-	active := h.llmMgr.ActiveProvider()
 	activeName := ""
 	activeModel := ""
-	if active != nil {
-		activeName = active.Name
-		activeModel = active.Model
+	providerCount := 0
+	if h.llmMgr != nil {
+		active := h.llmMgr.ActiveProvider()
+		if active != nil {
+			activeName = active.Name
+			activeModel = active.Model
+		}
+		providerCount = len(h.llmMgr.Providers())
 	}
-	providerCount := len(h.llmMgr.Providers())
 
 	_, adminTotal, err := h.store.ListAdmins(c.Context(), 0, 1)
 	if err != nil {

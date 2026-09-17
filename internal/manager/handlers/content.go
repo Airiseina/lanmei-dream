@@ -412,6 +412,12 @@ func (h *Handler) SyncKnowledge(c fiber.Ctx) error {
 // 权限：登录即可，不要求超管。
 func (h *Handler) ListMemories(c fiber.Ctx) error {
 	offset, limit := pageQuery(c)
+	// user_id 为 bigint 列：非数字参数会让 PG 抛 invalid input syntax，先校验
+	if uid := c.Query("user_id"); uid != "" {
+		if _, err := strconv.ParseInt(uid, 10, 64); err != nil {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "user_id 必须是数字"})
+		}
+	}
 	list, total, err := h.store.ListMemories(c.Context(), c.Query("user_id"), c.Query("group_id"), c.Query("keyword"), offset, limit)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "记忆列表加载失败"})

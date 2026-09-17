@@ -3,19 +3,41 @@ package database
 import (
 	"context"
 	"fmt"
+	"strconv"
 
 	"github.com/DaWesen/lanmei-dream/internal/model"
 	"go.uber.org/zap"
 )
 
-// defaultKnowledgeVectorDim 知识库向量列的默认维度（与 memory_vectors 保持一致）。
-// 若配置的 ai.embedding_dim 不同，迁移时会 ALTER 到配置维度。
-const defaultKnowledgeVectorDim = 1024
+// currentVectorDim 返回指定表 embedding 列的实际维度；表/列不存在返回 0。
+func (db *DB) currentVectorDim(ctx context.Context, table string) int {
+	var colType string
+	err := db.Orm.WithContext(ctx).Raw(
+		`SELECT format_type(a.atttypid, a.atttypmod)
+		 FROM pg_catalog.pg_attribute a
+		 JOIN pg_catalog.pg_class c ON c.oid = a.attrelid
+		 JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+		 WHERE n.nspname = 'public' AND c.relname = ? AND a.attname = 'embedding'`,
+		table,
+	).Scan(&colType).Error
+	if err != nil || colType == "" {
+		return 0
+	}
+	// format_type 返回 "vector(1024)"，解析括号内数字
+	const prefix = "vector("
+	if len(colType) > len(prefix) && colType[:len(prefix)] == prefix {
+		dim, err := strconv.Atoi(colType[len(prefix) : len(colType)-1])
+		if err == nil {
+			return dim
+		}
+	}
+	return 0
+}
 
 // Migrate 使用 GORM AutoMigrate 自动建表（幂等），并确保 pgvector / pg_trgm 扩展和索引就绪。
 //
-// vectorDim 为知识库向量列的目标维度（来自 ai.embedding_dim）：>0 且与默认维度不同时，
-// 对 knowledge_chunks.embedding 执行 ALTER 自适应。
+// vectorDim 为向量列的目标维度（来自 ai.embedding_dim）：>0 且与列实际维度不同时，
+// 对 memory_vectors 与 knowledge_chunks 的 embedding 列执行 ALTER 自适应。
 func (db *DB) Migrate(ctx context.Context, vectorDim int) error {
 	// 迁移顺序：先启用扩展再 AutoMigrate —— memory_vectors/knowledge_chunks 的 vector 列
 	// 依赖 vector 类型，缺扩展会导致建表失败。
@@ -104,13 +126,32 @@ CREATE TRIGGER trg_memory_vectors_search_vec
 
 	// 向量维度自适应：与配置的 ai.embedding_dim 保持一致
 	// 注意：vector(N) 的类型修饰符无法参数化，N 为配置的整数维度（非用户输入），直接拼接安全。
-	if vectorDim > 0 && vectorDim != defaultKnowledgeVectorDim {
+	// memory_vectors 与 knowledge_chunks 需同时调整，否则记忆向量写入会因维度不符失败。
+	// 以列的实际维度为基准（而非配置是否等于默认值）：从旧维度（如 1536）切回 1024 时
+	// 同样需要 ALTER，否则列会永远停留在旧维度，向量写入全部失败且无告警。
+	curDim := db.currentVectorDim(ctx, "memory_vectors")
+	if vectorDim > 0 && curDim > 0 && curDim != vectorDim {
+		// HNSW 索引依赖列维度，ALTER 前先删（幂等），ALTER 后重建
+		db.Orm.WithContext(ctx).Exec("DROP INDEX IF EXISTS idx_memory_vectors_embedding")
+		db.Orm.WithContext(ctx).Exec("DROP INDEX IF EXISTS idx_knowledge_chunks_embedding")
+		if err := db.Orm.WithContext(ctx).Exec(
+			fmt.Sprintf("ALTER TABLE memory_vectors ALTER COLUMN embedding TYPE vector(%d)", vectorDim),
+		).Error; err != nil {
+			return fmt.Errorf("alter memory_vectors embedding dimension: %w", err)
+		}
 		if err := db.Orm.WithContext(ctx).Exec(
 			fmt.Sprintf("ALTER TABLE knowledge_chunks ALTER COLUMN embedding TYPE vector(%d)", vectorDim),
 		).Error; err != nil {
 			return fmt.Errorf("alter knowledge_chunks embedding dimension: %w", err)
 		}
-		db.logger.Info("知识库向量维度已调整", zap.Int("dim", vectorDim))
+		// ALTER 后重建 HNSW 向量索引
+		db.Orm.WithContext(ctx).Exec(
+			"CREATE INDEX IF NOT EXISTS idx_memory_vectors_embedding ON memory_vectors USING hnsw (embedding vector_cosine_ops)",
+		)
+		db.Orm.WithContext(ctx).Exec(
+			"CREATE INDEX IF NOT EXISTS idx_knowledge_chunks_embedding ON knowledge_chunks USING hnsw (embedding vector_cosine_ops)",
+		)
+		db.logger.Info("向量维度已调整并重建索引", zap.Int("dim", vectorDim))
 	}
 
 	return nil

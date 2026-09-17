@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/DaWesen/lanmei-dream/internal/ai/llm"
@@ -68,6 +69,7 @@ type JudgeContext struct {
 // 不执行命令或工具，执行由上层路由逻辑完成。
 type Analyzer struct {
 	llmClient llm.LLMClient
+	mu        sync.RWMutex // 保护 commands/tools（运行时刷新与并发 Analyze 读写）
 	commands  []CommandDef
 	tools     []ToolDef
 	timeout   time.Duration // <=0 表示不设独立超时，沿用父上下文
@@ -101,12 +103,16 @@ func NewAnalyzer(llmClient llm.LLMClient, commands []CommandDef, tools []ToolDef
 
 // UpdateCommands 动态更新命令列表，供插件注册新命令后同步。
 func (a *Analyzer) UpdateCommands(commands []CommandDef) {
+	a.mu.Lock()
 	a.commands = commands
+	a.mu.Unlock()
 }
 
 // UpdateTools 动态更新工具列表，供插件注册新工具后同步。
 func (a *Analyzer) UpdateTools(tools []ToolDef) {
+	a.mu.Lock()
 	a.tools = tools
+	a.mu.Unlock()
 }
 
 // Analyze 分析用户消息的意图；群聊传入 judgeCtx 时，同一次 LLM 调用顺便完成
@@ -169,6 +175,12 @@ func formatJudgeUser(userMsg string, recent []JudgeMessage) string {
 // 群聊时额外注入提及判断规则（judgeCtx 非 nil）。
 // 按语义描述匹配而非关键词匹配，是意图识别准确率的关键。
 func (a *Analyzer) buildPrompt(judgeCtx *JudgeContext) string {
+	// 读锁内拷贝命令/工具列表，避免与运行时刷新（UpdateCommands/UpdateTools）并发读写竞争
+	a.mu.RLock()
+	commands := append([]CommandDef(nil), a.commands...)
+	tools := append([]ToolDef(nil), a.tools...)
+	a.mu.RUnlock()
+
 	var sb strings.Builder
 
 	sb.WriteString(`你是一个意图分类器，群聊消息同时判断"是否在跟机器人说话"。根据用户消息判断其意图，返回 JSON 格式结果。
@@ -182,19 +194,19 @@ func (a *Analyzer) buildPrompt(judgeCtx *JudgeContext) string {
 ## 可用命令
 `)
 
-	if len(a.commands) == 0 {
+	if len(commands) == 0 {
 		sb.WriteString("（暂无可用命令）\n")
 	} else {
-		for _, cmd := range a.commands {
+		for _, cmd := range commands {
 			fmt.Fprintf(&sb, "- %s: %s\n", cmd.Name, cmd.Description)
 		}
 	}
 
 	sb.WriteString("\n## 可用工具\n")
-	if len(a.tools) == 0 {
+	if len(tools) == 0 {
 		sb.WriteString("（暂无可用工具）\n")
 	} else {
-		for _, t := range a.tools {
+		for _, t := range tools {
 			fmt.Fprintf(&sb, "- %s: %s\n", t.Name, t.Description)
 		}
 	}

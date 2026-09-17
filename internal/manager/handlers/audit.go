@@ -15,14 +15,18 @@ func (h *Handler) ListAuditLogs(c fiber.Ctx) error {
 		Action:   c.Query("action"),
 	}
 	if s := c.Query("since"); s != "" {
-		if t, err := timeParse(s); err == nil {
-			filter.Since = t
+		t, err := timeParse(s)
+		if err != nil {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "since 时间格式非法"})
 		}
+		filter.Since = t
 	}
 	if u := c.Query("until"); u != "" {
-		if t, err := timeParse(u); err == nil {
-			filter.Until = t
+		t, err := timeParse(u)
+		if err != nil {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "until 时间格式非法"})
 		}
+		filter.Until = t
 	}
 	items, total, err := h.store.ListAuditLogs(c.Context(), filter, offset, limit)
 	if err != nil {

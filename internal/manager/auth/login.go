@@ -214,6 +214,16 @@ func (s *Service) Logout(ctx context.Context, refreshToken string) error {
 	return s.store.RevokeSession(ctx, session.ID)
 }
 
+// GetSession 查询指定会话（用于归属校验）。
+func (s *Service) GetSession(ctx context.Context, sessionID uint) (*model.AuthSession, error) {
+	return s.store.GetSessionByID(ctx, sessionID)
+}
+
+// GetCredential 查询指定凭据（用于归属校验）。
+func (s *Service) GetCredential(ctx context.Context, credentialID string) (*model.AuthCredential, error) {
+	return s.store.GetCredentialByID(ctx, credentialID)
+}
+
 // RevokeSession 吊销指定会话。
 func (s *Service) RevokeSession(ctx context.Context, sessionID uint) error {
 	return s.store.RevokeSession(ctx, sessionID)
