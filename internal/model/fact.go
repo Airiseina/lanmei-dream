@@ -14,6 +14,10 @@ import (
 //
 // 以 jsonb 存于 EpisodeSummary.Facts / TopicCluster.Facts，兼容旧版 []string（按 0.5 置信度转换）。
 type FactItem struct {
+	Kind       string    `json:"kind,omitempty"` // preference/profile/project/commitment
+	Importance float64   `json:"importance,omitempty"`
+	Durable    bool      `json:"durable,omitempty"`
+	Quote      string    `json:"quote,omitempty"`      // 用户原文中的直接证据
 	SubjectID  string    `json:"subject_id,omitempty"` // 群事实主体：平台用户 ID；group 表示群公共事实
 	Key        string    `json:"key,omitempty"`
 	Value      string    `json:"value"`
@@ -134,6 +138,12 @@ func MergeFacts(existing, incoming []FactItem) []FactItem {
 
 		// 确认：同一 value 重复出现
 		if i, ok := valueIdx[identity{f.SubjectID, f.Value}]; ok {
+			if f.Durable && f.Quote != "" {
+				out[i].Kind = f.Kind
+				out[i].Importance = f.Importance
+				out[i].Durable = f.Durable
+				out[i].Quote = f.Quote
+			}
 			out[i].Confidence = min(max(out[i].Confidence, f.Confidence)+factBumpStep, maxFactConfidence)
 			out[i].Evidence = mergeFactEvidence(out[i].Evidence, f.Evidence)
 			if f.At.After(out[i].At) {
@@ -154,6 +164,10 @@ func MergeFacts(existing, incoming []FactItem) []FactItem {
 					nc = factConflictFloor
 				}
 				out[j].Value = f.Value
+				out[j].Kind = f.Kind
+				out[j].Importance = f.Importance
+				out[j].Durable = f.Durable
+				out[j].Quote = f.Quote
 				out[j].Confidence = nc
 				out[j].Conflict = old.Value
 				out[j].Evidence = mergeFactEvidence(old.Evidence, f.Evidence)

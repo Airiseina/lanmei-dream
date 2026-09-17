@@ -28,6 +28,9 @@ import (
 // 5 轮通常足以覆盖多步推理场景。
 const maxToolCallRounds = 5
 
+// memoryAdmissionSlots 限制即时审核并发，模型慢时跳过新候选而非堆积 goroutine。
+var memoryAdmissionSlots = make(chan struct{}, 4)
+
 // ChatService 编排完整对话流程：上下文组装、RAG 检索、提示构建、LLM 调用与异步压缩。
 type ChatService struct {
 	client     llm.LLMClient
@@ -68,8 +71,13 @@ func (s *ChatService) SetPromptManager(pm *prompt.Manager) {
 	s.promptMgr = pm
 }
 
+// SetMemoryMinSimilarity 在服务启动时设置长期记忆的余弦相似度门槛。
+func (s *ChatService) SetMemoryMinSimilarity(v float64) error {
+	return s.retriever.SetMinSimilarity(v)
+}
+
 // SetKnowledge 注入知识库系统。注入后每轮对话自动执行隐式知识召回
-//（作为 system 消息注入上下文），并暴露 kb_search/kb_add 工具给 LLM；为 nil 时关闭。
+// （作为 system 消息注入上下文），并暴露 kb_search/kb_add 工具给 LLM；为 nil 时关闭。
 func (s *ChatService) SetKnowledge(svc *kbpkg.Service) {
 	s.knowledge = svc
 }
@@ -358,6 +366,11 @@ func (s *ChatService) assembleContext(ctx context.Context, req *llm.ChatRequest)
 			s.logger.Error("ai: retrieve memory failed", zap.Error(retrieveErr))
 		}
 	}
+	var recalled []string
+	for _, m := range memories {
+		recalled = append(recalled, fmt.Sprintf("%s:%.3f", m.ID, m.Similarity))
+	}
+	s.logger.Debug("ai: memory recall", zap.Int64("user", req.UserID), zap.String("group", req.GroupID), zap.Strings("id_similarity", recalled))
 	if ragCtx := BuildRAGContext(memories); ragCtx != "" {
 		msgs = append(msgs, llm.Message{
 			Role:    llm.RoleSystem,
@@ -597,16 +610,28 @@ func buildFactItemsContext(name string, facts []modelpkg.FactItem) string {
 // groupID 标识来源群：群聊消息写入带群标签的记忆，避免污染个人记忆；
 // 个人记忆压缩（Compressor）仍仅针对私聊维度。
 func (s *ChatService) asyncStoreAndCompress(ctx context.Context, userID int64, groupID, content string, queryVec []float32) {
-	if s.memory != nil && queryVec != nil {
-		go func() {
-			bgCtx := context.Background()
-			_ = s.memory.Store(bgCtx, &memory.Memory{
-				UserID:  userID,
-				GroupID: groupID,
-				Content: content,
-				Vector:  queryVec,
-			})
-		}()
+	// 群聊统一由带发言者身份的话题归档审核，避免逐条原文与归档重复写入。
+	// 私聊只存审核通过的事实，不依赖查询向量（工具/非工具路径行为一致）。
+	if groupID == "" && s.memory != nil && s.embedder != nil {
+		select {
+		case memoryAdmissionSlots <- struct{}{}:
+			go func() {
+				defer func() { <-memoryAdmissionSlots }()
+				bgCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+				defer cancel()
+				facts, err := memory.SelectFacts(bgCtx, s.client, content)
+				if err == nil {
+					err = memory.StoreFacts(bgCtx, s.embedder, s.memory, userID, groupID, facts)
+				}
+				if err != nil {
+					s.logger.Warn("ai: memory admission/store failed", zap.Error(err))
+					return
+				}
+				s.logger.Debug("ai: memory admission", zap.Int("accepted", len(facts)), zap.Int64("user", userID))
+			}()
+		default:
+			s.logger.Debug("ai: memory admission busy, skip candidate", zap.Int64("user", userID))
+		}
 	}
 	if s.compressor != nil {
 		go s.compressor.MaybeCompress(context.Background(), userID)
