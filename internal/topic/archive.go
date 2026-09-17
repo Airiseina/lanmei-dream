@@ -170,6 +170,7 @@ func (a *Archiver) summarize(ctx context.Context, snap *ArchiveSnapshot) (brief,
 		return defaultBrief, truncateRunes(resp.Content, 300), nil
 	}
 	facts = model.ParseFacts(res.Facts) // 兼容 []FactItem 与旧 []string
+	facts = filterArchiveFacts(facts, snap.Window)
 	if strings.TrimSpace(res.Brief) == "" {
 		return defaultBrief, res.Detailed, facts
 	}
@@ -190,10 +191,11 @@ const groupArchiveSystemPrompt = `你是一个群聊话题记忆归档引擎。�
 {
   "brief": "一句话总结这个话题的核心内容（不超过50字）",
   "detailed": "详细摘要，保留关键事实、决策、参与者观点（不超过300字）",
-  "facts": [{"key": "周末活动", "value": "张三(10001)提议周末去爬山", "confidence": 0.85}]
+  "facts": [{"subject_id": "10001", "key": "周末活动", "value": "张三(10001)提议周末去爬山", "confidence": 0.85}]
 }
 
 facts 规则：
+- subject_id：事实主体的平台用户ID，必须来自对话中的真人成员；群公共约定使用 "group"。不能确定主体的事实不提取，禁止用昵称、数据库ID或机器人ID代替
 - 只提取客观事实，不提取寒暄/闲聊
 - key：命题主题（2-6字，细粒度——同一 key 应只有一种取值，如"周末活动"、"餐厅推荐"）
 - value：每条事实不超过20字，格式如"张三(10001)提议周末去爬山"、"李四(10002)推荐了某家餐厅"
@@ -202,6 +204,24 @@ facts 规则：
 - 每条事实都必须给 key、value、confidence，禁止省略或编造
 
 注意：只输出 JSON，不要任何额外文字。`
+
+// filterArchiveFacts 不猜测旧格式或未知主体，避免将无法归属的事实写入群画像。
+func filterArchiveFacts(facts []model.FactItem, window []TopicMsg) []model.FactItem {
+	known := map[string]bool{"group": true}
+	for _, msg := range window {
+		if !msg.IsBot && msg.UserID != "" {
+			known[msg.UserID] = true
+		}
+	}
+	var out []model.FactItem
+	for _, fact := range facts {
+		fact.SubjectID = strings.TrimSpace(fact.SubjectID)
+		if known[fact.SubjectID] && strings.TrimSpace(fact.Key) != "" {
+			out = append(out, fact)
+		}
+	}
+	return out
+}
 
 // formatWindow 将话题消息窗口格式化为对话文本（昵称/机器人交替行），供归档摘要与话题标签生成共用。
 // 用户消息以「昵称(用户ID)」标注发言者：用户ID 是稳定身份锚点（群昵称常变，只留昵称会让归档记忆

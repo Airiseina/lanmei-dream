@@ -42,13 +42,12 @@ func (s *PGVectorStore) Store(ctx context.Context, mem *memory.Memory) error {
 
 // memoryGroupScope 构造记忆检索的群级过滤条件。
 //   - groupID 为空（私聊）：仅用户个人记忆（group_id=”）；
-//   - groupID 非空（群聊）：该群的群级记忆（group_id=gid）或该用户的个人记忆，
-//     避免跨群污染与个人记忆混淆。
+//   - groupID 非空（群聊）：仅本群记忆，禁止引用私聊或其他群的记忆。
 func memoryGroupScope(groupID string, userID int64) (scope string, args []any) {
 	if groupID == "" {
 		return "user_id = ? AND group_id = ''", []any{userID}
 	}
-	return "(group_id = ?) OR (user_id = ? AND group_id = '')", []any{groupID, userID}
+	return "group_id = ?", []any{groupID}
 }
 
 // Retrieve 根据查询向量检索最相关的 N 条记忆（向量召回）。
@@ -90,7 +89,7 @@ func (s *PGVectorStore) RetrieveByKeyword(ctx context.Context, query string, use
 		return nil, nil
 	}
 	scope, args := memoryGroupScope(groupID, userID)
-	whereSQL := scope + " AND search_vec @@ to_tsquery('simple', ?)"
+	whereSQL := "(" + scope + ") AND search_vec @@ to_tsquery('simple', ?)"
 	args = append(args, tsQuery)
 
 	var rows []model.MemoryVector
